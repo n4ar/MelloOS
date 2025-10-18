@@ -301,6 +301,38 @@ make run
 
 ดูผลการทดสอบโดยละเอียดได้ที่ `TEST_RESULTS.md`
 
+## CI/CD
+
+โปรเจกต์นี้ใช้ GitHub Actions สำหรับการทดสอบและ release อัตโนมัติ:
+
+### Automated Testing (Develop Branch)
+
+เมื่อมีการ push หรือสร้าง Pull Request ไปยัง `develop` branch:
+- ✅ Build kernel อัตโนมัติ
+- ✅ รัน build verification tests
+- ✅ สร้าง ISO image
+- ✅ ทดสอบการ boot ใน QEMU
+
+ดูรายละเอียดได้ที่: `.github/workflows/test-develop.yml`
+
+### Branch Protection
+
+เพื่อความปลอดภัยของโค้ด แนะนำให้ตั้งค่า Branch Protection สำหรับ `develop` และ `main` branches:
+- ✅ ต้องผ่าน Pull Request เท่านั้น
+- ✅ ต้องผ่าน automated tests ก่อน merge
+- ✅ ต้องได้รับ code review approval
+
+ดูคู่มือการตั้งค่าได้ที่: `.github/BRANCH_PROTECTION.md`
+
+### Automated Releases
+
+เมื่อสร้าง version tag (เช่น `v1.0.0`):
+- ✅ Build kernel และสร้าง ISO
+- ✅ สร้าง GitHub Release อัตโนมัติ
+- ✅ แนบ `mellos.iso` ไฟล์สำหรับดาวน์โหลด
+
+ดูรายละเอียดได้ที่: `.github/workflows/build-and-release.yml`
+
 ## Development
 
 ### Adding New Features
