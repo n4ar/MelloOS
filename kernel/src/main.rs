@@ -3,6 +3,7 @@
 
 mod panic;
 mod framebuffer;
+mod mm;
 
 use limine::request::FramebufferRequest;
 
