@@ -1,0 +1,108 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0, v0.1.0, etc.
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 xorriso ovmf git make
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-none
+      
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            kernel/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      
+      - name: Cache Limine bootloader
+        uses: actions/cache@v4
+        with:
+          path: limine/
+          key: ${{ runner.os }}-limine-v8
+          restore-keys: |
+            ${{ runner.os }}-limine-
+      
+      - name: Build kernel
+        run: make build
+      
+      - name: Create ISO
+        run: make iso
+      
+      - name: Verify ISO exists
+        run: |
+          if [ ! -f mellos.iso ]; then
+            echo "Error: mellos.iso not found!"
+            exit 1
+          fi
+          ls -lh mellos.iso
+      
+      - name: Get version from tag
+        id: get_version
+        run: |
+          if [ "${{ github.ref_type }}" == "tag" ]; then
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            echo "version=dev-$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.get_version.outputs.version }}
+          name: MelloOS ${{ steps.get_version.outputs.version }}
+          body: |
+            ## MelloOS Release ${{ steps.get_version.outputs.version }}
+            
+            ### 📦 Download
+            Download `mellos.iso` below and boot it with QEMU or on real hardware.
+            
+            ### 🚀 Quick Start
+            ```bash
+            # Run with QEMU
+            qemu-system-x86_64 -M q35 -m 2G -cdrom mellos.iso -boot d
+            
+            # Or with UEFI firmware
+            qemu-system-x86_64 -M q35 -m 2G \
+              -bios /usr/share/OVMF/OVMF_CODE.fd \
+              -cdrom mellos.iso -boot d
+            ```
+            
+            ### 📝 Changes
+            See commit history for details.
+          draft: false
+          prerelease: false
+          files: |
+            mellos.iso
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Upload ISO as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mellos-iso-${{ steps.get_version.outputs.version }}
+          path: mellos.iso
+          retention-days: 90
