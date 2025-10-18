@@ -2,6 +2,8 @@
 // Provides kmalloc/kfree for dynamic memory allocation
 // Uses Buddy System algorithm for efficient allocation
 
+#![allow(dead_code)]
+
 use spin::Mutex;
 
 /// Minimum block size (64 bytes)

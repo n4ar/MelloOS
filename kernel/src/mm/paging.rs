@@ -1,8 +1,10 @@
 // Paging System
 // Manages virtual memory mapping with 4-level page tables
 
-use crate::mm::{phys_to_virt, PhysAddr, VirtAddr};
+#![allow(dead_code)]
+
 use crate::mm::pmm::PhysicalMemoryManager;
+use crate::mm::{phys_to_virt, PhysAddr, VirtAddr};
 
 /// Page table entry flags
 /// These flags control the behavior and permissions of mapped pages

@@ -1,6 +1,8 @@
 // Physical Memory Manager
 // Manages physical memory frames (4KB blocks)
 
+#![allow(dead_code)]
+
 use crate::mm::{phys_to_virt, PhysAddr};
 use limine::memory_map::EntryType;
 use limine::response::MemoryMapResponse;

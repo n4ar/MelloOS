@@ -24,9 +24,9 @@ echo ""
 
 # Test 2: Verify kernel contains expected message
 echo "Test 2: Checking kernel contains expected message..."
-if strings kernel/target/x86_64-unknown-none/release/mellos-kernel | grep -q "Hello from my kernel"; then
-    echo "✓ Kernel contains 'Hello from my kernel ✨' message"
-    echo "  Found: $(strings kernel/target/x86_64-unknown-none/release/mellos-kernel | grep 'Hello from my kernel')"
+if strings kernel/target/x86_64-unknown-none/release/mellos-kernel | grep -q "Hello from MelloOS"; then
+    echo "✓ Kernel contains 'Hello from MelloOS ✨' message"
+    echo "  Found: $(strings kernel/target/x86_64-unknown-none/release/mellos-kernel | grep 'Hello from MelloOS')"
 else
     echo "✗ Expected message not found in kernel binary"
     FAILED=1
@@ -95,9 +95,15 @@ echo ""
 
 # Test 7: Verify configuration files
 echo "Test 7: Checking configuration files..."
-if [ -f "boot/limine.cfg" ]; then
+if [ -f "boot/limine.conf" ] || [ -f "boot/limine.cfg" ]; then
     echo "✓ Limine configuration exists"
-    if grep -q "MelloOS" boot/limine.cfg; then
+    CONFIG_FILE=""
+    if [ -f "boot/limine.conf" ]; then
+        CONFIG_FILE="boot/limine.conf"
+    else
+        CONFIG_FILE="boot/limine.cfg"
+    fi
+    if grep -q "MelloOS" "$CONFIG_FILE"; then
         echo "✓ Configuration contains MelloOS entry"
     else
         echo "✗ MelloOS entry not found in configuration"

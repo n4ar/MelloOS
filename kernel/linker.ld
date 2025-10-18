@@ -25,20 +25,24 @@ SECTIONS
         __text_end = .;
     } :text
 
+    /* Align to page boundary (4KB) before read-only data */
+    . = ALIGN(4096);
+
     /* Read-only data section */
     .rodata : {
         __rodata_start = .;
         *(.rodata .rodata.*)
-    } :rodata
-
-    /* Limine requests section - must be in its own section */
-    /* The bootloader looks for this section to find requests */
-    .requests : {
+        
+        /* Limine requests section - must be in its own section */
+        /* The bootloader looks for this section to find requests */
         KEEP(*(.requests_start_marker))
         KEEP(*(.requests))
         KEEP(*(.requests_end_marker))
         __rodata_end = .;
     } :rodata
+
+    /* Align to page boundary (4KB) before writable data */
+    . = ALIGN(4096);
 
     /* Data section - initialized read-write data */
     .data : {

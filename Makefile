@@ -54,9 +54,9 @@ limine:
 iso: build limine
 	@echo "$(COLOR_BLUE)Creating ISO image...$(COLOR_RESET)"
 	
-	# Check if limine.cfg exists
-	@if [ ! -f "boot/limine.cfg" ]; then \
-		echo "$(COLOR_YELLOW)Warning: boot/limine.cfg not found. Please create it first (see task 10).$(COLOR_RESET)"; \
+	# Check if limine config exists
+	@if [ ! -f "boot/limine.conf" ] && [ ! -f "boot/limine.cfg" ]; then \
+		echo "$(COLOR_YELLOW)Warning: boot/limine.conf or boot/limine.cfg not found. Please create it first.$(COLOR_RESET)"; \
 		exit 1; \
 	fi
 	
@@ -79,7 +79,11 @@ iso: build limine
 	
 	# Copy Limine configuration
 	@echo "$(COLOR_YELLOW)Copying bootloader configuration...$(COLOR_RESET)"
-	@cp boot/limine.cfg $(ISO_ROOT)/boot/limine/
+	@if [ -f "boot/limine.conf" ]; then \
+		cp boot/limine.conf $(ISO_ROOT)/boot/limine/; \
+	elif [ -f "boot/limine.cfg" ]; then \
+		cp boot/limine.cfg $(ISO_ROOT)/boot/limine/; \
+	fi
 	
 	# Create ISO image with xorriso
 	@echo "$(COLOR_YELLOW)Creating ISO with xorriso...$(COLOR_RESET)"
