@@ -51,18 +51,17 @@ jobs:
       - name: Build kernel
         run: make build
       
-      - name: Run build verification
-        run: |
-          chmod +x tools/verify_build.sh
-          ./tools/verify_build.sh
-      
       - name: Create ISO
         run: make iso
       
-      - name: Run boot test
+      - name: Run build verification
         run: |
+          chmod +x tools/verify_build.sh
           chmod +x tools/test_boot.sh
-          ./tools/test_boot.sh
+          ./tools/verify_build.sh
+      
+      - name: Run boot test
+        run: ./tools/test_boot.sh
       
       - name: Upload test artifacts on failure
         if: failure()
