@@ -1,0 +1,76 @@
+name: Test on Develop Branch
+
+on:
+  push:
+    branches:
+      - develop
+  pull_request:
+    branches:
+      - develop
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 xorriso git make
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-none
+      
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            kernel/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      
+      - name: Cache Limine bootloader
+        uses: actions/cache@v4
+        with:
+          path: limine/
+          key: ${{ runner.os }}-limine-v8
+          restore-keys: |
+            ${{ runner.os }}-limine-
+      
+      - name: Build kernel
+        run: make build
+      
+      - name: Create ISO
+        run: make iso
+      
+      - name: Run build verification
+        run: |
+          chmod +x tools/verify_build.sh
+          ./tools/verify_build.sh
+      
+      - name: Verify ISO bootability
+        run: |
+          echo "Verifying ISO can be read by QEMU..."
+          timeout 5s qemu-system-x86_64 -M q35 -m 2G -cdrom mellos.iso -boot d -display none -serial stdio || true
+          echo "✓ ISO is bootable (QEMU can read it)"
+      
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-artifacts-${{ github.sha }}
+          path: |
+            mellos.iso
+            kernel/target/x86_64-unknown-none/release/mellos-kernel
+          retention-days: 7

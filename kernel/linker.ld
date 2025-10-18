@@ -20,11 +20,14 @@ SECTIONS
 
     /* Text section - executable code */
     .text : {
+        __text_start = .;
         *(.text .text.*)
+        __text_end = .;
     } :text
 
     /* Read-only data section */
     .rodata : {
+        __rodata_start = .;
         *(.rodata .rodata.*)
     } :rodata
 
@@ -34,10 +37,12 @@ SECTIONS
         KEEP(*(.requests_start_marker))
         KEEP(*(.requests))
         KEEP(*(.requests_end_marker))
+        __rodata_end = .;
     } :rodata
 
     /* Data section - initialized read-write data */
     .data : {
+        __data_start = .;
         *(.data .data.*)
     } :data
 
@@ -45,6 +50,7 @@ SECTIONS
     .bss : {
         *(COMMON)
         *(.bss .bss.*)
+        __data_end = .;
     } :data
 
     /* Discard unnecessary sections */
