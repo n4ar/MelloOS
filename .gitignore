@@ -1,0 +1,36 @@
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# Build artifacts
+*.o
+*.elf
+*.bin
+*.iso
+*.img
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Limine bootloader (if downloaded)
+limine/
+
+# ISO root build directory
+iso_root/
+
+# Kiro
+.kiro/
+
+# Test results
+TEST_RESULTS.md
+TASK_*_SUMMARY.md
