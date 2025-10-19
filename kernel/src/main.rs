@@ -545,6 +545,31 @@ pub extern "C" fn _start() -> ! {
     arch::x86_64::acpi::init_acpi(rsdp_addr)
         .expect("Failed to initialize ACPI");
     
+    serial_println!("[KERNEL] Initializing BSP Local APIC...");
+    // Get MADT info to retrieve LAPIC address
+    let madt_info = arch::x86_64::acpi::get_madt_info()
+        .expect("MADT info not available");
+    
+    // Create and initialize BSP Local APIC
+    let mut bsp_lapic = unsafe {
+        arch::x86_64::apic::LocalApic::new(madt_info.lapic_address)
+    };
+    bsp_lapic.init();
+    
+    // Verify LAPIC ID matches BSP APIC ID from MADT
+    let bsp_apic_id = bsp_lapic.id();
+    let expected_bsp_apic_id = madt_info.cpus[0]
+        .expect("No BSP CPU found in MADT")
+        .apic_id;
+    
+    if bsp_apic_id == expected_bsp_apic_id {
+        serial_println!("[SMP] BSP online (apic_id={})", bsp_apic_id);
+    } else {
+        serial_println!("[SMP] Warning: BSP APIC ID mismatch! Expected {}, got {}",
+            expected_bsp_apic_id, bsp_apic_id);
+        serial_println!("[SMP] BSP online (apic_id={})", bsp_apic_id);
+    }
+    
     serial_println!("[KERNEL] Writing message to screen...");
     // Display "Hello from MelloOS ✨" message
     // White text on black background, positioned at (100, 100)
