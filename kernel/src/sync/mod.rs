@@ -2,8 +2,6 @@
 /// This module provides spinlocks and other synchronization mechanisms
 /// required for safe concurrent access to shared data structures.
 
-// Placeholder for synchronization primitives
-// Will be implemented in task 4
+mod spin;
 
-#[allow(dead_code)]
-pub fn placeholder() {}
+pub use spin::{IrqSpinLock, IrqSpinLockGuard, SpinLock, SpinLockGuard};

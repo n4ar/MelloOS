@@ -92,38 +92,22 @@ fn init_task_wrapper() -> ! {
     };
     serial_println!("[INIT] sys_write returned: {}", result);
     
-    // Demonstrate IPC by sending "ping" to port 2
-    let ping_msg = b"ping";
-    serial_println!("[INIT] Sending 'ping' to port 2...");
+    // Demonstrate IPC by sending "hello" to port 15 (dedicated init port)
+    let hello_ipc_msg = b"hello";
+    serial_println!("[INIT] Sending 'hello' to port 15...");
     let send_result = unsafe {
-        syscall(3, 2, ping_msg.as_ptr() as usize, ping_msg.len())
+        syscall(3, 15, hello_ipc_msg.as_ptr() as usize, hello_ipc_msg.len())
     };
     
     if send_result >= 0 {
-        serial_println!("[INIT] Successfully sent 'ping' to port 2");
+        serial_println!("[INIT] Successfully sent 'hello' to port 15");
     } else {
-        serial_println!("[INIT] Failed to send to port 2: {}", send_result);
+        serial_println!("[INIT] Failed to send to port 15: {}", send_result);
     }
     
-    // Demonstrate IPC by receiving from port 1
-    let mut recv_buf = [0u8; 64];
-    serial_println!("[INIT] Waiting to receive from port 1...");
-    let recv_result = unsafe {
-        syscall(4, 1, recv_buf.as_mut_ptr() as usize, recv_buf.len())
-    };
-    
-    if recv_result > 0 {
-        serial_println!("[INIT] Received {} bytes from port 1", recv_result);
-        // Try to print the received message
-        let msg_len = recv_result as usize;
-        if msg_len <= recv_buf.len() {
-            if let Ok(msg_str) = core::str::from_utf8(&recv_buf[..msg_len]) {
-                serial_println!("[INIT] Message content: {}", msg_str);
-            }
-        }
-    } else {
-        serial_println!("[INIT] Failed to receive from port 1: {}", recv_result);
-    }
+    // Note: We skip the blocking receive to avoid hanging the kernel
+    // In a real system, init would have other tasks to communicate with
+    serial_println!("[INIT] IPC demonstration complete (skipping blocking receive)");
     
     // Sleep for 100 ticks
     serial_println!("[INIT] Sleeping for 100 ticks...");
