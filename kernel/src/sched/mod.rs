@@ -2,6 +2,31 @@
 //!
 //! This module implements a preemptive multitasking scheduler using Round-Robin algorithm.
 //! It manages task creation, context switching, and timer-based preemption.
+//!
+//! # SMP Safety and Lock Ordering
+//!
+//! The scheduler is designed to work correctly in SMP environments with multiple CPUs.
+//! To prevent deadlocks, locks must be acquired in the following order:
+//!
+//! 1. SCHED (global scheduler state)
+//! 2. TASK_TABLE (global task table)
+//! 3. Per-CPU runqueue locks (in ascending CPU ID order)
+//! 4. Per-task state (implicit in get_task_mut)
+//!
+//! ## Key SMP Design Decisions
+//!
+//! - **Per-CPU Runqueues**: Each CPU has its own runqueue to minimize contention
+//! - **Lock-Free Task Assignment**: New tasks are assigned to the CPU with the smallest runqueue
+//! - **IPI-Based Coordination**: RESCHEDULE_IPI is sent when tasks are enqueued to remote CPUs
+//! - **Ordered Lock Acquisition**: Multiple runqueue locks are always acquired in CPU ID order
+//!
+//! ## Critical Sections
+//!
+//! - Task creation: Holds SCHED and TASK_TABLE briefly, then releases before enqueuing
+//! - Task migration: Holds two runqueue locks in CPU ID order
+//! - Context switch: Only accesses current CPU's runqueue (no cross-CPU locks)
+//!
+//! See `kernel/src/sync/lock_ordering.rs` for complete lock ordering documentation.
 
 pub mod task;
 pub mod context;
@@ -658,6 +683,9 @@ pub fn migrate_task(task_id: TaskId, from_cpu: usize, to_cpu: usize) -> bool {
     } else {
         (to_cpu, from_cpu)
     };
+    
+    // Assert CPU ID ordering in debug builds
+    crate::sync::lock_ordering::assert_cpu_id_order(first_cpu, second_cpu);
     
     let percpu_first = percpu_for(first_cpu);
     let percpu_second = percpu_for(second_cpu);

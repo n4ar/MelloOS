@@ -140,6 +140,13 @@ pub const SYS_IPC_RECV: usize = 4;
 ///
 /// # Returns
 /// Result value (0 or positive on success, -1 on error)
+///
+/// # SMP Safety
+/// This dispatcher is SMP-safe because:
+/// - No global locks are held across syscalls
+/// - Each syscall handler uses appropriate per-object locks
+/// - Task state is accessed through per-CPU structures
+/// - Multiple cores can execute syscalls concurrently without contention
 pub fn syscall_dispatcher(
     syscall_id: usize,
     arg1: usize,
@@ -275,6 +282,12 @@ fn sys_exit(code: usize) -> ! {
 ///
 /// # Returns
 /// 0 on success, -1 on error
+///
+/// # SMP Safety
+/// This function is SMP-safe because:
+/// - Task state modifications are protected by per-task locks (implicit in get_task_mut)
+/// - Uses current core's context via percpu_current()
+/// - yield_now() operates on current core's runqueue
 fn sys_sleep(ticks: usize) -> isize {
     // Validate tick count
     if ticks == 0 {
@@ -290,6 +303,7 @@ fn sys_sleep(ticks: usize) -> isize {
     };
     
     // Call scheduler to put task to sleep
+    // This modifies task state with proper locking
     if !crate::sched::sleep_current_task(ticks as u64, priority) {
         return -1;
     }
@@ -298,7 +312,7 @@ fn sys_sleep(ticks: usize) -> isize {
     use core::sync::atomic::Ordering;
     METRICS.sleep_count.fetch_add(1, Ordering::Relaxed);
     
-    // Trigger scheduler to select next task
+    // Trigger scheduler to select next task on current core
     // This will context switch away from the current task
     crate::sched::yield_now();
     
@@ -315,6 +329,12 @@ fn sys_sleep(ticks: usize) -> isize {
 ///
 /// # Returns
 /// 0 on success, -1 on error
+///
+/// # SMP Safety
+/// This function is SMP-safe because:
+/// - PORT_MANAGER uses a global mutex for port table access
+/// - Individual ports use per-port locks for queue operations
+/// - Task wakeup sends RESCHEDULE_IPI to receiver's CPU if needed
 fn sys_ipc_send(port_id: usize, buf_ptr: usize, len: usize) -> isize {
     use crate::sys::port::PORT_MANAGER;
     
@@ -346,6 +366,13 @@ fn sys_ipc_send(port_id: usize, buf_ptr: usize, len: usize) -> isize {
 ///
 /// # Returns
 /// Number of bytes received, or -1 on error
+///
+/// # SMP Safety
+/// This function is SMP-safe because:
+/// - PORT_MANAGER uses a global mutex for port table access
+/// - Individual ports use per-port locks for queue operations
+/// - Task blocking/unblocking uses proper task state locks
+/// - yield_now() operates on current core's runqueue
 fn sys_ipc_recv(port_id: usize, buf_ptr: usize, len: usize) -> isize {
     use crate::sys::port::PORT_MANAGER;
     

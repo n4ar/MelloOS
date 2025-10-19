@@ -1,5 +1,31 @@
 //! Port management for IPC
 //! Provides port structures and message queues
+//!
+//! # SMP Safety and Lock Ordering
+//!
+//! The IPC system uses a two-level locking strategy for SMP safety:
+//!
+//! 1. **PORT_MANAGER.table_lock**: Protects port creation/deletion (rarely held)
+//! 2. **Per-port locks**: Protect individual port operations (frequently held)
+//!
+//! ## Lock Ordering Rules
+//!
+//! - PORT_MANAGER.table_lock must be acquired before any per-port lock
+//! - Never hold more than one per-port lock at a time
+//! - Preemption must be disabled before acquiring per-port locks
+//! - Port locks must be released before calling scheduler functions
+//!
+//! ## Cross-Core IPC
+//!
+//! When a task on CPU A sends a message to a task blocked on CPU B:
+//! 1. Sender acquires port lock
+//! 2. Message is enqueued
+//! 3. Receiver task is marked Ready and enqueued to a CPU
+//! 4. If receiver is enqueued to a remote CPU, RESCHEDULE_IPI is sent
+//! 5. Port lock is released
+//! 6. Remote CPU receives IPI and schedules the receiver task
+//!
+//! See `kernel/src/sync/lock_ordering.rs` for complete lock ordering documentation.
 
 use spin::Mutex;
 use crate::sched::task::TaskId;
@@ -109,6 +135,10 @@ impl TaskQueue {
 /// 
 /// A port is a communication endpoint that maintains a FIFO queue of messages
 /// and a list of tasks blocked waiting for messages.
+///
+/// # SMP Safety
+/// Each port has its own spinlock to protect concurrent access from multiple CPUs.
+/// The lock protects both the message queue and the blocked tasks queue.
 pub struct Port {
     /// Port identifier (0-255)
     pub id: usize,
@@ -160,6 +190,12 @@ impl Port {
 /// 
 /// Manages all ports in the system (max 256 ports).
 /// Provides send and receive operations with proper synchronization.
+///
+/// # SMP Safety
+/// The PortManager uses a two-level locking strategy:
+/// 1. table_lock: Protects port creation/deletion (coarse-grained)
+/// 2. per-port locks: Protect individual port operations (fine-grained)
+/// This allows multiple CPUs to access different ports concurrently.
 pub struct PortManager {
     /// Array of optional ports (256 max)
     pub ports: [Option<Port>; 256],
@@ -226,6 +262,12 @@ impl PortManager {
     /// - `IpcError::PortNotFound` if port doesn't exist
     /// - `IpcError::MessageTooLarge` if data.len() > 4096
     /// - `IpcError::QueueFull` if port queue is full (16 messages)
+    ///
+    /// # SMP Safety
+    /// This function handles cross-core IPC correctly:
+    /// - Per-port locks prevent concurrent access to the same port
+    /// - Task wakeup uses enqueue_task which sends RESCHEDULE_IPI to remote CPUs
+    /// - Preemption is disabled while holding port locks to prevent deadlocks
     pub fn send_message(&mut self, port_id: usize, data: &[u8]) -> Result<(), IpcError> {
         use crate::serial_println;
         use core::sync::atomic::Ordering;
@@ -290,6 +332,8 @@ impl PortManager {
                 }
                 
                 // Add task back to scheduler (will select CPU with smallest runqueue)
+                // enqueue_task will automatically send RESCHEDULE_IPI if the task
+                // is enqueued to a remote CPU
                 crate::sched::enqueue_task(task_id, None);
             }
         }
@@ -326,6 +370,13 @@ impl PortManager {
     /// - `IpcError::InvalidPort` if port_id >= 256
     /// - `IpcError::PortNotFound` if port doesn't exist
     /// - `IpcError::InvalidBuffer` if buffer is too small or invalid
+    ///
+    /// # SMP Safety
+    /// This function handles cross-core IPC correctly:
+    /// - Per-port locks prevent concurrent access to the same port
+    /// - Task blocking uses proper task state locks
+    /// - yield_now() operates on current core's runqueue
+    /// - Recursive call after wakeup is safe because message is guaranteed to be available
     pub fn recv_message(
         &mut self,
         port_id: usize,

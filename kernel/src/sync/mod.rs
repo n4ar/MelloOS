@@ -3,5 +3,6 @@
 /// required for safe concurrent access to shared data structures.
 
 mod spin;
+pub mod lock_ordering;
 
 pub use spin::{IrqSpinLock, IrqSpinLockGuard, SpinLock, SpinLockGuard};
