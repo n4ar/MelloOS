@@ -6,6 +6,7 @@
 pub mod task;
 pub mod context;
 pub mod timer;
+pub mod priority;
 
 /// Scheduler logging macros with consistent [SCHED] prefix
 /// 
@@ -50,6 +51,7 @@ macro_rules! sched_error {
 use spin::Mutex;
 use task::{Task, TaskId, TaskState, SchedulerError, SchedulerResult};
 use context::CpuContext;
+use priority::TaskPriority;
 
 /// Maximum number of tasks supported
 const MAX_TASKS: usize = 64;
@@ -140,10 +142,10 @@ impl TaskQueue {
     }
 }
 
-/// Scheduler state containing the runqueue and current task information
+/// Scheduler state containing the priority scheduler and current task information
 struct SchedState {
-    /// Queue of ready tasks (stores TaskIds, not Task objects)
-    runqueue: TaskQueue,
+    /// Priority scheduler with three ready queues
+    priority_sched: priority::PriorityScheduler,
     
     /// Currently running task ID (None if no task is running)
     current: Option<TaskId>,
@@ -154,9 +156,9 @@ struct SchedState {
 
 impl SchedState {
     /// Create a new empty scheduler state
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
-            runqueue: TaskQueue::new(),
+            priority_sched: priority::PriorityScheduler::new(),
             current: None,
             next_tid: 1, // Start at 1, reserve 0 for idle task
         }
@@ -164,7 +166,7 @@ impl SchedState {
 }
 
 /// Global scheduler state protected by a mutex
-static SCHED: Mutex<SchedState> = Mutex::new(SchedState::new());
+static SCHED: spin::Once<Mutex<SchedState>> = spin::Once::new();
 
 /// Task table storing all Task objects
 /// Uses TaskPtr wrapper for heap-allocated tasks
@@ -177,12 +179,13 @@ static TASK_TABLE: Mutex<[TaskPtr; MAX_TASKS]> = Mutex::new([TaskPtr::null(); MA
 /// 1. Generates a unique TaskId
 /// 2. Creates a new Task with Task::new()
 /// 3. Allocates the Task on the heap and adds it to TASK_TABLE
-/// 4. Adds the TaskId to the runqueue
+/// 4. Adds the TaskId to the priority scheduler
 /// 5. Logs the task spawn
 ///
 /// # Arguments
 /// * `name` - Human-readable task name
 /// * `entry_point` - Function pointer to the task's entry point
+/// * `priority` - Task priority level
 ///
 /// # Returns
 /// A Result containing the TaskId of the newly spawned task, or an error if spawning fails
@@ -191,12 +194,12 @@ static TASK_TABLE: Mutex<[TaskPtr; MAX_TASKS]> = Mutex::new([TaskPtr::null(); MA
 /// Returns `SchedulerError::TooManyTasks` if the task table is full
 /// Returns `SchedulerError::OutOfMemory` if memory allocation fails
 /// Returns `SchedulerError::RunqueueFull` if the runqueue is full
-pub fn spawn_task(name: &'static str, entry_point: fn() -> !) -> SchedulerResult<TaskId> {
+pub fn spawn_task(name: &'static str, entry_point: fn() -> !, priority: TaskPriority) -> SchedulerResult<TaskId> {
     use crate::mm::allocator::kmalloc;
     use core::ptr;
     
     // Lock both SCHED and TASK_TABLE
-    let mut sched = SCHED.lock();
+    let mut sched = SCHED.get().expect("Scheduler not initialized").lock();
     let mut task_table = TASK_TABLE.lock();
     
     // 1. Generate unique TaskId
@@ -209,8 +212,8 @@ pub fn spawn_task(name: &'static str, entry_point: fn() -> !) -> SchedulerResult
     
     sched.next_tid += 1;
     
-    // 2. Create new Task
-    let task = match Task::new(task_id, name, entry_point) {
+    // 2. Create new Task with specified priority
+    let task = match Task::new(task_id, name, entry_point, priority) {
         Ok(task) => task,
         Err(e) => {
             sched_error!("Failed to create task {}: {:?}", task_id, e);
@@ -233,14 +236,14 @@ pub fn spawn_task(name: &'static str, entry_point: fn() -> !) -> SchedulerResult
     
     task_table[task_id] = TaskPtr::new(task_ptr);
     
-    // 4. Add TaskId to runqueue
-    if !sched.runqueue.push_back(task_id) {
-        sched_error!("Failed to add task {} to runqueue", task_id);
+    // 4. Add TaskId to priority scheduler
+    if !sched.priority_sched.enqueue_task(task_id, priority) {
+        sched_error!("Failed to add task {} to priority scheduler", task_id);
         return Err(SchedulerError::RunqueueFull);
     }
     
     // 5. Log task spawn
-    sched_info!("Spawned task {}: {}", task_id, name);
+    sched_info!("Spawned task {}: {} (priority: {:?})", task_id, name, priority);
     
     Ok(task_id)
 }
@@ -276,47 +279,66 @@ fn get_task(id: TaskId) -> Option<&'static mut Task> {
     unsafe { Some(&mut *task_ptr.get()) }
 }
 
-/// Select the next task to run using Round-Robin algorithm
+/// Select the next task to run using priority-based scheduling
 ///
 /// This function:
 /// 1. Locks SCHED state
-/// 2. Moves current TaskId to back of runqueue (if exists)
-/// 3. Pops front TaskId from runqueue (or falls back to idle task if empty)
-/// 4. Updates current TaskId
-/// 5. Unlocks SCHED state
-/// 6. Returns references to old and new tasks for context switch
+/// 2. Wakes sleeping tasks if their wake time has elapsed
+/// 3. Moves current TaskId back to appropriate priority queue (if exists and ready)
+/// 4. Selects highest priority task from priority scheduler
+/// 5. Updates current TaskId
+/// 6. Unlocks SCHED state
+/// 7. Returns references to old and new tasks for context switch
 ///
 /// # Returns
 /// A tuple of (old_task, new_task) references, or None if no tasks available
 fn schedule_next() -> Option<(&'static mut Task, &'static mut Task)> {
-    let mut sched = SCHED.lock();
+    let mut sched = SCHED.get().expect("Scheduler not initialized").lock();
+    
+    // Update tick counter
+    sched.priority_sched.tick();
+    
+    // Wake sleeping tasks (they are automatically re-enqueued)
+    let woken_count = sched.priority_sched.wake_sleeping_tasks();
+    if woken_count > 0 {
+        // Increment wake_count metric
+        use core::sync::atomic::Ordering;
+        crate::sys::METRICS.wake_count.fetch_add(woken_count, Ordering::Relaxed);
+        
+        // Update task states for woken tasks
+        // Note: We don't have direct access to which tasks were woken,
+        // but their state will be updated when they run
+    }
     
     // Get the current task (if any)
     let old_task_id = sched.current;
     
     // If there's no current task, this is the first switch
-    // Don't pop from runqueue - let tick() handle it
+    // Don't pop from scheduler - let tick() handle it
     if old_task_id.is_none() {
         drop(sched);
         return None;
     }
     
-    // Move current task to back of runqueue (Round-Robin)
+    // Move current task back to priority queue if it's still ready
     if let Some(current_id) = old_task_id {
-        // Update task state from Running to Ready
         if let Some(task) = get_task(current_id) {
-            task.state = TaskState::Ready;
+            // Only re-enqueue if task is still in Running state
+            // (it might have been put to sleep or blocked)
+            if task.state == TaskState::Running {
+                task.state = TaskState::Ready;
+                sched.priority_sched.enqueue_task(current_id, task.priority);
+            }
         }
-        sched.runqueue.push_back(current_id);
     }
     
-    // Pop next task from front of runqueue
-    // If runqueue is empty, fall back to idle task (id 0)
-    let next_task_id = match sched.runqueue.pop_front() {
+    // Select next task from priority scheduler
+    // If all queues are empty, fall back to idle task (id 0)
+    let next_task_id = match sched.priority_sched.select_next() {
         Some(id) => id,
         None => {
-            // Runqueue is empty - fall back to idle task
-            sched_warn!("Runqueue empty, falling back to idle task");
+            // All queues empty - fall back to idle task
+            sched_warn!("All priority queues empty, falling back to idle task");
             0 // Idle task ID
         }
     };
@@ -360,6 +382,9 @@ pub(crate) static SWITCH_COUNT: core::sync::atomic::AtomicUsize = core::sync::at
 pub fn tick() {
     use core::sync::atomic::Ordering;
     
+    // Increment timer_ticks metric
+    crate::sys::METRICS.timer_ticks.fetch_add(1, Ordering::Relaxed);
+    
     // Get next task to run
     let tasks = schedule_next();
     
@@ -374,6 +399,14 @@ pub fn tick() {
         
         // Increment switch counter
         let count = SWITCH_COUNT.fetch_add(1, Ordering::Relaxed);
+        
+        // Increment ctx_switches metric
+        crate::sys::METRICS.ctx_switches.fetch_add(1, Ordering::Relaxed);
+        
+        // Check if this is a preemptive switch (old task was still Running/Ready)
+        if old_task.state == TaskState::Running || old_task.state == TaskState::Ready {
+            crate::sys::METRICS.preemptions.fetch_add(1, Ordering::Relaxed);
+        }
         
         // Log context switch with throttling
         // First 10 switches: log every switch
@@ -401,18 +434,18 @@ pub fn tick() {
     } else {
         // First switch - no old task yet
         // We need to manually set up the first task and jump to it
-        let mut sched = SCHED.lock();
+        let mut sched = SCHED.get().expect("Scheduler not initialized").lock();
         
-        // Pop the first task from runqueue
-        if let Some(first_task_id) = sched.runqueue.pop_front() {
+        // Select the first task from priority scheduler
+        if let Some(first_task_id) = sched.priority_sched.select_next() {
             sched.current = Some(first_task_id);
             drop(sched);
             
             if let Some(first_task) = get_task(first_task_id) {
                 first_task.state = TaskState::Running;
                 
-                sched_log!("First switch → Task {} ({})", 
-                    first_task.id, first_task.name);
+                sched_log!("First switch → Task {} ({}) [priority: {:?}]", 
+                    first_task.id, first_task.name, first_task.priority);
                 
                 // Validate the task's RSP
                 if first_task.context.rsp == 0 {
@@ -445,7 +478,7 @@ pub fn tick() {
                 panic!("[SCHED] CRITICAL: First task not found in task table");
             }
         } else {
-            panic!("[SCHED] CRITICAL: No tasks in runqueue for first switch");
+            panic!("[SCHED] CRITICAL: No tasks in priority scheduler for first switch");
         }
     }
 }
@@ -462,6 +495,81 @@ fn idle_task() -> ! {
     }
 }
 
+/// Get current task ID and priority
+///
+/// Returns the current task's ID and priority, or None if no task is running
+pub fn get_current_task_info() -> Option<(TaskId, TaskPriority)> {
+    let sched = SCHED.get()?.lock();
+    let current_id = sched.current?;
+    drop(sched);
+    
+    let task = get_task(current_id)?;
+    Some((task.id, task.priority))
+}
+
+/// Get task priority by ID
+///
+/// Returns the task's ID and priority, or None if task doesn't exist
+pub fn get_task_priority(task_id: TaskId) -> Option<(TaskId, TaskPriority)> {
+    let task = get_task(task_id)?;
+    Some((task.id, task.priority))
+}
+
+/// Get mutable reference to a task (public version for IPC)
+///
+/// Returns a mutable reference to the task, or None if task doesn't exist
+pub fn get_task_mut(task_id: TaskId) -> Option<&'static mut Task> {
+    get_task(task_id)
+}
+
+/// Enqueue a task to the scheduler
+///
+/// Adds the task to the appropriate priority queue
+pub fn enqueue_task(task_id: TaskId, priority: TaskPriority) {
+    if let Some(sched) = SCHED.get() {
+        let mut sched = sched.lock();
+        sched.priority_sched.enqueue_task(task_id, priority);
+    }
+}
+
+/// Put current task to sleep for specified ticks
+///
+/// Returns true on success, false on error
+pub fn sleep_current_task(ticks: u64, priority: TaskPriority) -> bool {
+    let mut sched = match SCHED.get() {
+        Some(s) => s.lock(),
+        None => return false,
+    };
+    
+    let current_id = match sched.current {
+        Some(id) => id,
+        None => return false,
+    };
+    
+    // Put task to sleep in priority scheduler
+    if !sched.priority_sched.sleep_task(current_id, ticks, priority) {
+        return false;
+    }
+    
+    // Update task state to Sleeping
+    drop(sched);
+    if let Some(task) = get_task(current_id) {
+        task.state = TaskState::Sleeping;
+    }
+    
+    true
+}
+
+/// Yield CPU to next task (voluntary context switch)
+///
+/// This function triggers the scheduler to select the next task.
+/// It does not return in the traditional sense - execution continues
+/// in the next task, and eventually returns here when this task runs again.
+pub fn yield_now() {
+    // Call the scheduler tick function to perform context switch
+    tick();
+}
+
 /// Initialize the scheduler
 ///
 /// This function:
@@ -472,8 +580,8 @@ fn idle_task() -> ! {
 /// # Notes
 /// - Must be called before spawning any tasks
 /// - Must be called before enabling interrupts
-/// - The idle task is created but not added to the runqueue
-///   (it will be used when the runqueue is empty)
+/// - The idle task is created but not added to the priority scheduler
+///   (it will be used when all queues are empty)
 pub fn init_scheduler() {
     use crate::mm::allocator::kmalloc;
     use core::ptr;
@@ -481,11 +589,7 @@ pub fn init_scheduler() {
     sched_info!("Initializing scheduler...");
     
     // Initialize SCHED state
-    let mut sched = SCHED.lock();
-    sched.runqueue.clear();
-    sched.current = None;
-    sched.next_tid = 1; // Reserve 0 for idle task
-    drop(sched);
+    SCHED.call_once(|| Mutex::new(SchedState::new()));
     
     // Initialize TASK_TABLE (clear all entries)
     let mut task_table = TASK_TABLE.lock();
@@ -496,7 +600,7 @@ pub fn init_scheduler() {
     
     // Create idle task (task id 0)
     // We manually create it with id 0 instead of using spawn_task
-    let idle = match Task::new(0, "idle", idle_task) {
+    let idle = match Task::new(0, "idle", idle_task, TaskPriority::Low) {
         Ok(task) => task,
         Err(e) => {
             panic!("[SCHED] CRITICAL: Failed to create idle task: {:?}", e);
@@ -578,8 +682,8 @@ pub fn test_task_switching_integration() {
     init_scheduler();
     
     serial_println!("[TEST] Spawning test tasks...");
-    spawn_task("Test Task A", test_task_a).expect("Failed to spawn Test Task A");
-    spawn_task("Test Task B", test_task_b).expect("Failed to spawn Test Task B");
+    spawn_task("Test Task A", test_task_a, TaskPriority::Normal).expect("Failed to spawn Test Task A");
+    spawn_task("Test Task B", test_task_b, TaskPriority::Normal).expect("Failed to spawn Test Task B");
     
     serial_println!("[TEST] Initializing timer at 100 Hz...");
     unsafe {
@@ -678,14 +782,14 @@ pub mod manual_tests {
         init_scheduler();
         
         // Spawn a task
-        let task_id = spawn_task("test_task", dummy_task).expect("Failed to spawn test task");
+        let task_id = spawn_task("test_task", dummy_task, TaskPriority::Normal).expect("Failed to spawn test task");
         
         // Verify task was created
         serial_println!("[TEST] Spawned task with id: {}", task_id);
         
-        // Check runqueue has the task
-        let sched = SCHED.lock();
-        let runqueue_len = sched.runqueue.len();
+        // Check priority scheduler has the task
+        let sched = SCHED.get().expect("Scheduler not initialized").lock();
+        let runqueue_len = sched.priority_sched.len();
         drop(sched);
         
         serial_println!("[TEST] Runqueue length: {}", runqueue_len);
@@ -723,17 +827,17 @@ pub mod manual_tests {
         // Initialize scheduler
         init_scheduler();
         
-        // Spawn three tasks
-        let id_a = spawn_task("task_a", task_a).expect("Failed to spawn task_a");
-        let id_b = spawn_task("task_b", task_b).expect("Failed to spawn task_b");
-        let id_c = spawn_task("task_c", task_c).expect("Failed to spawn task_c");
+        // Spawn three tasks with different priorities
+        let id_a = spawn_task("task_a", task_a, TaskPriority::High).expect("Failed to spawn task_a");
+        let id_b = spawn_task("task_b", task_b, TaskPriority::Normal).expect("Failed to spawn task_b");
+        let id_c = spawn_task("task_c", task_c, TaskPriority::Low).expect("Failed to spawn task_c");
         
         serial_println!("[TEST] Spawned tasks: {}, {}, {}", id_a, id_b, id_c);
         
-        // Check runqueue order
-        let sched = SCHED.lock();
-        let runqueue_len = sched.runqueue.len();
-        serial_println!("[TEST] Runqueue has {} tasks", runqueue_len);
+        // Check priority scheduler has tasks
+        let sched = SCHED.get().expect("Scheduler not initialized").lock();
+        let runqueue_len = sched.priority_sched.len();
+        serial_println!("[TEST] Priority scheduler has {} tasks", runqueue_len);
         drop(sched);
         
         if runqueue_len == 3 {
@@ -766,12 +870,12 @@ pub mod manual_tests {
         }
         
         // Spawn tasks
-        spawn_task("task_1", task_1).expect("Failed to spawn task_1");
-        spawn_task("task_2", task_2).expect("Failed to spawn task_2");
+        spawn_task("task_1", task_1, TaskPriority::Normal).expect("Failed to spawn task_1");
+        spawn_task("task_2", task_2, TaskPriority::Normal).expect("Failed to spawn task_2");
         
         // Verify scheduler state
-        let sched = SCHED.lock();
-        let has_tasks = !sched.runqueue.is_empty();
+        let sched = SCHED.get().expect("Scheduler not initialized").lock();
+        let has_tasks = !sched.priority_sched.is_empty();
         drop(sched);
         
         if has_tasks {

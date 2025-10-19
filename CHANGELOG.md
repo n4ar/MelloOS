@@ -4,6 +4,114 @@ All notable changes to MelloOS will be documented in this file.
 
 ## [Unreleased]
 
+### Added - Advanced Scheduling, System Calls, and IPC (Phase 4 - Major Update)
+
+#### Priority-Based Scheduler
+- Three-level priority system: High, Normal, Low
+- Separate ready queue for each priority level
+- O(1) task selection using priority bitmap
+- Round-robin scheduling within same priority level
+- Preemptive scheduling with priority-based preemption
+- Preemption control for critical sections (`preempt_disable`/`preempt_enable`)
+
+#### Sleep/Wake Mechanism
+- Timer-based task suspension with tick counts
+- `sys_sleep(ticks)` syscall for userland sleep requests
+- Automatic wake-up when sleep duration elapses
+- Sleeping tasks tracked separately from ready queues
+- O(n) wake scanning in Phase 4 (optimized to O(log n) in future phases)
+
+#### System Call Interface
+- x86 `int 0x80` syscall mechanism
+- IDT entry at vector 0x80 with DPL=3 (user-accessible)
+- Assembly syscall entry point with register save/restore
+- Syscall dispatcher with ID validation
+- Five system calls implemented:
+  - `SYS_WRITE` (0): Write data to serial output
+  - `SYS_EXIT` (1): Terminate current task
+  - `SYS_SLEEP` (2): Sleep for specified ticks
+  - `SYS_IPC_SEND` (3): Send message to port
+  - `SYS_IPC_RECV` (4): Receive message from port (blocking)
+- x86-64 System V ABI calling convention
+- Return value convention: non-negative for success, -1 for error
+
+#### IPC (Inter-Process Communication)
+- Port-based message passing system
+- 256 ports (0-255) for communication endpoints
+- Message queue per port (max 16 messages)
+- Maximum message size: 4096 bytes
+- Non-blocking send (returns error if queue full)
+- Blocking receive (task sleeps until message arrives)
+- FIFO wake policy (first blocked task woken first)
+- Spinlock protection for queue operations
+- Lock hierarchy: PortManager::table_lock → Port::lock → Scheduler lock
+- Preemption disabled during port lock acquisition
+
+#### Userland Init Process
+- First userland process (PID 1) launched after boot
+- Compiled as separate `no_std` binary
+- Embedded into kernel image
+- Demonstrates syscall usage (write, sleep, IPC)
+- Syscall wrapper functions for userland
+- Entry point at `_start()` function
+
+#### Kernel Metrics
+- Atomic counters for system statistics:
+  - Context switches and preemptions
+  - Per-syscall invocation counts
+  - IPC send/receive operations
+  - Queue full errors
+  - Sleep/wake operations
+  - Timer ticks
+- Thread-safe metric updates with `AtomicUsize`
+
+#### Enhanced Task Structure
+- Task priority field (High/Normal/Low)
+- Wake tick for sleeping tasks
+- Blocked port ID for IPC blocking
+- Extended task states: Ready, Running, Sleeping, Blocked
+
+### Changed
+
+- Scheduler now uses priority-based algorithm instead of pure round-robin
+- Task spawning requires priority parameter
+- Timer interrupt handler now wakes sleeping tasks
+- Task states extended to include Sleeping and Blocked
+- Scheduler state uses `PriorityScheduler` instead of single `TaskQueue`
+- Context switching respects preemption disable flag
+
+### Breaking Changes
+
+- `spawn_task()` API now requires `TaskPriority` parameter
+- Task structure includes new fields (priority, wake_tick, blocked_on_port)
+- Scheduler internal structure changed (affects any direct scheduler access)
+
+### Migration Notes
+
+**For existing code spawning tasks:**
+```rust
+// Old API (Phase 3)
+spawn_task("my_task", task_entry)?;
+
+// New API (Phase 4)
+spawn_task("my_task", task_entry, TaskPriority::Normal)?;
+```
+
+**For code accessing task state:**
+- Task state enum now includes `Sleeping` and `Blocked` variants
+- Check for new states when handling task lifecycle
+
+### Documentation
+
+- Updated `docs/architecture.md` with Phase 4 components:
+  - System call interface and ABI documentation
+  - IPC message passing protocol
+  - Priority scheduling algorithm
+  - Userland process architecture
+- Added inline rustdoc comments to all public functions
+- Module-level documentation for syscall and IPC subsystems
+- Examples for syscall and IPC usage in userland
+
 ### Added - Task Scheduler (Phase 3 - Major Update)
 
 #### Task Scheduler Core

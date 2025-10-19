@@ -14,11 +14,26 @@ This document provides detailed architecture information about MelloOS kernel co
 │  └───────────────┘  └──────────────┘  └─────────────────┘ │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐  │
+│  │           System Call Interface (sys/)               │  │
+│  │  - Syscall dispatcher (int 0x80)                     │  │
+│  │  - 5 syscalls: write, exit, sleep, ipc_send/recv    │  │
+│  │  - Kernel metrics collection                         │  │
+│  └──────────────────────────────────────────────────────┘  │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │           IPC Subsystem (sys/ipc.rs)                 │  │
+│  │  - Port-based message passing                        │  │
+│  │  - 256 ports with 16-message queues                  │  │
+│  │  - Blocking receive with FIFO wake policy            │  │
+│  └──────────────────────────────────────────────────────┘  │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐  │
 │  │           Task Scheduler (sched/)                    │  │
-│  │  - Round-Robin algorithm                             │  │
+│  │  - Priority-based scheduling (High/Normal/Low)       │  │
+│  │  - Sleep/wake mechanism                              │  │
 │  │  - Context switching (< 1μs)                         │  │
 │  │  - Timer interrupts (100 Hz)                         │  │
-│  │  - Task Control Blocks                               │  │
+│  │  - Preemption control                                │  │
 │  └──────────────────────────────────────────────────────┘  │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐  │
@@ -38,6 +53,13 @@ This document provides detailed architecture information about MelloOS kernel co
 │  - PIC (Programmable Interrupt Controller)                 │
 │  - Serial Port (COM1)                                      │
 │  - Framebuffer (UEFI GOP)                                  │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Userland Processes                         │
+│  - Init process (PID 1)                                    │
+│  - Syscall wrappers for kernel services                    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -128,30 +150,106 @@ struct TaskQueue {
 
 // Scheduler state (single mutex for atomicity)
 struct SchedState {
-    runqueue: TaskQueue,         // Ready tasks
-    current: Option<TaskId>,     // Currently running task
-    next_tid: usize,             // Next task ID to assign
+    priority_sched: PriorityScheduler,  // Priority-based scheduler
+    current: Option<TaskId>,            // Currently running task
+    next_tid: usize,                    // Next task ID to assign
 }
 
 // Task table (heap-allocated tasks)
 static TASK_TABLE: Mutex<[TaskPtr; MAX_TASKS]>;
 ```
 
-**Round-Robin Algorithm:**
+**Priority-Based Scheduling Algorithm:**
 ```
 1. Timer interrupt fires (every 10ms)
-2. Current task moved to back of runqueue
-3. Next task popped from front of runqueue
-4. Task states updated (Running → Ready, Ready → Running)
+2. Scheduler wakes sleeping tasks whose time has elapsed
+3. Scheduler selects highest priority ready task
+4. If higher priority task is ready, preempt current task
 5. Context switch performed
-6. Next task resumes execution
+6. Selected task resumes execution
 ```
 
 **API:**
 ```rust
 pub fn init_scheduler();
-pub fn spawn_task(name: &'static str, entry: fn() -> !) -> Result<TaskId>;
+pub fn spawn_task(name: &'static str, entry: fn() -> !, priority: TaskPriority) -> Result<TaskId>;
 pub fn tick();  // Called by timer interrupt
+pub fn sleep_current(ticks: u64);  // Put current task to sleep
+```
+
+### 1.1 Priority Scheduler
+
+**Location:** `kernel/src/sched/priority.rs`
+
+**Features:**
+- Three priority levels: High, Normal, Low
+- Separate ready queue for each priority level
+- O(1) task selection using priority bitmap
+- Round-robin scheduling within same priority
+- Sleep/wake mechanism with tick-based timers
+- Preemption control for critical sections
+
+**Data Structures:**
+```rust
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum TaskPriority {
+    Low = 0,
+    Normal = 1,
+    High = 2,
+}
+
+struct SleepingTask {
+    task_id: TaskId,
+    wake_tick: u64,
+}
+
+pub struct PriorityScheduler {
+    ready_queues: [TaskQueue; 3],      // One queue per priority
+    sleeping_tasks: Vec<SleepingTask>, // Tasks waiting to wake
+    current_tick: u64,                 // Current timer tick
+    preempt_disable_count: usize,      // Preemption disable counter
+    non_empty_queues: u8,              // Bitmap for O(1) selection
+}
+```
+
+**Priority Selection Algorithm:**
+```
+1. Check non_empty_queues bitmap
+2. Select highest priority non-empty queue (High > Normal > Low)
+3. Pop task from front of selected queue
+4. Return task ID for execution
+```
+
+**Sleep/Wake Mechanism:**
+```
+Sleep:
+1. Task calls sys_sleep(ticks)
+2. Calculate wake_tick = current_tick + ticks
+3. Remove task from ready queue
+4. Add to sleeping_tasks list
+5. Mark task as Sleeping
+6. Trigger scheduler to select next task
+
+Wake:
+1. Timer interrupt increments current_tick
+2. Scan sleeping_tasks for wake_tick <= current_tick
+3. Move eligible tasks back to appropriate priority queue
+4. Mark tasks as Ready
+5. Remove from sleeping_tasks list
+```
+
+**API:**
+```rust
+impl PriorityScheduler {
+    pub fn enqueue_task(&mut self, task_id: TaskId, priority: TaskPriority);
+    pub fn select_next(&mut self) -> Option<TaskId>;
+    pub fn sleep_task(&mut self, task_id: TaskId, ticks: u64);
+    pub fn wake_sleeping_tasks(&mut self);
+    pub fn tick(&mut self);
+    pub fn preempt_disable(&mut self);
+    pub fn preempt_enable(&mut self);
+    pub fn can_preempt(&self) -> bool;
+}
 ```
 
 ### 2. Context Switching
@@ -199,12 +297,15 @@ context_switch:
 **Task Control Block:**
 ```rust
 pub struct Task {
-    id: TaskId,              // Unique identifier
-    name: &'static str,      // Human-readable name
-    stack: *mut u8,          // Stack base address
-    stack_size: usize,       // 8KB per task
-    state: TaskState,        // Ready, Running, or Sleeping
-    context: CpuContext,     // Saved CPU state
+    id: TaskId,                      // Unique identifier
+    name: &'static str,              // Human-readable name
+    stack: *mut u8,                  // Stack base address
+    stack_size: usize,               // 8KB per task
+    state: TaskState,                // Ready, Running, Sleeping, or Blocked
+    context: CpuContext,             // Saved CPU state
+    priority: TaskPriority,          // Task priority (High/Normal/Low)
+    wake_tick: Option<u64>,          // Wake time for sleeping tasks
+    blocked_on_port: Option<usize>,  // Port ID if blocked on IPC
 }
 ```
 
@@ -219,8 +320,22 @@ pub struct Task {
          │ schedule()│ preempt
          ▼           │
     ┌─────────┐     │
-    │ Running │─────┘
-    └─────────┘
+    │ Running │─────┤
+    └────┬────┘     │
+         │          │
+         ├──────────┘
+         │
+         ├─ sys_sleep() ──→ ┌──────────┐
+         │                   │ Sleeping │
+         │                   └────┬─────┘
+         │                        │ wake_tick elapsed
+         │                        └──────────┐
+         │                                   │
+         └─ sys_ipc_recv() ─→ ┌─────────┐   │
+           (no message)        │ Blocked │   │
+                               └────┬────┘   │
+                                    │ message arrives
+                                    └────────┘
 ```
 
 **Stack Layout (8KB per task):**
@@ -285,6 +400,305 @@ Low Address
    - Re-enables interrupts (IF=1)
 ```
 
+## System Call Interface
+
+### Overview
+
+**Location:** `kernel/src/sys/syscall.rs`
+
+The system call interface provides a controlled mechanism for userland code to request kernel services. MelloOS uses the x86 `int 0x80` instruction for syscall invocation in Phase 4.
+
+### Syscall ABI (x86-64 System V)
+
+**Register Mapping:**
+- `RAX`: Syscall number (input), return value (output)
+- `RDI`: Argument 1
+- `RSI`: Argument 2
+- `RDX`: Argument 3
+- `RCX`, `R8-R11`: Caller-saved (clobbered)
+- `RBX`, `RBP`, `R12-R15`: Callee-saved (preserved)
+
+**Return Values:**
+- Success: Non-negative value (0, bytes written, bytes received, etc.)
+- Error: -1
+
+### Syscall Table
+
+| ID | Name | Arguments | Description | Return |
+|----|------|-----------|-------------|--------|
+| 0 | SYS_WRITE | (fd, buf, len) | Write data to serial output | bytes written or -1 |
+| 1 | SYS_EXIT | (code) | Terminate current task | does not return |
+| 2 | SYS_SLEEP | (ticks) | Sleep for specified ticks | 0 or -1 |
+| 3 | SYS_IPC_SEND | (port_id, buf, len) | Send message to port | 0 or -1 |
+| 4 | SYS_IPC_RECV | (port_id, buf, len) | Receive message (blocking) | bytes received or -1 |
+
+### Syscall Flow
+
+```
+Userland Task
+    |
+    | 1. int 0x80 (syscall instruction)
+    v
+Syscall Entry Point (ASM)
+    |
+    | 2. Save registers (RAX, RBX, RCX, RDX, RSI, RDI, R8-R15)
+    | 3. Clear direction flag (DF = 0)
+    v
+Syscall Dispatcher
+    |
+    | 4. Validate syscall ID
+    | 5. Route to appropriate handler
+    v
+Syscall Handler (sys_write, sys_sleep, etc.)
+    |
+    | 6. Execute kernel operation
+    | 7. Update metrics
+    v
+Syscall Return (ASM)
+    |
+    | 8. Restore registers
+    | 9. iretq (return to userland)
+    v
+Userland Task (continues)
+```
+
+### IDT Configuration
+
+- **Vector**: 0x80 (128)
+- **Gate Type**: Interrupt Gate (0xE)
+- **DPL**: 3 (user-accessible)
+- **Present**: 1
+- **IST**: 0 (use current stack)
+
+### Kernel Metrics
+
+The syscall subsystem tracks the following metrics:
+
+```rust
+pub struct KernelMetrics {
+    pub ctx_switches: AtomicUsize,      // Total context switches
+    pub preemptions: AtomicUsize,       // Preemptive switches
+    pub syscall_count: [AtomicUsize; 5], // Per-syscall counts
+    pub ipc_sends: AtomicUsize,         // IPC send operations
+    pub ipc_recvs: AtomicUsize,         // IPC receive operations
+    pub ipc_queue_full: AtomicUsize,    // Queue full errors
+    pub sleep_count: AtomicUsize,       // Tasks put to sleep
+    pub wake_count: AtomicUsize,        // Tasks woken
+    pub timer_ticks: AtomicUsize,       // Timer interrupts
+}
+```
+
+### Userland Syscall Wrappers
+
+**Location:** `kernel/userspace/init/src/main.rs`
+
+```rust
+// Raw syscall invocation
+fn syscall(id: usize, arg1: usize, arg2: usize, arg3: usize) -> isize {
+    let ret: isize;
+    unsafe {
+        asm!(
+            "int 0x80",
+            inout("rax") id => ret,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            options(nostack)
+        );
+    }
+    ret
+}
+
+// High-level wrappers
+pub fn sys_write(msg: &str) {
+    syscall(0, 0, msg.as_ptr() as usize, msg.len());
+}
+
+pub fn sys_sleep(ticks: usize) {
+    syscall(2, ticks, 0, 0);
+}
+
+pub fn sys_ipc_send(port: usize, data: &[u8]) -> isize {
+    syscall(3, port, data.as_ptr() as usize, data.len())
+}
+
+pub fn sys_ipc_recv(port: usize, buf: &mut [u8]) -> isize {
+    syscall(4, port, buf.as_mut_ptr() as usize, buf.len())
+}
+```
+
+## IPC (Inter-Process Communication)
+
+### Overview
+
+**Location:** `kernel/src/sys/ipc.rs`, `kernel/src/sys/port.rs`
+
+MelloOS implements port-based message passing for inter-task communication. Tasks send and receive messages through numbered ports (0-255).
+
+### Architecture
+
+```
+Task A                    Port Manager                    Task B
+  |                            |                            |
+  | sys_ipc_send(port, msg)    |                            |
+  |--------------------------->|                            |
+  |                            | Acquire port lock          |
+  |                            | Enqueue message            |
+  |                            | Check blocked tasks        |
+  |                            |--------------------------->|
+  |                            | Wake Task B (FIFO)         |
+  |                            |                            | Dequeue message
+  |                            |                            | Copy to buffer
+  |                            |                            | Return bytes
+```
+
+### Data Structures
+
+```rust
+// Message structure (max 4096 bytes)
+pub struct Message {
+    data: Vec<u8>,
+}
+
+// Port structure
+pub struct Port {
+    id: usize,
+    queue: VecDeque<Message>,         // Max 16 messages
+    blocked_tasks: VecDeque<TaskId>,  // FIFO wake order
+    lock: Spinlock<()>,
+}
+
+// Port manager (256 ports)
+pub struct PortManager {
+    ports: [Option<Port>; 256],
+    table_lock: Spinlock<()>,
+}
+```
+
+### IPC Semantics
+
+**Message Passing:**
+- **Send**: Non-blocking if queue has space, returns -1 if full
+- **Receive**: Blocking if no messages available, wakes when message arrives
+- **Wake Policy**: FIFO (first blocked task woken first)
+- **Message Size**: Maximum 4096 bytes per message
+- **Queue Size**: Maximum 16 messages per port
+
+**Synchronization:**
+- Each port has a spinlock protecting queue operations
+- Lock hierarchy: PortManager::table_lock → Port::lock → Scheduler lock
+- Preemption disabled while holding port lock
+- No memory allocation while holding locks
+
+### IPC Flow
+
+**Send Message:**
+```
+1. Validate port ID and message size
+2. Acquire port lock (with preempt_disable)
+3. Check queue capacity (max 16 messages)
+4. Enqueue message to port queue
+5. If tasks blocked on port:
+   - Wake one task (FIFO order)
+   - Move task to ready queue
+6. Release port lock (with preempt_enable)
+7. Increment ipc_sends metric
+8. Return 0 (success) or -1 (error)
+```
+
+**Receive Message:**
+```
+1. Validate port ID and buffer
+2. Acquire port lock (with preempt_disable)
+3. If message available:
+   - Dequeue message
+   - Copy to user buffer
+   - Release lock
+   - Return bytes received
+4. If no message:
+   - Add task to blocked_tasks queue
+   - Mark task as Blocked
+   - Release lock
+   - Trigger scheduler (task sleeps)
+   - (Task wakes when message arrives)
+   - Retry receive operation
+```
+
+### Error Handling
+
+```rust
+pub enum IpcError {
+    InvalidPort,        // Port ID >= 256
+    QueueFull,          // 16 messages already queued
+    InvalidBuffer,      // NULL or invalid buffer pointer
+    PortNotFound,       // Port not initialized
+    MessageTooLarge,    // Message > 4096 bytes
+}
+```
+
+### API
+
+```rust
+impl PortManager {
+    // Create port (called at boot)
+    pub fn create_port(&mut self, port_id: usize) -> Result<(), IpcError>;
+    
+    // Send message to port
+    pub fn send_message(&mut self, port_id: usize, data: &[u8]) 
+        -> Result<(), IpcError>;
+    
+    // Receive message from port (blocking)
+    pub fn recv_message(&mut self, port_id: usize, task_id: TaskId, 
+        buf: &mut [u8]) -> Result<usize, IpcError>;
+}
+```
+
+## Userland Processes
+
+### Init Process
+
+**Location:** `kernel/userspace/init/`
+
+The init process is the first userland program launched by the kernel after boot. It demonstrates syscall and IPC functionality.
+
+**Features:**
+- Compiled as separate `no_std` binary
+- Linked at fixed address (0x400000)
+- Embedded into kernel image
+- Runs with Normal priority
+- Uses syscall wrappers for kernel services
+
+**Example Code:**
+```rust
+#[no_mangle]
+pub extern "C" fn _start() -> ! {
+    sys_write("Hello from userland! ✨\n");
+    
+    // IPC demo
+    sys_ipc_send(2, b"ping");
+    
+    let mut buf = [0u8; 64];
+    let bytes = sys_ipc_recv(1, &mut buf);
+    
+    sys_write("Got reply: pong\n");
+    
+    // Sleep demo
+    sys_sleep(100);
+    sys_write("Woke up!\n");
+    
+    loop {
+        sys_sleep(1000);
+    }
+}
+```
+
+**Build Process:**
+1. Compile init with `cargo build --release`
+2. Extract binary with `objcopy`
+3. Embed into kernel image
+4. Kernel loads init at boot
+5. Kernel spawns init task with entry point
+
 ## Security Architecture
 
 ### Memory Protection
@@ -322,6 +736,7 @@ Low Address
 ```
 Virtual Address Space:
 0x0000_0000_0000_0000 - 0x0000_7FFF_FFFF_FFFF : User space (not used yet)
+0x0000_0000_0040_0000 - 0x0000_0000_004F_FFFF : Init process (1MB)
 0xFFFF_8000_0000_0000 - 0xFFFF_9FFF_FFFF_FFFF : HHDM (direct physical mapping)
 0xFFFF_A000_0000_0000 - 0xFFFF_A000_00FF_FFFF : Kernel heap (16MB)
 0xFFFF_FFFF_8000_0000 - 0xFFFF_FFFF_FFFF_FFFF : Kernel code/data
@@ -330,6 +745,11 @@ Task Stacks:
 - Each task has an 8KB stack allocated from kernel heap
 - Stacks grow downward from high addresses
 - Stack pointer (RSP) saved in Task Control Block during context switch
+
+IPC Message Queues:
+- 256 ports, each with up to 16 messages
+- Messages allocated from kernel heap (max 4096 bytes each)
+- Total max IPC memory: 256 * 16 * 4096 = 16MB
 ```
 
 ## Page Table Flags
@@ -356,6 +776,7 @@ CPU Exceptions:      0-31   (Reserved by CPU)
 Timer (IRQ0):        32     (0x20) - PIT interrupt
 Keyboard (IRQ1):     33     (0x21) - Not yet implemented
 Other IRQs:          34-47  (0x22-0x2F) - Available for future use
+Syscall:             128    (0x80) - System call interface
 ```
 
 ## Context Switch Mechanism
@@ -382,6 +803,19 @@ Other IRQs:          34-47  (0x22-0x2F) - Available for future use
 
 **Task Scheduler:**
 - **Context Switch**: < 1 microsecond (assembly-optimized)
-- **Task Selection**: O(1) with circular queue
+- **Task Selection**: O(1) with priority bitmap
+- **Sleep/Wake**: O(n) linear scan in Phase 4 (O(log n) with BinaryHeap in Phase 5)
 - **Timer Frequency**: 100 Hz (10ms time slices)
 - **Scheduling Overhead**: ~1% CPU time at 100 Hz
+
+**System Calls:**
+- **Syscall Overhead**: ~100-200 cycles (int 0x80)
+- **Register Save/Restore**: ~50 cycles
+- **Dispatcher Routing**: ~10 cycles
+- **Total Latency**: ~1-2 microseconds
+
+**IPC:**
+- **Message Send**: O(1) enqueue + O(1) wake
+- **Message Receive**: O(1) dequeue (or block if empty)
+- **Lock Acquisition**: Spinlock with preemption disabled
+- **Message Copy**: O(n) where n = message size (max 4096 bytes)

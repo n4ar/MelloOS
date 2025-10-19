@@ -3,7 +3,9 @@
 
 # Configuration variables
 KERNEL_DIR := kernel
+USERSPACE_DIR := $(KERNEL_DIR)/userspace/init
 KERNEL_BINARY := $(KERNEL_DIR)/target/x86_64-unknown-none/release/mellos-kernel
+INIT_BINARY := $(USERSPACE_DIR)/target/x86_64-unknown-none/release/init
 BUILD_MODE := release
 ISO_ROOT := iso_root
 ISO_NAME := mellos.iso
@@ -23,13 +25,20 @@ COLOR_GREEN := \033[32m
 COLOR_BLUE := \033[34m
 COLOR_YELLOW := \033[33m
 
-.PHONY: all build clean help iso limine run
+.PHONY: all build clean help iso limine run userspace
 
 # Default target
 all: build
 
+# Build userspace init process
+userspace:
+	@echo "$(COLOR_BLUE)Building userspace init process...$(COLOR_RESET)"
+	@cd $(USERSPACE_DIR) && $(CARGO) build $(CARGO_BUILD_FLAGS)
+	@echo "$(COLOR_GREEN)✓ Userspace init built successfully!$(COLOR_RESET)"
+	@echo "$(COLOR_YELLOW)Binary location: $(INIT_BINARY)$(COLOR_RESET)"
+
 # Build the kernel
-build:
+build: userspace
 	@echo "$(COLOR_BLUE)Cleaning previous build...$(COLOR_RESET)"
 	@cd $(KERNEL_DIR) && $(CARGO) clean
 	@echo "$(COLOR_BLUE)Building MelloOS kernel...$(COLOR_RESET)"
@@ -111,6 +120,7 @@ run: iso
 clean:
 	@echo "$(COLOR_BLUE)Cleaning build artifacts...$(COLOR_RESET)"
 	@cd $(KERNEL_DIR) && $(CARGO) clean
+	@cd $(USERSPACE_DIR) && $(CARGO) clean
 	@rm -rf $(ISO_ROOT)
 	@rm -f $(ISO_NAME)
 	@rm -rf $(LIMINE_DIR)

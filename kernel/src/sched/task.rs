@@ -4,6 +4,7 @@
 //! It handles task creation, state management, and stack allocation.
 
 use super::context::CpuContext;
+use super::priority::TaskPriority;
 
 /// Task identifier type
 pub type TaskId = usize;
@@ -33,8 +34,11 @@ pub enum TaskState {
     /// Task is currently running on the CPU
     Running,
     
-    /// Task is sleeping (for future use)
+    /// Task is sleeping (waiting for wake_tick)
     Sleeping,
+    
+    /// Task is blocked on IPC
+    Blocked,
 }
 
 /// Task Control Block (TCB)
@@ -60,6 +64,15 @@ pub struct Task {
     
     /// CPU context (saved registers)
     pub context: CpuContext,
+    
+    /// Task priority level
+    pub priority: TaskPriority,
+    
+    /// Tick at which to wake the task (if sleeping)
+    pub wake_tick: Option<u64>,
+    
+    /// Port ID the task is blocked on (if blocked on IPC)
+    pub blocked_on_port: Option<usize>,
 }
 
 
@@ -76,10 +89,11 @@ impl Task {
     /// * `id` - Unique task identifier
     /// * `name` - Human-readable task name
     /// * `entry_point` - Function pointer to the task's entry point
+    /// * `priority` - Task priority level
     /// 
     /// # Returns
     /// A Result containing the new Task with Ready state, or an error if stack allocation fails
-    pub fn new(id: TaskId, name: &'static str, entry_point: fn() -> !) -> SchedulerResult<Self> {
+    pub fn new(id: TaskId, name: &'static str, entry_point: fn() -> !, priority: TaskPriority) -> SchedulerResult<Self> {
         use crate::mm::allocator::kmalloc;
         
         // 1. Allocate 8KB stack
@@ -136,6 +150,9 @@ impl Task {
             stack_size: STACK_SIZE,
             state: TaskState::Ready,
             context,
+            priority,
+            wake_tick: None,
+            blocked_on_port: None,
         })
     }
 }

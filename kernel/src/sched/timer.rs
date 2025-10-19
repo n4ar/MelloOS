@@ -58,6 +58,17 @@ impl IdtEntry {
         self.type_attr = 0x8E;
         self.reserved = 0;
     }
+    
+    fn set_handler_user(&mut self, handler: usize, selector: u16) {
+        self.offset_low = (handler & 0xFFFF) as u16;
+        self.offset_mid = ((handler >> 16) & 0xFFFF) as u16;
+        self.offset_high = ((handler >> 32) & 0xFFFFFFFF) as u32;
+        self.selector = selector;
+        self.ist = 0;
+        // Type: Interrupt Gate (0xE), DPL=3 (user-accessible), Present=1
+        self.type_attr = 0xEE;
+        self.reserved = 0;
+    }
 }
 
 /// IDT Table structure
@@ -118,6 +129,21 @@ pub unsafe fn init_idt() {
     if IDT.entries[32].offset_low == 0 && IDT.entries[32].offset_mid == 0 && IDT.entries[32].offset_high == 0 {
         panic!("[TIMER] CRITICAL: Failed to set timer interrupt handler in IDT");
     }
+    
+    // Set syscall handler at vector 0x80 (128)
+    let syscall_handler_addr = crate::sys::syscall::syscall_entry as usize;
+    if syscall_handler_addr == 0 {
+        panic!("[TIMER] CRITICAL: Syscall handler address is null");
+    }
+    
+    IDT.entries[0x80].set_handler_user(syscall_handler_addr, code_selector);
+    
+    // Validate syscall handler setup
+    if IDT.entries[0x80].offset_low == 0 && IDT.entries[0x80].offset_mid == 0 && IDT.entries[0x80].offset_high == 0 {
+        panic!("[TIMER] CRITICAL: Failed to set syscall handler in IDT");
+    }
+    
+    serial_println!("[TIMER] Syscall handler registered at vector 0x80 (DPL=3)");
     
     // Create IDT pointer
     let idt_ptr = IdtPointer {
