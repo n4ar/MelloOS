@@ -9,6 +9,9 @@ mod serial;
 mod sched;
 mod sys;
 mod init_loader;
+mod config;
+mod arch;
+mod sync;
 
 use sched::{init_scheduler, spawn_task, priority::TaskPriority};
 
