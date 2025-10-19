@@ -254,4 +254,118 @@ impl LocalApic {
         // Wait for delivery to complete
         self.wait_for_delivery()
     }
+
+    /// Calibrate the APIC timer using the PIT (Programmable Interval Timer)
+    /// 
+    /// This function uses the PIT as a reference clock to determine the
+    /// LAPIC timer frequency. It programs the PIT for a 10ms one-shot,
+    /// sets the LAPIC timer to maximum count, waits for the PIT to fire,
+    /// and calculates the LAPIC frequency from the remaining count.
+    /// 
+    /// # Returns
+    /// 
+    /// The calibrated LAPIC timer frequency in Hz
+    /// 
+    /// # Safety
+    /// 
+    /// This function uses I/O ports and should only be called during
+    /// initialization with interrupts disabled.
+    pub unsafe fn calibrate_timer(&mut self) -> u64 {
+        use x86_64::instructions::port::Port;
+        
+        // PIT constants
+        const PIT_FREQUENCY: u32 = 1193182; // PIT base frequency in Hz
+        const PIT_COMMAND: u16 = 0x43;
+        const PIT_CHANNEL_2: u16 = 0x42;
+        const PIT_CHANNEL_2_GATE: u16 = 0x61;
+        
+        // Calculate PIT divisor for 10ms (100 Hz)
+        const CALIBRATION_MS: u32 = 10;
+        const PIT_DIVISOR: u32 = PIT_FREQUENCY * CALIBRATION_MS / 1000;
+        
+        let mut pit_command = Port::<u8>::new(PIT_COMMAND);
+        let mut pit_channel2 = Port::<u8>::new(PIT_CHANNEL_2);
+        let mut pit_gate = Port::<u8>::new(PIT_CHANNEL_2_GATE);
+        
+        // Disable PIT channel 2 gate and speaker
+        let gate_value = pit_gate.read();
+        pit_gate.write(gate_value & 0xFC); // Clear bits 0 and 1
+        
+        // Configure PIT channel 2 for one-shot mode
+        // Command: 10 11 000 0
+        // - Channel 2 (10)
+        // - Access mode: lobyte/hibyte (11)
+        // - Mode 0: interrupt on terminal count (000)
+        // - Binary mode (0)
+        pit_command.write(0xB0);
+        
+        // Write divisor to PIT channel 2
+        pit_channel2.write((PIT_DIVISOR & 0xFF) as u8);
+        pit_channel2.write(((PIT_DIVISOR >> 8) & 0xFF) as u8);
+        
+        // Set LAPIC timer to maximum count
+        self.write(LAPIC_TIMER_INIT_COUNT, 0xFFFFFFFF);
+        
+        // Enable PIT channel 2 gate to start counting
+        let gate_value = pit_gate.read();
+        pit_gate.write(gate_value | 0x01); // Set bit 0
+        
+        // Wait for PIT channel 2 to finish counting
+        // Bit 5 of port 0x61 indicates the output state
+        loop {
+            let status = pit_gate.read();
+            if (status & 0x20) != 0 {
+                break;
+            }
+        }
+        
+        // Read the current LAPIC timer count
+        let final_count = self.read(LAPIC_TIMER_CURRENT_COUNT);
+        
+        // Stop LAPIC timer
+        self.write(LAPIC_TIMER_INIT_COUNT, 0);
+        
+        // Calculate ticks elapsed
+        let ticks_elapsed = 0xFFFFFFFF - final_count;
+        
+        // Calculate frequency: ticks_per_10ms * 100 = ticks_per_second
+        let frequency = (ticks_elapsed as u64) * 100;
+        
+        frequency
+    }
+
+    /// Initialize the APIC timer in periodic mode
+    /// 
+    /// This function configures the LAPIC timer to generate periodic interrupts
+    /// at the specified frequency. It sets the timer divide value to 16 and
+    /// calculates the initial count based on the calibrated frequency.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `frequency_hz` - Calibrated LAPIC timer frequency in Hz
+    /// * `target_hz` - Target interrupt frequency (e.g., 100 Hz for SCHED_HZ)
+    /// 
+    /// # Safety
+    /// 
+    /// This function should only be called after calibrating the timer
+    /// and with interrupts disabled during initialization.
+    pub unsafe fn init_timer(&mut self, frequency_hz: u64, target_hz: u64) {
+        // Set timer divide value to 16
+        // Divide configuration register: bits 0-1 and bit 3
+        // For divide by 16: 0b0011 = 3
+        self.write(LAPIC_TIMER_DIVIDE, 0x3);
+        
+        // Calculate initial count for desired frequency
+        // initial_count = lapic_hz / (divide_value * target_hz)
+        let initial_count = frequency_hz / (16 * target_hz);
+        
+        // Set timer vector and mode
+        // Bit 17: Timer mode (1 = periodic, 0 = one-shot)
+        // Bits 0-7: Vector number
+        let timer_config = (1 << 17) | (TIMER_VECTOR as u32);
+        self.write(LAPIC_TIMER_LVT, timer_config);
+        
+        // Set initial count to start the timer
+        self.write(LAPIC_TIMER_INIT_COUNT, initial_count as u32);
+    }
 }

@@ -578,6 +578,24 @@ pub extern "C" fn _start() -> ! {
     }
     serial_println!("[PERCPU] BSP per-CPU data initialized (cpu_id=0, apic_id={})", bsp_apic_id);
     
+    serial_println!("[KERNEL] Calibrating APIC timer...");
+    // Calibrate APIC timer using PIT
+    let lapic_frequency = unsafe { bsp_lapic.calibrate_timer() };
+    serial_println!("[APIC] LAPIC timer frequency: {} Hz", lapic_frequency);
+    
+    // Store calibrated frequency in BSP per-CPU data
+    unsafe {
+        let percpu = arch::x86_64::smp::percpu::percpu_current_mut();
+        percpu.lapic_timer_hz = lapic_frequency;
+    }
+    
+    serial_println!("[KERNEL] Initializing BSP APIC timer...");
+    // Initialize APIC timer at SCHED_HZ (100 Hz)
+    unsafe {
+        bsp_lapic.init_timer(lapic_frequency, config::SCHED_HZ);
+    }
+    serial_println!("[APIC] core0 timer @{}Hz", config::SCHED_HZ);
+    
     serial_println!("[KERNEL] Initializing SMP (bringing up Application Processors)...");
     // Initialize SMP and bring up Application Processors
     let cpu_count = match arch::x86_64::smp::init_smp(&mut bsp_lapic) {
@@ -646,9 +664,14 @@ pub extern "C" fn _start() -> ! {
     serial_println!("[KERNEL] ========================================");
     
     serial_println!("[KERNEL] Initializing timer interrupt...");
-    // Initialize timer interrupt at 100 Hz (10ms per tick)
+    // Initialize IDT and syscall handler
     unsafe {
-        sched::timer::init_timer(100);
+        sched::timer::init_idt();
+    }
+    
+    // Register APIC timer interrupt handler (for SMP mode)
+    unsafe {
+        sched::timer::init_apic_timer_handler();
     }
     
     serial_println!("[KERNEL] Enabling interrupts...");

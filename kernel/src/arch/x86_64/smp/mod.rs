@@ -80,6 +80,21 @@ pub extern "C" fn ap_entry64(cpu_id: usize) -> ! {
                        cpu_id, apic_id, actual_apic_id);
     }
     
+    // Calibrate APIC timer for this AP
+    let lapic_frequency = unsafe { lapic.calibrate_timer() };
+    
+    // Store calibrated frequency in AP per-CPU data
+    unsafe {
+        let percpu = percpu::percpu_current_mut();
+        percpu.lapic_timer_hz = lapic_frequency;
+    }
+    
+    // Initialize APIC timer at SCHED_HZ (100 Hz)
+    unsafe {
+        lapic.init_timer(lapic_frequency, crate::config::SCHED_HZ);
+    }
+    serial_println!("[APIC] core{} timer @{}Hz", cpu_id, crate::config::SCHED_HZ);
+    
     // Signal BSP that we are online
     CPU_ONLINE[cpu_id].store(true, Ordering::Release);
     CPU_COUNT.fetch_add(1, Ordering::SeqCst);
