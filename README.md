@@ -1,105 +1,137 @@
 # MelloOS
 
-MelloOS is a modern operating system built from scratch in Rust, focusing on safety, performance, and extensibility. The project demonstrates advanced OS concepts including memory management, preemptive multitasking, and hardware interrupt handling.
+A minimal x86_64 operating system kernel written in Rust, featuring preemptive multitasking, priority-based scheduling, system calls, and inter-process communication.
 
 ## 🌟 Features
 
-### Core System
-- ✨ **Bare-metal kernel** written in Rust (`no_std`)
-- 🚀 **UEFI boot** via Limine bootloader (v8.x)
-- 🖥️ **Framebuffer driver** with 8x8 bitmap font rendering
-- 📝 **Serial port** debugging output (COM1)
-- 🔧 **Automated build system** with Makefile
+### Phase 4: Advanced Scheduling, System Calls, and IPC (Current) ✅
 
-### Memory Management System
-- 🧠 **Physical Memory Manager (PMM)** - Bitmap-based frame allocator (4KB frames)
-- 📄 **Virtual Memory (Paging)** - 4-level page tables with per-section permissions
-- 💾 **Kernel Heap Allocator** - Buddy System algorithm (64B to 1MB blocks)
-- 🔒 **Security Features** - NX bit, write protection, memory zeroing, guard pages
+- **Priority-Based Scheduler**: Three-level priority system (High, Normal, Low) with O(1) task selection
+- **System Call Interface**: x86 `int 0x80` mechanism with 5 syscalls (write, exit, sleep, ipc_send, ipc_recv)
+- **Inter-Process Communication**: Port-based message passing with 256 ports and 16-message queues
+- **Sleep/Wake Mechanism**: Timer-based task suspension with automatic wake-up
+- **Userland Init Process**: First userland process demonstrating syscall and IPC usage
+- **Kernel Metrics**: Atomic counters tracking context switches, syscalls, and IPC operations
+- **Preemption Control**: Critical section support with preempt_disable/enable
 
-### Task Scheduler
-- ⚡ **Preemptive Multitasking** - Round-Robin scheduling (up to 64 tasks)
-- 🔄 **Context Switching** - Assembly-optimized (< 1 microsecond)
-- ⏱️ **Timer Interrupt System** - PIT at 100 Hz with PIC remapping
-- 🎯 **Fair Scheduling** - 10ms time slices, O(1) task selection
+### Phase 3: Task Scheduler ✅
 
-> 📚 **Detailed Architecture:** See [docs/architecture.md](docs/architecture.md)
+- **Preemptive Multitasking**: Multiple tasks run concurrently with automatic time-sharing
+- **Round-Robin Scheduling**: Fair CPU time distribution within same priority level
+- **Context Switching**: Assembly-optimized register save/restore (< 1μs per switch)
+- **Timer Interrupts**: PIT-based periodic interrupts at 100 Hz (10ms time slices)
+- **Task Management**: Task Control Blocks (TCB) with unique IDs, states, and priorities
+- **Per-Task Stacks**: Isolated 8KB stacks for each task
 
-## � Prernequisites
+### Phase 2: Memory Management ✅
 
-### Required Tools
+- **Physical Memory Manager (PMM)**: Bitmap-based frame allocator for 4KB pages
+- **Paging System**: 4-level page tables with per-section permissions (RX, R, RW+NX)
+- **Kernel Heap Allocator**: Buddy System algorithm (64B to 1MB blocks)
+- **Security Features**: NX bit support, write protection, memory zeroing, guard pages
+- **Memory Statistics**: Total/free memory tracking in MB
 
-1. **Rust Toolchain** (latest stable) - `rustup target add x86_64-unknown-none`
-2. **QEMU** (version 5.0+) - System emulator for x86_64
-3. **xorriso** - ISO 9660 filesystem creation tool
-4. **OVMF** (optional) - UEFI firmware for QEMU
-5. **Git** - Version control
+### Phase 1: Basic Kernel ✅
 
-### Installation
+- **UEFI Boot**: Limine bootloader integration
+- **Framebuffer Driver**: Pixel-level graphics with 8x8 bitmap font
+- **Serial Console**: COM1 output for debugging
+- **Panic Handler**: Basic error handling
 
-<details>
-<summary><b>macOS</b></summary>
+## 🏗️ Architecture
 
-```bash
-# Install Rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source $HOME/.cargo/env
-rustup target add x86_64-unknown-none
-
-# Install development tools
-brew install qemu xorriso git
-brew install --cask edk2-ovmf  # Optional
 ```
-</details>
-
-<details>
-<summary><b>Linux (Ubuntu/Debian)</b></summary>
-
-```bash
-# Install Rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source $HOME/.cargo/env
-rustup target add x86_64-unknown-none
-
-# Install development tools
-sudo apt update
-sudo apt install -y qemu-system-x86 xorriso ovmf git make
+┌─────────────────────────────────────────────────────────────┐
+│                     MelloOS Kernel                          │
+│                                                             │
+│  ┌───────────────┐  ┌──────────────┐  ┌─────────────────┐ │
+│  │  Framebuffer  │  │    Serial    │  │   Panic Handler │ │
+│  │    Driver     │  │     Port     │  │                 │ │
+│  └───────────────┘  └──────────────┘  └─────────────────┘ │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │           System Call Interface (sys/)               │  │
+│  │  - Syscall dispatcher (int 0x80)                     │  │
+│  │  - 5 syscalls: write, exit, sleep, ipc_send/recv    │  │
+│  │  - Kernel metrics collection                         │  │
+│  └──────────────────────────────────────────────────────┘  │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │           IPC Subsystem (sys/ipc.rs)                 │  │
+│  │  - Port-based message passing                        │  │
+│  │  - 256 ports with 16-message queues                  │  │
+│  │  - Blocking receive with FIFO wake policy            │  │
+│  └──────────────────────────────────────────────────────┘  │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │           Task Scheduler (sched/)                    │  │
+│  │  - Priority-based scheduling (High/Normal/Low)       │  │
+│  │  - Sleep/wake mechanism                              │  │
+│  │  - Context switching (< 1μs)                         │  │
+│  │  - Timer interrupts (100 Hz)                         │  │
+│  │  - Preemption control                                │  │
+│  └──────────────────────────────────────────────────────┘  │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │        Memory Management (mm/)                       │  │
+│  │  ┌────────────┐ ┌──────────┐ ┌──────────────────┐   │  │
+│  │  │    PMM     │ │  Paging  │ │  Heap Allocator  │   │  │
+│  │  │  (Bitmap)  │ │ (4-level)│ │ (Buddy System)   │   │  │
+│  │  └────────────┘ └──────────┘ └──────────────────┘   │  │
+│  └──────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Userland Processes                         │
+│  - Init process (PID 1)                                    │
+│  - Syscall wrappers for kernel services                    │
+└─────────────────────────────────────────────────────────────┘
 ```
-</details>
-
-<details>
-<summary><b>Linux (Arch)</b></summary>
-
-```bash
-# Install Rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source $HOME/.cargo/env
-rustup target add x86_64-unknown-none
-
-# Install development tools
-sudo pacman -S qemu-full xorriso edk2-ovmf git make
-```
-</details>
 
 ## 🚀 Quick Start
 
-```bash
-# Clone the repository
-git clone <repository-url>
-cd mellos
+### Prerequisites
 
-# Build and run in one command
-make run
+- Rust toolchain (nightly)
+- QEMU (for testing)
+- xorriso (for ISO creation)
+- make
+
+### Installation
+
+```bash
+# Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Add x86_64 target
+rustup target add x86_64-unknown-none
+
+# Install dependencies (Ubuntu/Debian)
+sudo apt install qemu-system-x86 xorriso ovmf
+
+# Install dependencies (macOS)
+brew install qemu xorriso
 ```
 
-### Build Commands
+### Building and Running
 
-| Command | Description |
-|---------|-------------|
-| `make build` | Compile kernel binary |
-| `make iso` | Create bootable ISO image |
-| `make run` | Build and run in QEMU |
-| `make clean` | Remove build artifacts |
+```bash
+# Build the kernel
+make build
+
+# Build userspace init process
+make userspace
+
+# Create bootable ISO
+make iso
+
+# Run in QEMU
+make run
+
+# Clean build artifacts
+make clean
+```
 
 ### Expected Output
 
@@ -114,16 +146,26 @@ Hello from MelloOS ✨
 [MM] ✓ PMM tests passed
 [MM] ✓ Paging tests passed
 [MM] ✓ Allocator tests passed
+[IPC] Initializing IPC subsystem...
+[IPC] Created 16 system ports (0-15)
 [SCHED] INFO: Initializing scheduler...
-[SCHED] INFO: Spawned task 1: Task A
-[SCHED] INFO: Spawned task 2: Task B
+[KERNEL] ========================================
+[KERNEL] Phase 4 Integration Tests
+[KERNEL] ========================================
+[KERNEL] Spawning Test 7.1: Priority scheduling test...
+[KERNEL] Spawning Test 7.2: Sleep/wake test...
+[KERNEL] Spawning Test 7.3: Syscall integration test...
+[KERNEL] Spawning Test 7.4: IPC integration test...
+[KERNEL] Spawning Test 7.5: IPC stress test...
+[KERNEL] Loading Test 7.6: Init process (end-to-end test)...
+[INIT] Init process task spawned successfully
 [TIMER] Timer initialized at 100 Hz
 [KERNEL] Boot complete! Entering idle loop...
-A
-[SCHED] Switch #1 → Task 2 (Task B)
-B
-[SCHED] Switch #2 → Task 1 (Task A)
-A
+[TEST-7.1] HIGH priority task executing (count: 0)
+[SYSCALL] Task 1 invoked SYS_SLEEP (id=2)
+[SCHED] Task 1 sleeping for 20 ticks (wake at tick 20)
+[IPC] Sent 4 bytes to port 1
+[USERLAND] Hello from userland! ✨
 ...
 ```
 
@@ -131,221 +173,360 @@ A
 
 ```
 mellos/
-├── kernel/src/
-│   ├── main.rs              # Kernel entry point
-│   ├── mm/                  # Memory management
-│   │   ├── pmm.rs           # Physical memory
-│   │   ├── paging.rs        # Virtual memory
-│   │   └── allocator.rs     # Heap allocator
-│   └── sched/               # Task scheduler
-│       ├── mod.rs           # Scheduler core
-│       ├── task.rs          # Task management
-│       ├── context.rs       # Context switching
-│       └── timer.rs         # Timer interrupts
-├── docs/                    # Documentation
-│   ├── architecture.md      # System architecture
-│   ├── api-guide.md         # API usage guide
-│   ├── testing.md           # Testing procedures
-│   └── troubleshooting.md   # Common issues
-├── .kiro/specs/             # Design specifications
-├── tools/                   # Development scripts
-└── Makefile                 # Build automation
+├── kernel/                 # Kernel source code
+│   ├── src/
+│   │   ├── main.rs        # Kernel entry point
+│   │   ├── framebuffer.rs # Graphics driver
+│   │   ├── serial.rs      # Serial port driver
+│   │   ├── panic.rs       # Panic handler
+│   │   ├── init_loader.rs # Init process loader
+│   │   ├── mm/            # Memory management
+│   │   │   ├── mod.rs     # MM coordinator
+│   │   │   ├── pmm.rs     # Physical memory manager
+│   │   │   ├── paging.rs  # Virtual memory
+│   │   │   ├── allocator.rs # Heap allocator
+│   │   │   └── log.rs     # MM logging utilities
+│   │   ├── sched/         # Task scheduler
+│   │   │   ├── mod.rs     # Scheduler core
+│   │   │   ├── task.rs    # Task management
+│   │   │   ├── context.rs # Context switching
+│   │   │   ├── priority.rs # Priority scheduler
+│   │   │   └── timer.rs   # Timer interrupts
+│   │   └── sys/           # System calls and IPC
+│   │       ├── mod.rs     # Syscall subsystem
+│   │       ├── syscall.rs # Syscall dispatcher
+│   │       ├── ipc.rs     # IPC structures
+│   │       └── port.rs    # Port management
+│   ├── userspace/         # Userland programs
+│   │   └── init/          # Init process
+│   │       ├── src/main.rs # Init entry point
+│   │       └── linker.ld  # Init linker script
+│   ├── Cargo.toml         # Kernel dependencies
+│   ├── build.rs           # Build script
+│   └── linker.ld          # Kernel linker script
+├── boot/
+│   └── limine.cfg         # Bootloader configuration
+├── tools/
+│   ├── qemu.sh            # QEMU launch script
+│   ├── test_boot.sh       # Boot test script
+│   └── verify_build.sh    # Build verification
+├── docs/                  # Documentation
+│   ├── architecture.md    # System architecture
+│   ├── api-guide.md       # API usage guide
+│   ├── testing.md         # Testing procedures
+│   ├── troubleshooting.md # Common issues
+│   ├── task-scheduler.md  # Scheduler details
+│   └── memory-management-logging.md
+├── Makefile               # Build system
+├── CHANGELOG.md           # Version history
+└── README.md              # This file
 ```
 
-## 💻 Development
+## 💻 System Calls
 
-### API Usage
+MelloOS provides 5 system calls accessible via `int 0x80`:
+
+| ID | Name | Arguments | Description |
+|----|------|-----------|-------------|
+| 0 | SYS_WRITE | (fd, buf, len) | Write data to serial output |
+| 1 | SYS_EXIT | (code) | Terminate current task |
+| 2 | SYS_SLEEP | (ticks) | Sleep for specified ticks |
+| 3 | SYS_IPC_SEND | (port_id, buf, len) | Send message to port |
+| 4 | SYS_IPC_RECV | (port_id, buf, len) | Receive message (blocking) |
+
+### Example: Using System Calls
 
 ```rust
-// Memory allocation
-let ptr = kmalloc(1024);
-if !ptr.is_null() {
-    // Use memory
-    kfree(ptr, 1024);
+// Userland code
+use core::arch::asm;
+
+fn syscall(id: usize, arg1: usize, arg2: usize, arg3: usize) -> isize {
+    let ret: isize;
+    unsafe {
+        asm!(
+            "int 0x80",
+            inout("rax") id => ret,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            options(nostack)
+        );
+    }
+    ret
 }
 
-// Task spawning
+// Write to serial
+let msg = "Hello from userland!\n";
+syscall(0, 0, msg.as_ptr() as usize, msg.len());
+
+// Sleep for 100 ticks
+syscall(2, 100, 0, 0);
+
+// Send IPC message
+let data = b"ping";
+syscall(3, 2, data.as_ptr() as usize, data.len());
+
+// Receive IPC message (blocking)
+let mut buf = [0u8; 64];
+let bytes = syscall(4, 1, buf.as_mut_ptr() as usize, buf.len());
+```
+
+## 📬 Inter-Process Communication (IPC)
+
+MelloOS implements port-based message passing:
+
+- **256 ports** (0-255) for communication endpoints
+- **16-message queues** per port (max 4096 bytes per message)
+- **Non-blocking send** (returns error if queue full)
+- **Blocking receive** (task sleeps until message arrives)
+- **FIFO wake policy** (first blocked task woken first)
+
+### Example: IPC Communication
+
+```rust
+// Sender task
+fn sender_task() -> ! {
+    loop {
+        let msg = b"ping";
+        sys_ipc_send(2, msg); // Send to port 2
+        sys_sleep(100);
+    }
+}
+
+// Receiver task
+fn receiver_task() -> ! {
+    loop {
+        let mut buf = [0u8; 64];
+        let bytes = sys_ipc_recv(1, &mut buf); // Receive from port 1
+        // Process message...
+    }
+}
+```
+
+## 🛠️ Development
+
+### Adding a New Task
+
+```rust
+use crate::sched::{spawn_task, priority::TaskPriority};
+
 fn my_task() -> ! {
     loop {
         serial_println!("Task running!");
+        
+        // Use syscalls
+        unsafe {
+            let msg = "Hello!\n";
+            syscall(0, 0, msg.as_ptr() as usize, msg.len());
+        }
+        
+        // Sleep
+        for _ in 0..1_000_000 {
+            unsafe { core::arch::asm!("nop"); }
+        }
     }
 }
-spawn_task("my_task", my_task).expect("Failed to spawn");
+
+// Spawn with priority
+spawn_task("my_task", my_task, TaskPriority::Normal)
+    .expect("Failed to spawn task");
 ```
 
-> 📚 **Complete API Guide:** See [docs/api-guide.md](docs/api-guide.md)
+### Memory Allocation
 
-### Testing
+```rust
+use crate::mm::allocator::{kmalloc, kfree};
+
+// Allocate 1KB
+let ptr = kmalloc(1024);
+if !ptr.is_null() {
+    // Use memory (automatically zeroed)
+    unsafe { *ptr = 0x42; }
+    
+    // Free when done
+    kfree(ptr, 1024);
+}
+```
+
+### Logging
+
+```rust
+// Serial output
+serial_println!("Debug message: {}", value);
+
+// Memory management logs
+mm_log!("Allocated frame at 0x{:x}", addr);
+mm_info!("Total memory: {} MB", total_mb);
+
+// Scheduler logs
+sched_log!("Context switch to task {}", task_id);
+sched_info!("Spawned task: {}", name);
+
+// Syscall logs (automatic)
+// [SYSCALL] Task 1 invoked SYS_WRITE (id=0)
+```
+
+## 🧪 Testing
+
+### Automated Tests
 
 ```bash
-# Run automated tests
+# Run build verification
 ./tools/verify_build.sh
 
-# Manual testing in QEMU
-make run
+# Test boot in QEMU
+./tools/test_boot.sh
 ```
 
-> 📚 **Testing Guide:** See [docs/testing.md](docs/testing.md)
+### Integration Tests
 
-### Troubleshooting
+The kernel includes comprehensive Phase 4 integration tests:
 
-Common issues and solutions:
+- **Test 7.1**: Priority scheduling (High/Normal/Low tasks)
+- **Test 7.2**: Sleep/wake mechanism
+- **Test 7.3**: Syscall integration (write, sleep)
+- **Test 7.4**: IPC integration (sender/receiver)
+- **Test 7.5**: IPC stress test (100 ping-pong messages)
+- **Test 7.6**: Init process (end-to-end system test)
 
-- **Build errors:** Check Rust toolchain and targets
-- **QEMU errors:** Verify QEMU installation and OVMF path
-- **Runtime errors:** Enable serial debugging and check logs
+Expected output shows tasks executing in priority order, successful IPC message passing, and proper sleep/wake behavior.
 
-> 📚 **Troubleshooting Guide:** See [docs/troubleshooting.md](docs/troubleshooting.md)
+### CI/CD
 
-## ✅ Current Status
+GitHub Actions automatically:
+- Builds the kernel on every push to `develop`
+- Runs verification tests
+- Creates release artifacts for tagged versions
+- Generates bootable ISO images
 
-### Completed Features
+## ⚡ Performance
 
-- ✅ **Phase 1:** Boot and Display
-- ✅ **Phase 2:** Memory Management (PMM, Paging, Heap)
-- ✅ **Phase 3:** Task Scheduler (Round-Robin, Context Switching, Timer)
+- **Context Switch**: < 1 microsecond
+- **Scheduler Overhead**: ~1% CPU at 100 Hz
+- **Task Selection**: O(1) with priority bitmap
+- **Memory Allocation**: O(log n) for buddy system
+- **IPC Send**: O(1) enqueue + O(1) wake
+- **IPC Receive**: O(1) dequeue (or block if empty)
 
-### Current Capabilities
+## 📊 Kernel Metrics
 
-**What MelloOS Can Do:**
-- Boot via UEFI with Limine bootloader
-- Manage physical and virtual memory
-- Allocate/free dynamic memory (kmalloc/kfree)
-- Run multiple tasks with preemptive multitasking
-- Context switch in < 1 microsecond
-- Handle timer interrupts at 100 Hz
+The kernel tracks various statistics:
 
-**Current Limitations:**
-- No keyboard/disk/network drivers
-- No user space (all code runs in kernel mode)
-- No file system or system calls
-- Single-core only (no SMP support)
-- No priority-based scheduling
+```rust
+pub struct KernelMetrics {
+    pub ctx_switches: AtomicUsize,      // Total context switches
+    pub preemptions: AtomicUsize,       // Preemptive switches
+    pub syscall_count: [AtomicUsize; 5], // Per-syscall counts
+    pub ipc_sends: AtomicUsize,         // IPC send operations
+    pub ipc_recvs: AtomicUsize,         // IPC receive operations
+    pub ipc_queue_full: AtomicUsize,    // Queue full errors
+    pub sleep_count: AtomicUsize,       // Tasks put to sleep
+    pub wake_count: AtomicUsize,        // Tasks woken
+    pub timer_ticks: AtomicUsize,       // Timer interrupts
+}
+```
 
 ## 🗺️ Roadmap
 
-| Phase | Status | Target | Description |
-|-------|--------|--------|-------------|
-| Phase 1 | ✅ Complete | - | Boot and Display |
-| Phase 2 | ✅ Complete | - | Memory Management |
-| Phase 3 | ✅ Complete | - | Task Scheduler |
-| Phase 4 | 🚧 Planned | Q2 2025 | Advanced Scheduling (priorities, sleep/wake) |
-| Phase 5 | 📋 Planned | Q3 2025 | SMP Support (multi-core) |
-| Phase 6 | 📋 Planned | Q4 2025 | User Space (ring 0/3, system calls) |
-| Phase 7 | 📋 Planned | 2026 | Device Drivers (keyboard, disk, network) |
-| Phase 8 | 📋 Planned | 2026 | File System (VFS, FAT32, ext2) |
+### Phase 5: User Space (Next)
+- [ ] User mode execution (Ring 3)
+- [ ] Process isolation with separate page tables
+- [ ] ELF binary loading
+- [ ] User/kernel memory separation
+- [ ] Copy-to/from-user validation
+- [ ] Separate user/kernel stacks
 
-<details>
-<summary><b>View Detailed Roadmap</b></summary>
+### Phase 6: File System
+- [ ] VFS (Virtual File System) layer
+- [ ] Simple file system implementation (FAT or custom)
+- [ ] Device file support (/dev)
+- [ ] File descriptors and file operations
 
-### Phase 4: Advanced Scheduling
-- Priority-based scheduling
-- Sleep/wake mechanisms
-- Wait queues
-- Scheduler statistics
-
-### Phase 5: SMP Support
-- Multi-core detection (ACPI)
-- Per-CPU data structures
-- Spinlocks and synchronization
-- Load balancing
-
-### Phase 6: User Space
-- Ring 0/3 separation
-- System call interface
-- Process management (fork, exec)
-- Address space isolation
-
-### Phase 7: Device Drivers
-- Driver framework
-- PS/2 keyboard/mouse
-- ATA/SATA/NVMe storage
-- E1000/Virtio-net network
-
-### Phase 8: File System
-- VFS abstraction
-- FAT32 (read/write)
-- ext2 (read-only)
-- Mounting and path resolution
-
-</details>
+### Phase 7: Advanced Features
+- [ ] Network stack (TCP/IP)
+- [ ] Device drivers (keyboard, disk, network)
+- [ ] Multi-core support (SMP)
+- [ ] Advanced scheduling (CFS, real-time)
+- [ ] Virtual memory management (demand paging, swap)
 
 ## 📚 Documentation
 
-- **[Architecture Guide](docs/architecture.md)** - System design and components
-- **[API Guide](docs/api-guide.md)** - How to use kernel APIs
-- **[Testing Guide](docs/testing.md)** - Testing procedures
-- **[Troubleshooting](docs/troubleshooting.md)** - Common issues and solutions
+Comprehensive documentation is available in the `docs/` directory:
 
-## 🧪 CI/CD
+- **[Architecture](docs/architecture.md)**: Detailed system architecture with diagrams
+- **[API Guide](docs/api-guide.md)**: API usage examples and best practices
+- **[Testing](docs/testing.md)**: Testing procedures and verification
+- **[Troubleshooting](docs/troubleshooting.md)**: Common issues and solutions
+- **[Task Scheduler](docs/task-scheduler.md)**: Scheduler implementation details
+- **[CHANGELOG](CHANGELOG.md)**: Version history and release notes
 
-### Automated Testing
+## 🔧 Technical Specifications
 
-GitHub Actions runs on every push to `develop`:
-- ✅ Build kernel
-- ✅ Create ISO
-- ✅ Run verification tests
-- ✅ Test bootability in QEMU
+### Memory Layout
 
-### Branch Protection
+```
+Virtual Address Space:
+0x0000_0000_0000_0000 - 0x0000_7FFF_FFFF_FFFF : User space (reserved)
+0x0000_0000_0040_0000 - 0x0000_0000_004F_FFFF : Init process (1MB)
+0xFFFF_8000_0000_0000 - 0xFFFF_9FFF_FFFF_FFFF : HHDM (direct physical mapping)
+0xFFFF_A000_0000_0000 - 0xFFFF_A000_00FF_FFFF : Kernel heap (16MB)
+0xFFFF_FFFF_8000_0000 - 0xFFFF_FFFF_FFFF_FFFF : Kernel code/data
+```
 
-Recommended settings for `develop` and `main` branches:
-- Require Pull Request reviews
-- Require status checks to pass
-- No direct pushes
+### Interrupt Vector Mapping
 
-See [.github/BRANCH_PROTECTION.md](.github/BRANCH_PROTECTION.md) for setup guide.
+```
+CPU Exceptions:      0-31   (Reserved by CPU)
+Timer (IRQ0):        32     (0x20) - PIT interrupt
+Keyboard (IRQ1):     33     (0x21) - Not yet implemented
+Other IRQs:          34-47  (0x22-0x2F) - Available
+Syscall:             128    (0x80) - System call interface
+```
 
-### Automated Releases
+### Task States
 
-Creating a version tag (e.g., `v1.0.0`) triggers:
-- Kernel build
-- ISO creation
-- GitHub Release with downloadable ISO
-
-## 🙏 Acknowledgments
-
-### Projects and Communities
-- **[Limine Bootloader](https://github.com/limine-bootloader/limine)** - Modern UEFI bootloader
-- **[Rust Embedded](https://github.com/rust-embedded)** - Embedded Rust tools
-- **[OSDev Wiki](https://wiki.osdev.org/)** - OS development resources
-- **[Phil Opp's Blog](https://os.phil-opp.com/)** - "Writing an OS in Rust"
-
-### Technical References
-- Intel 64 and IA-32 Architectures Software Developer's Manual
-- AMD64 Architecture Programmer's Manual
-- System V AMD64 ABI
-- xv6 (MIT) - Educational Unix-like OS
-- Linux Kernel source code
-
-## 📄 License
-
-This project is open source and available for educational purposes.
+```
+Ready → Running → Ready (preempted)
+  ↓       ↓
+  ↓       ↓→ Sleeping → Ready (woken)
+  ↓       ↓→ Blocked → Ready (message arrived)
+  ↓
+  └→ Dead (future)
+```
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please:
+This is an educational project demonstrating OS development in Rust. Contributions are welcome:
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
-4. Run tests (`make run` and verify output)
-5. Commit your changes (`git commit -m 'Add amazing feature'`)
-6. Push to the branch (`git push origin feature/amazing-feature`)
-7. Open a Pull Request
+- Report bugs and issues
+- Suggest improvements and features
+- Submit pull requests
+- Improve documentation
 
-### Code Style
-- Follow Rust standard formatting (`cargo fmt`)
-- Run Clippy for lints (`cargo clippy`)
-- Add comments for complex logic
-- Update documentation for API changes
+Please follow the existing code style and include tests for new features.
+
+## 📄 License
+
+This project is open source and available under the MIT License.
+
+## 🙏 Acknowledgments
+
+- [Limine Bootloader](https://github.com/limine-bootloader/limine) - Modern UEFI bootloader
+- [OSDev Wiki](https://wiki.osdev.org/) - Comprehensive OS development resources
+- [Writing an OS in Rust](https://os.phil-opp.com/) - Excellent tutorial series
+- [xv6](https://github.com/mit-pdos/xv6-public) - Educational Unix-like OS
+- Rust embedded and OS development community
+
+## 📖 References
+
+- [Intel 64 and IA-32 Architectures Software Developer's Manual](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html)
+- [System V AMD64 ABI](https://refspecs.linuxbase.org/elf/x86_64-abi-0.99.pdf)
+- [OSDev Wiki: Interrupts](https://wiki.osdev.org/Interrupts)
+- [OSDev Wiki: System Calls](https://wiki.osdev.org/System_Calls)
 
 ## 📞 Contact
 
-For questions or discussions:
-- Open an issue on GitHub
-- Check the [documentation](docs/)
-- Review the [specifications](.kiro/specs/)
+For questions or discussions, please open an issue on GitHub.
 
 ---
 
