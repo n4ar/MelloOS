@@ -30,6 +30,8 @@ all: build
 
 # Build the kernel
 build:
+	@echo "$(COLOR_BLUE)Cleaning previous build...$(COLOR_RESET)"
+	@cd $(KERNEL_DIR) && $(CARGO) clean
 	@echo "$(COLOR_BLUE)Building MelloOS kernel...$(COLOR_RESET)"
 	@cd $(KERNEL_DIR) && $(CARGO) build $(CARGO_BUILD_FLAGS)
 	@echo "$(COLOR_GREEN)✓ Kernel built successfully!$(COLOR_RESET)"
