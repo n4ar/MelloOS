@@ -570,6 +570,14 @@ pub extern "C" fn _start() -> ! {
         serial_println!("[SMP] BSP online (apic_id={})", bsp_apic_id);
     }
     
+    serial_println!("[KERNEL] Initializing BSP per-CPU data...");
+    // Initialize BSP per-CPU data structure
+    unsafe {
+        arch::x86_64::smp::percpu::init_percpu(0, bsp_apic_id);
+        arch::x86_64::smp::percpu::setup_gs_base(0);
+    }
+    serial_println!("[PERCPU] BSP per-CPU data initialized (cpu_id=0, apic_id={})", bsp_apic_id);
+    
     serial_println!("[KERNEL] Writing message to screen...");
     // Display "Hello from MelloOS ✨" message
     // White text on black background, positioned at (100, 100)
