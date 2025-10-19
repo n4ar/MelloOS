@@ -276,8 +276,6 @@ Common issues and solutions:
 - **[API Guide](docs/api-guide.md)** - How to use kernel APIs
 - **[Testing Guide](docs/testing.md)** - Testing procedures
 - **[Troubleshooting](docs/troubleshooting.md)** - Common issues and solutions
-- **[Memory Management Spec](.kiro/specs/memory-management/)** - MM design
-- **[Task Scheduler Spec](.kiro/specs/task-scheduler/)** - Scheduler design
 
 ## 🧪 CI/CD
 
