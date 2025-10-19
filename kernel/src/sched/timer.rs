@@ -562,6 +562,117 @@ pub unsafe fn init_apic_timer_handler() {
     serial_println!("[TIMER] APIC timer handler registered successfully");
 }
 
+// ============================================================================
+// RESCHEDULE IPI Handler (for SMP)
+// ============================================================================
+
+/// RESCHEDULE_IPI interrupt handler wrapper
+///
+/// This is a naked function that saves/restores registers and calls the actual handler.
+/// This handler is used for RESCHEDULE_IPI interrupts (vector 0x30) in SMP mode.
+#[unsafe(naked)]
+extern "C" fn reschedule_ipi_handler_wrapper() {
+    core::arch::naked_asm!(
+        // The CPU has already pushed SS, RSP, RFLAGS, CS, RIP
+        // We need to save all other registers
+        
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        
+        // Call the actual handler
+        "call {handler}",
+        
+        // Restore registers
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rax",
+        
+        // Return from interrupt (pops RIP, CS, RFLAGS, RSP, SS)
+        "iretq",
+        
+        handler = sym reschedule_ipi_handler,
+    )
+}
+
+/// RESCHEDULE_IPI interrupt handler
+///
+/// This function is called when a RESCHEDULE_IPI (vector 0x30) is received.
+/// It triggers the scheduler on the current core to preempt the current task
+/// and select a new one from the runqueue.
+///
+/// This IPI is sent when:
+/// - A new task is enqueued to this CPU
+/// - A task is migrated to this CPU during load balancing
+/// - A task on this CPU needs to be woken up
+///
+/// # Notes
+/// - The CPU automatically disables interrupts (IF=0) when entering this handler
+/// - The scheduler tick() function performs a context switch and doesn't return
+/// - This is a "tail-switch" - we don't return to this handler
+extern "C" fn reschedule_ipi_handler() {
+    use crate::arch::x86_64::apic::LocalApic;
+    use crate::arch::x86_64::acpi::get_madt_info;
+    
+    // Send EOI to Local APIC
+    unsafe {
+        let madt_info = get_madt_info().expect("MADT info not available");
+        let mut lapic = LocalApic::new(madt_info.lapic_address);
+        lapic.eoi();
+    }
+    
+    // Call scheduler tick to perform context switch
+    // Note: This doesn't return - it performs a tail-switch
+    crate::sched::tick();
+    
+    // Note: We never reach here because tick() does a tail-switch
+}
+
+/// Initialize RESCHEDULE_IPI interrupt handler in IDT
+///
+/// This function registers the RESCHEDULE_IPI interrupt handler at vector 0x30
+/// in the IDT. It should be called during SMP initialization.
+///
+/// # Safety
+/// This function is unsafe because it modifies the global IDT.
+/// It must be called during kernel initialization.
+pub unsafe fn init_reschedule_ipi_handler() {
+    use crate::serial_println;
+    
+    serial_println!("[IPI] Registering RESCHEDULE_IPI handler at vector 0x30...");
+    
+    // Get the code segment selector
+    let code_selector: u16 = 0x28; // Limine sets up GDT with kernel code at 0x28
+    
+    // Validate handler address
+    let handler_addr = reschedule_ipi_handler_wrapper as usize;
+    if handler_addr == 0 {
+        panic!("[IPI] CRITICAL: RESCHEDULE_IPI handler address is null");
+    }
+    
+    // Set RESCHEDULE_IPI handler at vector 0x30 (48)
+    IDT.entries[0x30].set_handler(handler_addr, code_selector);
+    
+    // Validate IDT setup
+    if IDT.entries[0x30].offset_low == 0 && IDT.entries[0x30].offset_mid == 0 && IDT.entries[0x30].offset_high == 0 {
+        panic!("[IPI] CRITICAL: Failed to set RESCHEDULE_IPI handler in IDT");
+    }
+    
+    serial_println!("[IPI] RESCHEDULE_IPI handler registered successfully");
+}
+
 /// Manual test functions for timer interrupt system
 #[cfg(not(test))]
 pub mod manual_tests {

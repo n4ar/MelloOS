@@ -674,6 +674,11 @@ pub extern "C" fn _start() -> ! {
         sched::timer::init_apic_timer_handler();
     }
     
+    // Register RESCHEDULE_IPI interrupt handler (for SMP mode)
+    unsafe {
+        sched::timer::init_reschedule_ipi_handler();
+    }
+    
     serial_println!("[KERNEL] Enabling interrupts...");
     // Enable interrupts to start task switching
     unsafe {

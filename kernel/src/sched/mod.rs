@@ -527,6 +527,8 @@ pub fn get_task_mut(task_id: TaskId) -> Option<&'static mut Task> {
 /// Enqueue a task to a CPU runqueue
 ///
 /// Assigns the task to the CPU with the smallest runqueue, or to a specific CPU if specified.
+/// If the task is enqueued to a remote CPU (not the current CPU), sends a RESCHEDULE_IPI
+/// to wake up that CPU and schedule the new task.
 ///
 /// # Arguments
 /// * `task_id` - The task to enqueue
@@ -564,6 +566,9 @@ pub fn enqueue_task(task_id: TaskId, target_cpu: Option<usize>) {
         min_cpu
     };
     
+    // Get current CPU ID to check if this is a remote enqueue
+    let current_cpu = percpu_current().id;
+    
     // Enqueue task to selected CPU's runqueue
     let percpu = percpu_for(cpu_id);
     let mut runqueue = percpu.runqueue.lock();
@@ -572,6 +577,15 @@ pub fn enqueue_task(task_id: TaskId, target_cpu: Option<usize>) {
         sched_error!("Failed to enqueue task {} to CPU {} (runqueue full)", task_id, cpu_id);
     } else {
         sched_log!("Enqueued task {} to CPU {} (runqueue size: {})", task_id, cpu_id, runqueue.len());
+        
+        // Drop the runqueue lock before sending IPI
+        drop(runqueue);
+        
+        // If we enqueued to a remote CPU, send RESCHEDULE_IPI to wake it up
+        if cpu_id != current_cpu && cpu_count > 1 {
+            use crate::arch::x86_64::apic::ipi::send_reschedule_ipi;
+            send_reschedule_ipi(cpu_id);
+        }
     }
 }
 
@@ -692,7 +706,16 @@ pub fn migrate_task(task_id: TaskId, from_cpu: usize, to_cpu: usize) -> bool {
         return false;
     }
     
+    // Drop locks before sending IPI
+    drop(runqueue_first);
+    drop(runqueue_second);
+    
     sched_log!("Migrated task {} from CPU {} to CPU {}", task_id, from_cpu, to_cpu);
+    
+    // Send RESCHEDULE_IPI to destination CPU to schedule the migrated task
+    use crate::arch::x86_64::apic::ipi::send_reschedule_ipi;
+    send_reschedule_ipi(to_cpu);
+    
     true
 }
 

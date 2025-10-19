@@ -2,6 +2,8 @@
 /// This module provides Local APIC management, timer configuration,
 /// and Inter-Processor Interrupt (IPI) functionality.
 
+pub mod ipi;
+
 use core::ptr::{read_volatile, write_volatile};
 
 // ============================================================================
