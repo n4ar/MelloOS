@@ -578,6 +578,24 @@ pub extern "C" fn _start() -> ! {
     }
     serial_println!("[PERCPU] BSP per-CPU data initialized (cpu_id=0, apic_id={})", bsp_apic_id);
     
+    serial_println!("[KERNEL] Initializing SMP (bringing up Application Processors)...");
+    // Initialize SMP and bring up Application Processors
+    let cpu_count = match arch::x86_64::smp::init_smp(&mut bsp_lapic) {
+        Ok(count) => {
+            serial_println!("[SMP] Successfully initialized {} CPUs", count);
+            count
+        }
+        Err(e) => {
+            serial_println!("[SMP] Warning: SMP initialization failed: {}", e);
+            serial_println!("[SMP] Continuing with BSP only (single-core mode)");
+            1 // BSP only
+        }
+    };
+    
+    // Store CPU count globally
+    static CPU_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+    CPU_COUNT.store(cpu_count, core::sync::atomic::Ordering::SeqCst);
+    
     serial_println!("[KERNEL] Writing message to screen...");
     // Display "Hello from MelloOS ✨" message
     // White text on black background, positioned at (100, 100)
