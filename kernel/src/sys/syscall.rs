@@ -46,21 +46,39 @@ pub extern "C" fn syscall_entry() {
         "cld",
         
         // Prepare arguments for syscall_dispatcher
+        // Stack layout after all pushes (each register = 8 bytes):
+        // [rsp + 0]  = r15
+        // [rsp + 8]  = r14
+        // [rsp + 16] = r13
+        // [rsp + 24] = r12
+        // [rsp + 32] = rbp
+        // [rsp + 40] = rbx
+        // [rsp + 48] = r11
+        // [rsp + 56] = r10
+        // [rsp + 64] = r9
+        // [rsp + 72] = r8
+        // [rsp + 80] = rdi (arg1) ← we need this
+        // [rsp + 88] = rsi (arg2) ← we need this
+        // [rsp + 96] = rdx (arg3) ← we need this
+        // [rsp + 104] = rcx
+        // [rsp + 112] = rax (syscall_id)
+        
         // RDI = syscall_id (from RAX)
-        // RSI = arg1 (from RDI)
-        // RDX = arg2 (from RSI)
-        // RCX = arg3 (from RDX)
+        // RSI = arg1 (from original RDI)
+        // RDX = arg2 (from original RSI)
+        // RCX = arg3 (from original RDX)
         "mov rdi, rax",           // syscall_id
-        "mov rsi, [rsp + 120]",   // arg1 (original RDI, saved on stack)
-        "mov rdx, [rsp + 112]",   // arg2 (original RSI, saved on stack)
-        "mov rcx, [rsp + 104]",   // arg3 (original RDX, saved on stack)
+        "mov rsi, [rsp + 80]",    // arg1 (original RDI)
+        "mov rdx, [rsp + 88]",    // arg2 (original RSI)
+        "mov rcx, [rsp + 96]",    // arg3 (original RDX)
         
         // Call the dispatcher
         "call {dispatcher}",
         
         // RAX now contains the return value
-        // Save it temporarily
-        "mov r15, rax",
+        // We need to preserve it while restoring other registers
+        // Use the stack slot where we saved RAX (syscall_id)
+        "mov [rsp + 112], rax",   // Save return value to old RAX slot
         
         // Restore callee-saved registers
         "pop r15",
@@ -79,10 +97,9 @@ pub extern "C" fn syscall_entry() {
         "pop rsi",
         "pop rdx",
         "pop rcx",
-        "add rsp, 8",    // Skip saved RAX
         
-        // Restore return value to RAX
-        "mov rax, r15",
+        // Restore return value to RAX (from the slot we saved it to)
+        "pop rax",    // This pops the return value we saved earlier
         
         // Return from interrupt (pops RIP, CS, RFLAGS, RSP, SS)
         "iretq",
