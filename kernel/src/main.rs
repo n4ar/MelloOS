@@ -15,7 +15,7 @@ mod sync;
 
 use sched::{init_scheduler, spawn_task, priority::TaskPriority};
 
-use limine::request::FramebufferRequest;
+use limine::request::{FramebufferRequest, RsdpRequest};
 
 /// Limine framebuffer request
 /// This static variable is placed in the .requests section so that
@@ -23,6 +23,13 @@ use limine::request::FramebufferRequest;
 #[used]
 #[link_section = ".requests"]
 static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
+
+/// Limine RSDP request
+/// This static variable is placed in the .requests section so that
+/// the Limine bootloader can find it and provide RSDP address for ACPI
+#[used]
+#[link_section = ".requests"]
+static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
 
 /// Demonstration task A - prints "A" in a loop
 fn task_a() -> ! {
@@ -526,6 +533,17 @@ pub extern "C" fn _start() -> ! {
     // Initialize memory management system
     // This must be called after framebuffer setup but before any dynamic memory allocation
     mm::init_memory();
+    
+    serial_println!("[KERNEL] Initializing ACPI...");
+    // Get RSDP address from Limine
+    let rsdp_response = RSDP_REQUEST
+        .get_response()
+        .expect("Failed to get RSDP response from Limine");
+    let rsdp_addr = rsdp_response.address() as u64;
+    
+    // Parse ACPI MADT to detect CPUs
+    arch::x86_64::acpi::init_acpi(rsdp_addr)
+        .expect("Failed to initialize ACPI");
     
     serial_println!("[KERNEL] Writing message to screen...");
     // Display "Hello from MelloOS ✨" message
