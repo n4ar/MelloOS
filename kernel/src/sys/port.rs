@@ -282,15 +282,15 @@ impl PortManager {
             
             // Update task state to Ready and add to scheduler
             // We need to get the task's priority first
-            if let Some((_, priority)) = crate::sched::get_task_priority(task_id) {
+            if let Some((_, _priority)) = crate::sched::get_task_priority(task_id) {
                 // Mark task as Ready
                 if let Some(task) = crate::sched::get_task_mut(task_id) {
                     task.state = crate::sched::task::TaskState::Ready;
                     task.blocked_on_port = None;
                 }
                 
-                // Add task back to scheduler
-                crate::sched::enqueue_task(task_id, priority);
+                // Add task back to scheduler (will select CPU with smallest runqueue)
+                crate::sched::enqueue_task(task_id, None);
             }
         }
         

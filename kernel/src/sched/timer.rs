@@ -478,13 +478,17 @@ extern "C" fn apic_timer_interrupt_handler_wrapper() {
     )
 }
 
+/// Global counter for load balancing (tracks ticks for 100ms intervals)
+static BALANCE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
 /// APIC timer interrupt handler
 ///
 /// This function is called when an APIC timer interrupt (vector 0x20) occurs.
 /// It:
 /// 1. Increments the per-CPU tick counter
 /// 2. Sends EOI to the Local APIC
-/// 3. Calls the scheduler tick function for the current core
+/// 3. Performs load balancing every 100ms (10 ticks at 100Hz)
+/// 4. Calls the scheduler tick function for the current core
 ///
 /// # Notes
 /// - The CPU automatically disables interrupts (IF=0) when entering this handler
@@ -503,13 +507,19 @@ extern "C" fn apic_timer_interrupt_handler() {
     percpu.ticks.fetch_add(1, Ordering::Relaxed);
     
     // Also increment global tick counter for compatibility
-    TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
+    let global_ticks = TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
     
     // Send EOI to Local APIC
     unsafe {
         let madt_info = get_madt_info().expect("MADT info not available");
         let mut lapic = LocalApic::new(madt_info.lapic_address);
         lapic.eoi();
+    }
+    
+    // Perform load balancing every 100ms (10 ticks at 100Hz)
+    // Only CPU 0 performs load balancing to avoid conflicts
+    if percpu.id == 0 && global_ticks % 10 == 0 {
+        crate::sched::balance_load();
     }
     
     // Call scheduler tick (this performs context switch and doesn't return)
