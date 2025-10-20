@@ -1,6 +1,5 @@
 /// Framebuffer driver for MelloOS
 /// Provides pixel-level access to the screen through memory-mapped I/O
-
 use limine::framebuffer::Framebuffer as LimineFramebuffer;
 
 /// Represents a framebuffer for drawing to the screen
@@ -92,7 +91,7 @@ impl Framebuffer {
     /// * `bg_color` - Background color in 0xRRGGBB format
     pub fn draw_char(&mut self, c: char, x: usize, y: usize, fg_color: u32, bg_color: u32) {
         let glyph = get_font_glyph(c);
-        
+
         for row in 0..8 {
             for col in 0..8 {
                 let bit = (glyph[row] >> (7 - col)) & 1;
@@ -113,7 +112,7 @@ impl Framebuffer {
     pub fn write_string(&mut self, text: &str, x: usize, y: usize, fg_color: u32, bg_color: u32) {
         let mut current_x = x;
         let mut current_y = y;
-        
+
         for c in text.chars() {
             // Handle newline
             if c == '\n' {
@@ -121,18 +120,18 @@ impl Framebuffer {
                 current_y += 8;
                 continue;
             }
-            
+
             // Handle wrapping
             if current_x + 8 > self.width {
                 current_x = x;
                 current_y += 8;
             }
-            
+
             // Stop if we've reached the bottom of the screen
             if current_y + 8 > self.height {
                 break;
             }
-            
+
             self.draw_char(c, current_x, current_y, fg_color, bg_color);
             current_x += 8;
         }

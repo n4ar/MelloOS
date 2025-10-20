@@ -67,7 +67,7 @@ syscall_entry_fast:
     # arg6 is already on stack at correct position
     
     # 5. Call dispatcher
-    call syscall_dispatcher_enhanced
+    call syscall_dispatcher
     
     # 6. Restore user context
     pop %r9          # arg6
@@ -86,11 +86,16 @@ syscall_entry_fast:
     # User addresses should have bits 63:47 all 0
     
     # Check RIP canonical (user space should be < 0x0000800000000000)
-    test $0xFFFF800000000000, %rcx
+    # Use bit shift to check if high bits are set
+    mov %rcx, %rax
+    shr $47, %rax
+    test %rax, %rax
     jnz .bad_return_rip
     
     # Check RSP canonical (user space should be < 0x0000800000000000)  
-    test $0xFFFF800000000000, %r12
+    mov %r12, %rax
+    shr $47, %rax
+    test %rax, %rax
     jnz .bad_return_rsp
     
     # 8. Restore user RSP
@@ -123,9 +128,5 @@ syscall_entry_fast:
     call handle_bad_syscall_return
     ud2              # Should never return
 
-# Handler for bad syscall returns (implemented in Rust)
-# This is just a stub - the actual implementation is in mod.rs
-handle_bad_syscall_return:
-    # This function is implemented in Rust
-    # It will terminate the process and never return
-    ud2
+# Note: handle_bad_syscall_return is implemented in Rust (mod.rs)
+# No assembly stub needed - the Rust function will be linked

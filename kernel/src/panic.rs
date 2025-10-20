@@ -6,7 +6,7 @@ use core::panic::PanicInfo;
 fn panic(_info: &PanicInfo) -> ! {
     // TODO: Display panic message on framebuffer when available
     // For now, just halt the CPU
-    
+
     loop {
         // Halt instruction to reduce CPU usage while in panic state
         unsafe {

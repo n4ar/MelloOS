@@ -1,20 +1,19 @@
 /// SpinLock implementation for multi-core synchronization
-/// 
+///
 /// This module provides a spinlock primitive that uses atomic operations
 /// and exponential backoff to efficiently synchronize access to shared data
 /// across multiple CPU cores.
-
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// A mutual exclusion primitive useful for protecting shared data
-/// 
+///
 /// This spinlock will block threads waiting for the lock to become available.
 /// The lock is automatically released when the guard goes out of scope.
-/// 
+///
 /// # Examples
-/// 
+///
 /// ```
 /// let lock = SpinLock::new(5);
 /// {
@@ -28,7 +27,7 @@ pub struct SpinLock<T> {
 }
 
 /// A guard that provides mutable access to the data protected by a SpinLock
-/// 
+///
 /// When the guard is dropped, the lock is automatically released.
 pub struct SpinLockGuard<'a, T> {
     lock: &'a SpinLock<T>,
@@ -47,11 +46,11 @@ impl<T> SpinLock<T> {
     }
 
     /// Acquires the lock, blocking the current thread until it is available
-    /// 
+    ///
     /// This function will block until the lock is acquired. It uses exponential
     /// backoff to reduce bus contention when multiple cores are competing for
     /// the same lock.
-    /// 
+    ///
     /// Returns a guard that will automatically release the lock when dropped.
     pub fn lock(&self) -> SpinLockGuard<T> {
         let mut backoff = 1;
@@ -81,10 +80,10 @@ impl<T> SpinLock<T> {
     }
 
     /// Attempts to acquire the lock without blocking
-    /// 
+    ///
     /// Returns `Some(SpinLockGuard)` if the lock was successfully acquired,
     /// or `None` if the lock is currently held by another thread.
-    /// 
+    ///
     /// This function does not block and will return immediately.
     pub fn try_lock(&self) -> Option<SpinLockGuard<T>> {
         // Try to acquire the lock once
@@ -145,16 +144,16 @@ impl<T: core::fmt::Debug> core::fmt::Debug for SpinLockGuard<'_, T> {
 }
 
 /// An IRQ-safe spinlock that disables interrupts while the lock is held
-/// 
+///
 /// This variant of SpinLock saves the interrupt flag state (RFLAGS) and
 /// disables interrupts when acquiring the lock. When the guard is dropped,
 /// the original interrupt state is restored.
-/// 
+///
 /// This is necessary when the same lock might be accessed from both normal
 /// code and interrupt handlers, preventing deadlocks.
-/// 
+///
 /// # Examples
-/// 
+///
 /// ```
 /// let lock = IrqSpinLock::new(5);
 /// {
@@ -167,7 +166,7 @@ pub struct IrqSpinLock<T> {
 }
 
 /// A guard that provides mutable access to data protected by an IrqSpinLock
-/// 
+///
 /// When the guard is dropped, the lock is released and the saved interrupt
 /// state is restored.
 pub struct IrqSpinLockGuard<'a, T> {
@@ -187,41 +186,41 @@ impl<T> IrqSpinLock<T> {
     }
 
     /// Acquires the lock, disabling interrupts
-    /// 
+    ///
     /// This function saves the current RFLAGS register (including the interrupt
     /// flag), disables interrupts, and then acquires the lock. When the returned
     /// guard is dropped, the lock is released and the original interrupt state
     /// is restored.
-    /// 
+    ///
     /// Returns a guard that will automatically release the lock and restore
     /// interrupts when dropped.
     pub fn lock(&self) -> IrqSpinLockGuard<T> {
         // Save current RFLAGS register
         let flags = unsafe { save_flags() };
-        
+
         // Disable interrupts
         unsafe { disable_interrupts() };
-        
+
         // Acquire the inner spinlock
         let guard = self.inner.lock();
-        
+
         IrqSpinLockGuard { guard, flags }
     }
 
     /// Attempts to acquire the lock without blocking, disabling interrupts
-    /// 
+    ///
     /// Returns `Some(IrqSpinLockGuard)` if the lock was successfully acquired,
     /// or `None` if the lock is currently held by another thread.
-    /// 
+    ///
     /// If the lock cannot be acquired, interrupts are not disabled and the
     /// original interrupt state is preserved.
     pub fn try_lock(&self) -> Option<IrqSpinLockGuard<T>> {
         // Save current RFLAGS register
         let flags = unsafe { save_flags() };
-        
+
         // Disable interrupts
         unsafe { disable_interrupts() };
-        
+
         // Try to acquire the inner spinlock
         match self.inner.try_lock() {
             Some(guard) => Some(IrqSpinLockGuard { guard, flags }),
@@ -278,7 +277,7 @@ impl<T: core::fmt::Debug> core::fmt::Debug for IrqSpinLockGuard<'_, T> {
 }
 
 /// Save the current RFLAGS register value
-/// 
+///
 /// Returns the RFLAGS value which includes the interrupt enable flag (IF)
 #[inline]
 unsafe fn save_flags() -> u64 {
@@ -299,7 +298,7 @@ unsafe fn disable_interrupts() {
 }
 
 /// Restore the RFLAGS register to a previously saved value
-/// 
+///
 /// This restores the interrupt enable flag (IF) to its previous state
 #[inline]
 unsafe fn restore_flags(flags: u64) {

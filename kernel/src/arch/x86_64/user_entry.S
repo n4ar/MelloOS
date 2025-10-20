@@ -100,12 +100,16 @@ user_entry_trampoline:
 
 /* Error handlers for invalid transitions */
 .invalid_entry:
-    movq $0xDEAD0001, %rdi         /* Error code for invalid entry point */
-    call kernel_panic_invalid_user_transition
+    /* Invalid entry point - halt the system */
+    cli
+    hlt
+    jmp .invalid_entry
     
 .invalid_stack:
-    movq $0xDEAD0002, %rdi         /* Error code for invalid stack */
-    call kernel_panic_invalid_user_transition
+    /* Invalid stack pointer - halt the system */
+    cli
+    hlt
+    jmp .invalid_stack
 
 .size user_entry_trampoline, . - user_entry_trampoline
 

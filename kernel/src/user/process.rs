@@ -36,19 +36,19 @@ pub const USER_STACK_SIZE: usize = 8192; // 8KB
 pub enum ProcessState {
     /// Process is ready to run and waiting in the runqueue
     Ready,
-    
+
     /// Process is currently running on the CPU
     Running,
-    
+
     /// Process is sleeping (waiting for wake_tick)
     Sleeping,
-    
+
     /// Process is blocked on I/O or IPC
     Blocked,
-    
+
     /// Process has terminated, waiting for parent to collect exit code
     Zombie,
-    
+
     /// Process has been fully cleaned up and can be reused
     Terminated,
 }
@@ -58,10 +58,10 @@ pub enum ProcessState {
 pub enum BlockReason {
     /// Blocked waiting for child process to exit
     WaitingForChild,
-    
+
     /// Blocked on IPC receive
     IpcReceive(usize), // port_id
-    
+
     /// Blocked on I/O operation
     IoOperation,
 }
@@ -71,7 +71,7 @@ pub enum BlockReason {
 pub struct FileDescriptor {
     /// File descriptor number
     pub fd: usize,
-    
+
     /// File type (placeholder)
     pub file_type: FileType,
 }
@@ -81,13 +81,13 @@ pub struct FileDescriptor {
 pub enum FileType {
     /// Standard input/output/error
     StandardStream,
-    
+
     /// Regular file
     RegularFile,
-    
+
     /// Directory
     Directory,
-    
+
     /// Device file
     Device,
 }
@@ -97,34 +97,34 @@ pub enum FileType {
 pub enum ProcessError {
     /// Process not found
     ProcessNotFound,
-    
+
     /// Process table is full
     ProcessTableFull,
-    
+
     /// Invalid process ID
     InvalidProcessId,
-    
+
     /// Out of memory
     OutOfMemory,
-    
+
     /// Permission denied
     PermissionDenied,
-    
+
     /// Invalid memory region
     InvalidMemoryRegion,
-    
+
     /// Memory region overlap
     RegionOverlap,
-    
+
     /// Too many memory regions
     TooManyRegions,
-    
+
     /// Invalid user address
     InvalidUserAddress,
-    
+
     /// Process is in wrong state for operation
     InvalidState,
-    
+
     /// Would block (for non-blocking operations)
     WouldBlock,
 }
@@ -139,46 +139,46 @@ pub type ProcessResult<T> = Result<T, ProcessError>;
 pub struct Process {
     /// Unique process identifier
     pub pid: ProcessId,
-    
+
     /// Parent process ID (None for init process)
     pub parent_pid: Option<ProcessId>,
-    
+
     /// Current state of the process
     pub state: ProcessState,
-    
+
     /// Exit code (set when process terminates)
     pub exit_code: Option<i32>,
-    
+
     /// CPU context (saved registers)
     pub context: CpuContext,
-    
+
     /// Process priority level
     pub priority: TaskPriority,
-    
+
     /// Tick at which to wake the process (if sleeping)
     pub wake_tick: Option<u64>,
-    
+
     /// Block reason (if blocked)
     pub block_reason: Option<BlockReason>,
-    
+
     /// Process page table (for memory isolation)
     pub page_table: Option<PageTable>,
-    
+
     /// Memory regions for this process (Code, Data, BSS, Stack, Heap)
     pub memory_regions: [Option<MemoryRegion>; MAX_MEMORY_REGIONS],
-    
+
     /// Number of active memory regions
     pub region_count: usize,
-    
+
     /// File descriptor table (for future use)
     pub fd_table: [Option<FileDescriptor>; MAX_FDS],
-    
+
     /// Process name (for debugging)
     pub name: [u8; 16],
-    
+
     /// Process creation time (in ticks)
     pub creation_time: u64,
-    
+
     /// Total CPU time used (in ticks)
     pub cpu_time: u64,
 }
@@ -211,7 +211,7 @@ impl Process {
             cpu_time: 0,
         }
     }
-    
+
     /// Set the process name (for debugging)
     ///
     /// # Arguments
@@ -222,7 +222,7 @@ impl Process {
         self.name[..len].copy_from_slice(&bytes[..len]);
         self.name[len] = 0; // Null terminator
     }
-    
+
     /// Get the process name as a string
     ///
     /// # Returns
@@ -232,7 +232,7 @@ impl Process {
         let len = self.name.iter().position(|&b| b == 0).unwrap_or(16);
         core::str::from_utf8(&self.name[..len]).unwrap_or("<invalid>")
     }
-    
+
     /// Add a memory region to this process
     ///
     /// Validates the region and ensures no overlaps with existing regions.
@@ -248,12 +248,12 @@ impl Process {
         if region.start >= region.end {
             return Err(ProcessError::InvalidMemoryRegion);
         }
-        
+
         // Ensure region is in user space
         if region.start >= USER_LIMIT || region.end > USER_LIMIT {
             return Err(ProcessError::InvalidUserAddress);
         }
-        
+
         // Check for overlaps with existing regions
         for existing_region in &self.memory_regions[..self.region_count] {
             if let Some(existing) = existing_region {
@@ -262,19 +262,19 @@ impl Process {
                 }
             }
         }
-        
+
         // Check if we have space for another region
         if self.region_count >= MAX_MEMORY_REGIONS {
             return Err(ProcessError::TooManyRegions);
         }
-        
+
         // Add the region
         self.memory_regions[self.region_count] = Some(region);
         self.region_count += 1;
-        
+
         Ok(())
     }
-    
+
     /// Find the memory region containing the given address
     ///
     /// # Arguments
@@ -292,7 +292,7 @@ impl Process {
         }
         None
     }
-    
+
     /// Get all memory regions of a specific type
     ///
     /// # Arguments
@@ -300,13 +300,16 @@ impl Process {
     ///
     /// # Returns
     /// Iterator over regions of the specified type
-    pub fn get_regions_by_type(&self, region_type: MemoryRegionType) -> impl Iterator<Item = &MemoryRegion> {
+    pub fn get_regions_by_type(
+        &self,
+        region_type: MemoryRegionType,
+    ) -> impl Iterator<Item = &MemoryRegion> {
         self.memory_regions[..self.region_count]
             .iter()
             .filter_map(|region_opt| region_opt.as_ref())
             .filter(move |region| region.region_type == region_type)
     }
-    
+
     /// Remove a memory region by address range
     ///
     /// # Arguments
@@ -331,7 +334,7 @@ impl Process {
         }
         Err(ProcessError::InvalidMemoryRegion)
     }
-    
+
     /// Clear all memory regions (used during exec)
     pub fn clear_memory_regions(&mut self) {
         for region in &mut self.memory_regions {
@@ -339,7 +342,7 @@ impl Process {
         }
         self.region_count = 0;
     }
-    
+
     /// Validate that an address range is within a valid memory region
     ///
     /// Used for page fault handling and memory access validation.
@@ -352,19 +355,20 @@ impl Process {
     /// Ok(region) if the entire range is within a valid region, or an error
     pub fn validate_memory_access(&self, addr: usize, size: usize) -> ProcessResult<&MemoryRegion> {
         let end_addr = addr.saturating_add(size);
-        
+
         // Find region containing the start address
-        let region = self.find_memory_region(addr)
+        let region = self
+            .find_memory_region(addr)
             .ok_or(ProcessError::InvalidUserAddress)?;
-        
+
         // Ensure the entire range is within this region
         if end_addr > region.end {
             return Err(ProcessError::InvalidUserAddress);
         }
-        
+
         Ok(region)
     }
-    
+
     /// Get total memory usage for this process
     ///
     /// # Returns
@@ -376,7 +380,7 @@ impl Process {
             .map(|region| region.size())
             .sum()
     }
-    
+
     /// Check if this process is a child of the given parent
     ///
     /// # Arguments
@@ -387,7 +391,7 @@ impl Process {
     pub fn is_child_of(&self, parent_pid: ProcessId) -> bool {
         self.parent_pid == Some(parent_pid)
     }
-    
+
     /// Mark process as zombie with exit code
     ///
     /// # Arguments
@@ -396,7 +400,7 @@ impl Process {
         self.state = ProcessState::Zombie;
         self.exit_code = Some(exit_code);
     }
-    
+
     /// Mark process as terminated (fully cleaned up)
     pub fn mark_terminated(&mut self) {
         self.state = ProcessState::Terminated;
@@ -430,7 +434,7 @@ impl core::fmt::Debug for Process {
 struct ProcessTableEntry {
     /// Process data (None if slot is free) - wrapped in UnsafeCell for interior mutability
     process: UnsafeCell<Option<Process>>,
-    
+
     /// Per-process lock for SMP safety
     lock: SpinLock<()>,
 }
@@ -449,7 +453,7 @@ impl ProcessTableEntry {
             lock: SpinLock::new(()),
         }
     }
-    
+
     /// Check if this slot is free (requires lock for safe access)
     fn is_free(&self) -> bool {
         let _guard = self.lock.lock();
@@ -464,7 +468,7 @@ impl ProcessTableEntry {
 pub struct ProcessGuard<'a> {
     /// Reference to the process (if present)
     process: &'a mut Option<Process>,
-    
+
     /// Lock guard to ensure exclusive access
     _lock_guard: SpinLockGuard<'a, ()>,
 }
@@ -474,27 +478,27 @@ impl<'a> ProcessGuard<'a> {
     pub fn get(&self) -> Option<&Process> {
         self.process.as_ref()
     }
-    
+
     /// Get a mutable reference to the process (if present)
     pub fn get_mut(&mut self) -> Option<&mut Process> {
         self.process.as_mut()
     }
-    
+
     /// Take the process out of the slot (leaving it empty)
     pub fn take(&mut self) -> Option<Process> {
         self.process.take()
     }
-    
+
     /// Insert a process into the slot (replacing any existing process)
     pub fn insert(&mut self, process: Process) -> Option<Process> {
         self.process.replace(process)
     }
-    
+
     /// Check if the slot contains a process
     pub fn is_some(&self) -> bool {
         self.process.is_some()
     }
-    
+
     /// Check if the slot is empty
     pub fn is_none(&self) -> bool {
         self.process.is_none()
@@ -505,7 +509,8 @@ impl<'a> ProcessGuard<'a> {
 ///
 /// Each process slot has its own lock to enable concurrent access from multiple cores.
 /// This design minimizes lock contention and improves SMP scalability.
-static PROCESS_TABLE: [ProcessTableEntry; MAX_PROCESSES] = [const { ProcessTableEntry::new() }; MAX_PROCESSES];
+static PROCESS_TABLE: [ProcessTableEntry; MAX_PROCESSES] =
+    [const { ProcessTableEntry::new() }; MAX_PROCESSES];
 
 /// Atomic PID counter for unique process ID allocation
 static NEXT_PID: AtomicUsize = AtomicUsize::new(1);
@@ -525,7 +530,7 @@ impl ProcessManager {
     pub fn alloc_pid() -> ProcessId {
         NEXT_PID.fetch_add(1, Ordering::Relaxed)
     }
-    
+
     /// Find a free process slot and lock it
     ///
     /// Searches the process table for an empty slot and returns a guard
@@ -550,7 +555,7 @@ impl ProcessManager {
         }
         None // Process table is full
     }
-    
+
     /// Get a process by PID with exclusive access
     ///
     /// Searches the process table for the given PID and returns a guard
@@ -565,7 +570,7 @@ impl ProcessManager {
         for entry in &PROCESS_TABLE {
             // Try to acquire the lock
             let lock_guard = entry.lock.lock();
-            
+
             // Check if this slot contains the process we're looking for
             let process_ref = unsafe { &mut *entry.process.get() };
             if let Some(ref process) = process_ref {
@@ -580,7 +585,7 @@ impl ProcessManager {
         }
         None // Process not found
     }
-    
+
     /// Create a new process and add it to the process table
     ///
     /// Allocates a new PID, finds a free slot, and initializes the process.
@@ -594,21 +599,20 @@ impl ProcessManager {
     pub fn create_process(parent_pid: Option<ProcessId>, name: &str) -> ProcessResult<ProcessId> {
         // Allocate new PID
         let pid = Self::alloc_pid();
-        
+
         // Find free process slot
-        let mut slot = Self::alloc_process_slot()
-            .ok_or(ProcessError::ProcessTableFull)?;
-        
+        let mut slot = Self::alloc_process_slot().ok_or(ProcessError::ProcessTableFull)?;
+
         // Create new process
         let mut process = Process::new(pid, parent_pid);
         process.set_name(name);
-        
+
         // Insert into slot
         slot.insert(process);
-        
+
         Ok(pid)
     }
-    
+
     /// Remove a process from the process table
     ///
     /// Marks the process slot as free so it can be reused.
@@ -619,12 +623,11 @@ impl ProcessManager {
     /// # Returns
     /// Ok(process) if the process was removed, or an error if not found
     pub fn remove_process(pid: ProcessId) -> ProcessResult<Process> {
-        let mut slot = Self::get_process(pid)
-            .ok_or(ProcessError::ProcessNotFound)?;
-        
+        let mut slot = Self::get_process(pid).ok_or(ProcessError::ProcessNotFound)?;
+
         slot.take().ok_or(ProcessError::ProcessNotFound)
     }
-    
+
     /// Find the first zombie child of a parent process
     ///
     /// Searches the process table for a zombie process that is a child
@@ -638,7 +641,7 @@ impl ProcessManager {
     pub fn find_zombie_child(parent_pid: ProcessId) -> Option<(ProcessId, i32)> {
         for entry in &PROCESS_TABLE {
             let _lock_guard = entry.lock.lock();
-            
+
             let process_ref = unsafe { &*entry.process.get() };
             if let Some(ref process) = process_ref {
                 if process.is_child_of(parent_pid) && process.state == ProcessState::Zombie {
@@ -648,17 +651,17 @@ impl ProcessManager {
                 }
             }
         }
-        
+
         None
     }
-    
+
     /// Count the number of active processes
     ///
     /// # Returns
     /// Number of processes in the table (excluding free slots)
     pub fn count_processes() -> usize {
         let mut count = 0;
-        
+
         for entry in &PROCESS_TABLE {
             let _lock_guard = entry.lock.lock();
             let process_ref = unsafe { &*entry.process.get() };
@@ -666,10 +669,10 @@ impl ProcessManager {
                 count += 1;
             }
         }
-        
+
         count
     }
-    
+
     /// Get process table statistics
     ///
     /// # Returns
@@ -678,7 +681,7 @@ impl ProcessManager {
         let used = Self::count_processes();
         let total = MAX_PROCESSES;
         let free = total - used;
-        
+
         (total, used, free)
     }
 }
@@ -718,21 +721,21 @@ pub fn copy_from_user(dst: &mut [u8], src_ptr: usize, len: usize) -> ProcessResu
     if !is_user_pointer_valid(src_ptr) || !is_user_pointer_valid(src_ptr + len) {
         return Err(ProcessError::InvalidUserAddress);
     }
-    
+
     // Check destination buffer size
     if len > dst.len() {
         return Err(ProcessError::InvalidMemoryRegion);
     }
-    
+
     // TODO: When implementing full page table separation, replace direct pointer
     // access with temporary kernel mapping (kmap_user_page()) for safety
-    
+
     // Perform copy with page fault handling (current shared address space)
     unsafe {
         let src = core::slice::from_raw_parts(src_ptr as *const u8, len);
         dst[..len].copy_from_slice(src);
     }
-    
+
     Ok(())
 }
 
@@ -754,52 +757,56 @@ pub fn copy_to_user(dst_ptr: usize, src: &[u8]) -> ProcessResult<()> {
     if !is_user_pointer_valid(dst_ptr) || !is_user_pointer_valid(dst_ptr + src.len()) {
         return Err(ProcessError::InvalidUserAddress);
     }
-    
+
     // TODO: When implementing full page table separation, replace direct pointer
     // access with temporary kernel mapping (kmap_user_page()) for safety
-    
+
     // Perform copy with page fault handling (current shared address space)
     unsafe {
         let dst = core::slice::from_raw_parts_mut(dst_ptr as *mut u8, src.len());
         dst.copy_from_slice(src);
     }
-    
+
     Ok(())
 }
 
 /// Process-Scheduler Integration Functions
-/// 
+///
 /// These functions provide integration between the Process management system
 /// and the existing Task-based scheduler. They allow both systems to work
 /// together during the transition to full process management.
 
 /// Synchronize process state with task state
-/// 
+///
 /// Updates the process state to match the corresponding task state.
 /// This ensures consistency between the two management systems.
-/// 
+///
 /// # Arguments
 /// * `process_id` - Process ID to synchronize
 /// * `task_id` - Corresponding task ID
-/// 
+///
 /// # Returns
 /// Ok(()) if synchronization succeeded, or an error
-pub fn sync_process_with_task(process_id: ProcessId, task_id: crate::sched::task::TaskId) -> ProcessResult<()> {
+pub fn sync_process_with_task(
+    process_id: ProcessId,
+    task_id: crate::sched::task::TaskId,
+) -> ProcessResult<()> {
     use crate::sched;
-    
+
     // Get the task state
     let task_state = match sched::get_task_mut(task_id) {
         Some(task) => task.state,
         None => return Err(ProcessError::ProcessNotFound),
     };
-    
+
     // Get the process and update its state
-    let mut process_guard = ProcessManager::get_process(process_id)
+    let mut process_guard =
+        ProcessManager::get_process(process_id).ok_or(ProcessError::ProcessNotFound)?;
+
+    let process = process_guard
+        .get_mut()
         .ok_or(ProcessError::ProcessNotFound)?;
-    
-    let process = process_guard.get_mut()
-        .ok_or(ProcessError::ProcessNotFound)?;
-    
+
     // Map task state to process state
     process.state = match task_state {
         crate::sched::task::TaskState::Ready => ProcessState::Ready,
@@ -807,13 +814,13 @@ pub fn sync_process_with_task(process_id: ProcessId, task_id: crate::sched::task
         crate::sched::task::TaskState::Sleeping => ProcessState::Sleeping,
         crate::sched::task::TaskState::Blocked => ProcessState::Blocked,
     };
-    
+
     // Sync other fields
     if let Some(task) = sched::get_task_mut(task_id) {
         process.context = task.context.clone();
         process.priority = task.priority;
         process.wake_tick = task.wake_tick;
-        
+
         // Sync memory regions if they differ
         if process.region_count != task.region_count {
             process.clear_memory_regions();
@@ -824,35 +831,36 @@ pub fn sync_process_with_task(process_id: ProcessId, task_id: crate::sched::task
             }
         }
     }
-    
+
     Ok(())
 }
 
 /// Synchronize task state with process state
-/// 
+///
 /// Updates the task state to match the corresponding process state.
 /// This is the reverse of sync_process_with_task.
-/// 
+///
 /// # Arguments
 /// * `task_id` - Task ID to synchronize
 /// * `process_id` - Corresponding process ID
-/// 
+///
 /// # Returns
 /// Ok(()) if synchronization succeeded, or an error
-pub fn sync_task_with_process(task_id: crate::sched::task::TaskId, process_id: ProcessId) -> ProcessResult<()> {
+pub fn sync_task_with_process(
+    task_id: crate::sched::task::TaskId,
+    process_id: ProcessId,
+) -> ProcessResult<()> {
     use crate::sched;
-    
+
     // Get the process state
-    let process_guard = ProcessManager::get_process(process_id)
-        .ok_or(ProcessError::ProcessNotFound)?;
-    
-    let process = process_guard.get()
-        .ok_or(ProcessError::ProcessNotFound)?;
-    
+    let process_guard =
+        ProcessManager::get_process(process_id).ok_or(ProcessError::ProcessNotFound)?;
+
+    let process = process_guard.get().ok_or(ProcessError::ProcessNotFound)?;
+
     // Get the task and update its state
-    let task = sched::get_task_mut(task_id)
-        .ok_or(ProcessError::ProcessNotFound)?;
-    
+    let task = sched::get_task_mut(task_id).ok_or(ProcessError::ProcessNotFound)?;
+
     // Map process state to task state
     task.state = match process.state {
         ProcessState::Ready => crate::sched::task::TaskState::Ready,
@@ -862,12 +870,12 @@ pub fn sync_task_with_process(task_id: crate::sched::task::TaskId, process_id: P
         ProcessState::Zombie => crate::sched::task::TaskState::Ready, // Will be cleaned up
         ProcessState::Terminated => crate::sched::task::TaskState::Ready, // Will be cleaned up
     };
-    
+
     // Sync other fields
     task.context = process.context.clone();
     task.priority = process.priority;
     task.wake_tick = process.wake_tick;
-    
+
     // Sync memory regions if they differ
     if task.region_count != process.region_count {
         task.clear_memory_regions();
@@ -877,63 +885,59 @@ pub fn sync_task_with_process(task_id: crate::sched::task::TaskId, process_id: P
             }
         }
     }
-    
+
     Ok(())
 }
 
 /// Create a task for an existing process
-/// 
+///
 /// Creates a corresponding Task in the scheduler for a Process.
 /// This allows the process to be scheduled and executed.
-/// 
+///
 /// # Arguments
 /// * `process_id` - Process ID to create task for
 /// * `entry_point` - Task entry point function
-/// 
+///
 /// # Returns
 /// Ok(task_id) if task was created successfully, or an error
 pub fn create_task_for_process(
-    process_id: ProcessId, 
-    entry_point: fn() -> !
+    process_id: ProcessId,
+    entry_point: fn() -> !,
 ) -> ProcessResult<crate::sched::task::TaskId> {
     use crate::sched;
-    
+
     // Get the process
-    let process_guard = ProcessManager::get_process(process_id)
-        .ok_or(ProcessError::ProcessNotFound)?;
-    
-    let process = process_guard.get()
-        .ok_or(ProcessError::ProcessNotFound)?;
-    
+    let process_guard =
+        ProcessManager::get_process(process_id).ok_or(ProcessError::ProcessNotFound)?;
+
+    let process = process_guard.get().ok_or(ProcessError::ProcessNotFound)?;
+
     // Get process info before creating task
     let process_name = "process_task"; // Use a static name for now
     let process_priority = process.priority;
-    
+
     // Drop the guard before creating task to avoid lifetime issues
     drop(process_guard);
-    
+
     // Create task with same priority as process
-    let task_id = sched::spawn_task(
-        process_name, 
-        entry_point, 
-        process_priority
-    ).map_err(|_| ProcessError::OutOfMemory)?;
-    
+    let task_id = sched::spawn_task(process_name, entry_point, process_priority)
+        .map_err(|_| ProcessError::OutOfMemory)?;
+
     // Synchronize the task with the process
     sync_task_with_process(task_id, process_id)?;
-    
+
     Ok(task_id)
 }
 
 /// Get the process ID for a task ID
-/// 
+///
 /// Finds the process that corresponds to a given task.
 /// This is a simple mapping for now - in a full implementation,
 /// we would maintain a proper task->process mapping table.
-/// 
+///
 /// # Arguments
 /// * `task_id` - Task ID to look up
-/// 
+///
 /// # Returns
 /// Some(process_id) if found, None if no corresponding process
 pub fn get_process_for_task(task_id: crate::sched::task::TaskId) -> Option<ProcessId> {
@@ -943,14 +947,14 @@ pub fn get_process_for_task(task_id: crate::sched::task::TaskId) -> Option<Proce
 }
 
 /// Get the task ID for a process ID
-/// 
+///
 /// Finds the task that corresponds to a given process.
 /// This is a simple mapping for now - in a full implementation,
 /// we would maintain a proper process->task mapping table.
-/// 
+///
 /// # Arguments
 /// * `process_id` - Process ID to look up
-/// 
+///
 /// # Returns
 /// Some(task_id) if found, None if no corresponding task
 pub fn get_task_for_process(process_id: ProcessId) -> Option<crate::sched::task::TaskId> {
@@ -960,72 +964,78 @@ pub fn get_task_for_process(process_id: ProcessId) -> Option<crate::sched::task:
 }
 
 /// Enhanced process state management
-/// 
+///
 /// Updates both process and task states when a process changes state.
 /// This ensures consistency between the two management systems.
-/// 
+///
 /// # Arguments
 /// * `process_id` - Process ID to update
 /// * `new_state` - New process state
-/// 
+///
 /// # Returns
 /// Ok(()) if state was updated successfully, or an error
 pub fn set_process_state(process_id: ProcessId, new_state: ProcessState) -> ProcessResult<()> {
     // Update process state
-    let mut process_guard = ProcessManager::get_process(process_id)
+    let mut process_guard =
+        ProcessManager::get_process(process_id).ok_or(ProcessError::ProcessNotFound)?;
+
+    let process = process_guard
+        .get_mut()
         .ok_or(ProcessError::ProcessNotFound)?;
-    
-    let process = process_guard.get_mut()
-        .ok_or(ProcessError::ProcessNotFound)?;
-    
+
     let old_state = process.state;
     process.state = new_state;
-    
+
     // Update corresponding task state if it exists
     if let Some(task_id) = get_task_for_process(process_id) {
         sync_task_with_process(task_id, process_id)?;
     }
-    
-    crate::serial_println!("[PROCESS] Process {} state changed: {:?} -> {:?}", 
-                          process_id, old_state, new_state);
-    
+
+    crate::serial_println!(
+        "[PROCESS] Process {} state changed: {:?} -> {:?}",
+        process_id,
+        old_state,
+        new_state
+    );
+
     Ok(())
 }
 
 /// Process context switching support
-/// 
+///
 /// Handles process-specific context switching operations like
 /// page table switching and TLB flushing.
-/// 
+///
 /// # Arguments
 /// * `old_process_id` - Process being switched away from
 /// * `new_process_id` - Process being switched to
-/// 
+///
 /// # Returns
 /// Ok(()) if context switch preparation succeeded, or an error
 pub fn prepare_process_context_switch(
-    old_process_id: Option<ProcessId>, 
-    new_process_id: ProcessId
+    old_process_id: Option<ProcessId>,
+    new_process_id: ProcessId,
 ) -> ProcessResult<()> {
     // Get the new process
-    let new_process_guard = ProcessManager::get_process(new_process_id)
+    let new_process_guard =
+        ProcessManager::get_process(new_process_id).ok_or(ProcessError::ProcessNotFound)?;
+
+    let new_process = new_process_guard
+        .get()
         .ok_or(ProcessError::ProcessNotFound)?;
-    
-    let new_process = new_process_guard.get()
-        .ok_or(ProcessError::ProcessNotFound)?;
-    
+
     // TODO: Switch page tables when we have per-process page tables
     // For now, we're using a shared address space
-    
+
     // TODO: Flush TLB if switching between different address spaces
     // unsafe {
     //     core::arch::asm!("mov rax, cr3; mov cr3, rax", out("rax") _);
     // }
-    
+
     // Update process state to Running
     drop(new_process_guard);
     set_process_state(new_process_id, ProcessState::Running)?;
-    
+
     // Update old process state to Ready (if it was Running)
     if let Some(old_pid) = old_process_id {
         let old_process_guard = ProcessManager::get_process(old_pid);
@@ -1038,42 +1048,48 @@ pub fn prepare_process_context_switch(
             }
         }
     }
-    
+
     Ok(())
 }
 
 /// Process Management Tests
-/// 
+///
 /// These tests verify the functionality of the process management system
 /// including process creation, state management, and cleanup.
 
 #[cfg(not(test))]
 pub mod tests {
     use super::*;
-    use crate::serial_println;
-    use crate::sched::{self};
     use crate::sched::priority::TaskPriority;
-    
+    use crate::sched::{self};
+    use crate::serial_println;
+
     /// Test process creation and basic operations
     pub fn test_process_creation() {
         serial_println!("[TEST] Testing process creation...");
-        
+
         // Test creating a process
         match ProcessManager::create_process(None, "test_process") {
             Ok(pid) => {
                 serial_println!("[TEST] ✓ Created process with PID {}", pid);
-                
+
                 // Test getting the process
                 if let Some(process_guard) = ProcessManager::get_process(pid) {
                     if let Some(process) = process_guard.get() {
-                        serial_println!("[TEST] ✓ Retrieved process: PID={}, name='{}'", 
-                                       process.pid, process.get_name());
-                        
+                        serial_println!(
+                            "[TEST] ✓ Retrieved process: PID={}, name='{}'",
+                            process.pid,
+                            process.get_name()
+                        );
+
                         // Test process state
                         if process.state == ProcessState::Ready {
                             serial_println!("[TEST] ✓ Process has correct initial state: Ready");
                         } else {
-                            serial_println!("[TEST] ✗ Process has incorrect state: {:?}", process.state);
+                            serial_println!(
+                                "[TEST] ✗ Process has incorrect state: {:?}",
+                                process.state
+                            );
                         }
                     } else {
                         serial_println!("[TEST] ✗ Process slot is empty");
@@ -1081,11 +1097,15 @@ pub mod tests {
                 } else {
                     serial_println!("[TEST] ✗ Failed to retrieve created process");
                 }
-                
+
                 // Test removing the process
                 match ProcessManager::remove_process(pid) {
                     Ok(removed) => {
-                        serial_println!("[TEST] ✓ Removed process {} ({})", removed.pid, removed.get_name());
+                        serial_println!(
+                            "[TEST] ✓ Removed process {} ({})",
+                            removed.pid,
+                            removed.get_name()
+                        );
                     }
                     Err(e) => {
                         serial_println!("[TEST] ✗ Failed to remove process: {:?}", e);
@@ -1097,30 +1117,30 @@ pub mod tests {
             }
         }
     }
-    
+
     /// Test process memory region management
     pub fn test_memory_regions() {
         serial_println!("[TEST] Testing memory region management...");
-        
+
         match ProcessManager::create_process(None, "memory_test") {
             Ok(pid) => {
                 if let Some(mut process_guard) = ProcessManager::get_process(pid) {
                     if let Some(process) = process_guard.get_mut() {
                         // Test adding memory regions
-                        use crate::sched::task::{MemoryRegion, MemoryRegionType};
                         use crate::mm::paging::PageTableFlags;
-                        
+                        use crate::sched::task::{MemoryRegion, MemoryRegionType};
+
                         let code_region = MemoryRegion::new(
                             0x400000,
                             0x401000,
                             PageTableFlags::PRESENT | PageTableFlags::USER,
                             MemoryRegionType::Code,
                         );
-                        
+
                         match process.add_memory_region(code_region) {
                             Ok(()) => {
                                 serial_println!("[TEST] ✓ Added code region");
-                                
+
                                 // Test finding the region
                                 if let Some(found_region) = process.find_memory_region(0x400500) {
                                     if found_region.region_type == MemoryRegionType::Code {
@@ -1131,20 +1151,26 @@ pub mod tests {
                                 } else {
                                     serial_println!("[TEST] ✗ Failed to find added region");
                                 }
-                                
+
                                 // Test memory usage calculation
                                 let usage = process.total_memory_usage();
                                 if usage == 4096 {
-                                    serial_println!("[TEST] ✓ Memory usage calculated correctly: {} bytes", usage);
+                                    serial_println!(
+                                        "[TEST] ✓ Memory usage calculated correctly: {} bytes",
+                                        usage
+                                    );
                                 } else {
-                                    serial_println!("[TEST] ✗ Memory usage incorrect: {} bytes", usage);
+                                    serial_println!(
+                                        "[TEST] ✗ Memory usage incorrect: {} bytes",
+                                        usage
+                                    );
                                 }
                             }
                             Err(e) => {
                                 serial_println!("[TEST] ✗ Failed to add memory region: {:?}", e);
                             }
                         }
-                        
+
                         // Test overlapping region detection
                         let overlapping_region = MemoryRegion::new(
                             0x400800,
@@ -1152,7 +1178,7 @@ pub mod tests {
                             PageTableFlags::PRESENT | PageTableFlags::USER,
                             MemoryRegionType::Data,
                         );
-                        
+
                         match process.add_memory_region(overlapping_region) {
                             Err(ProcessError::RegionOverlap) => {
                                 serial_println!("[TEST] ✓ Correctly detected overlapping region");
@@ -1161,12 +1187,15 @@ pub mod tests {
                                 serial_println!("[TEST] ✗ Failed to detect overlapping region");
                             }
                             Err(e) => {
-                                serial_println!("[TEST] ✗ Unexpected error for overlapping region: {:?}", e);
+                                serial_println!(
+                                    "[TEST] ✗ Unexpected error for overlapping region: {:?}",
+                                    e
+                                );
                             }
                         }
                     }
                 }
-                
+
                 // Clean up
                 let _ = ProcessManager::remove_process(pid);
             }
@@ -1175,11 +1204,11 @@ pub mod tests {
             }
         }
     }
-    
+
     /// Test process state transitions
     pub fn test_process_states() {
         serial_println!("[TEST] Testing process state transitions...");
-        
+
         match ProcessManager::create_process(None, "state_test") {
             Ok(pid) => {
                 // Test initial state
@@ -1188,23 +1217,29 @@ pub mod tests {
                         if process.state == ProcessState::Ready {
                             serial_println!("[TEST] ✓ Initial state is Ready");
                         } else {
-                            serial_println!("[TEST] ✗ Initial state is not Ready: {:?}", process.state);
+                            serial_println!(
+                                "[TEST] ✗ Initial state is not Ready: {:?}",
+                                process.state
+                            );
                         }
                     }
                 }
-                
+
                 // Test state changes
                 match set_process_state(pid, ProcessState::Running) {
                     Ok(()) => {
                         serial_println!("[TEST] ✓ Changed state to Running");
-                        
+
                         // Verify state change
                         if let Some(process_guard) = ProcessManager::get_process(pid) {
                             if let Some(process) = process_guard.get() {
                                 if process.state == ProcessState::Running {
                                     serial_println!("[TEST] ✓ State change verified");
                                 } else {
-                                    serial_println!("[TEST] ✗ State change not applied: {:?}", process.state);
+                                    serial_println!(
+                                        "[TEST] ✗ State change not applied: {:?}",
+                                        process.state
+                                    );
                                 }
                             }
                         }
@@ -1213,12 +1248,12 @@ pub mod tests {
                         serial_println!("[TEST] ✗ Failed to change state: {:?}", e);
                     }
                 }
-                
+
                 // Test zombie state
                 if let Some(mut process_guard) = ProcessManager::get_process(pid) {
                     if let Some(process) = process_guard.get_mut() {
                         process.mark_zombie(42);
-                        
+
                         if process.state == ProcessState::Zombie && process.exit_code == Some(42) {
                             serial_println!("[TEST] ✓ Zombie state set correctly");
                         } else {
@@ -1226,7 +1261,7 @@ pub mod tests {
                         }
                     }
                 }
-                
+
                 // Clean up
                 let _ = ProcessManager::remove_process(pid);
             }
@@ -1235,26 +1270,41 @@ pub mod tests {
             }
         }
     }
-    
+
     /// Test process table management and PID allocation
     pub fn test_process_table() {
         serial_println!("[TEST] Testing process table management...");
-        
+
         // Test PID allocation
         let pid1 = ProcessManager::alloc_pid();
         let pid2 = ProcessManager::alloc_pid();
         let pid3 = ProcessManager::alloc_pid();
-        
+
         if pid2 == pid1 + 1 && pid3 == pid2 + 1 {
-            serial_println!("[TEST] ✓ PID allocation is sequential: {}, {}, {}", pid1, pid2, pid3);
+            serial_println!(
+                "[TEST] ✓ PID allocation is sequential: {}, {}, {}",
+                pid1,
+                pid2,
+                pid3
+            );
         } else {
-            serial_println!("[TEST] ✗ PID allocation is not sequential: {}, {}, {}", pid1, pid2, pid3);
+            serial_println!(
+                "[TEST] ✗ PID allocation is not sequential: {}, {}, {}",
+                pid1,
+                pid2,
+                pid3
+            );
         }
-        
+
         // Test process table statistics
         let (total, used_before, free_before) = ProcessManager::get_stats();
-        serial_println!("[TEST] Process table before: {}/{} used, {} free", used_before, total, free_before);
-        
+        serial_println!(
+            "[TEST] Process table before: {}/{} used, {} free",
+            used_before,
+            total,
+            free_before
+        );
+
         // Create multiple processes
         let mut created_pids = [0usize; 5];
         let mut created_count = 0;
@@ -1271,16 +1321,20 @@ pub mod tests {
                 }
             }
         }
-        
+
         let (_, used_after, free_after) = ProcessManager::get_stats();
-        serial_println!("[TEST] Process table after creation: {} used, {} free", used_after, free_after);
-        
+        serial_println!(
+            "[TEST] Process table after creation: {} used, {} free",
+            used_after,
+            free_after
+        );
+
         if used_after == used_before + created_count {
             serial_println!("[TEST] ✓ Process table statistics are correct");
         } else {
             serial_println!("[TEST] ✗ Process table statistics are incorrect");
         }
-        
+
         // Clean up created processes
         for i in 0..created_count {
             let pid = created_pids[i];
@@ -1293,29 +1347,37 @@ pub mod tests {
                 }
             }
         }
-        
+
         let (_, used_final, free_final) = ProcessManager::get_stats();
-        serial_println!("[TEST] Process table after cleanup: {} used, {} free", used_final, free_final);
-        
+        serial_println!(
+            "[TEST] Process table after cleanup: {} used, {} free",
+            used_final,
+            free_final
+        );
+
         if used_final == used_before {
             serial_println!("[TEST] ✓ Process table cleanup successful");
         } else {
             serial_println!("[TEST] ✗ Process table cleanup incomplete");
         }
     }
-    
+
     /// Test zombie child detection
     pub fn test_zombie_children() {
         serial_println!("[TEST] Testing zombie child detection...");
-        
+
         // Create parent process
         match ProcessManager::create_process(None, "parent") {
             Ok(parent_pid) => {
                 // Create child process
                 match ProcessManager::create_process(Some(parent_pid), "child") {
                     Ok(child_pid) => {
-                        serial_println!("[TEST] Created parent {} and child {}", parent_pid, child_pid);
-                        
+                        serial_println!(
+                            "[TEST] Created parent {} and child {}",
+                            parent_pid,
+                            child_pid
+                        );
+
                         // Mark child as zombie
                         if let Some(mut child_guard) = ProcessManager::get_process(child_pid) {
                             if let Some(child) = child_guard.get_mut() {
@@ -1323,7 +1385,7 @@ pub mod tests {
                                 serial_println!("[TEST] Marked child {} as zombie", child_pid);
                             }
                         }
-                        
+
                         // Test finding zombie child
                         match ProcessManager::find_zombie_child(parent_pid) {
                             Some((found_pid, exit_code)) => {
@@ -1331,15 +1393,18 @@ pub mod tests {
                                     serial_println!("[TEST] ✓ Found zombie child correctly: PID={}, exit_code={}", 
                                                    found_pid, exit_code);
                                 } else {
-                                    serial_println!("[TEST] ✗ Found wrong zombie child: PID={}, exit_code={}", 
-                                                   found_pid, exit_code);
+                                    serial_println!(
+                                        "[TEST] ✗ Found wrong zombie child: PID={}, exit_code={}",
+                                        found_pid,
+                                        exit_code
+                                    );
                                 }
                             }
                             None => {
                                 serial_println!("[TEST] ✗ Failed to find zombie child");
                             }
                         }
-                        
+
                         // Clean up
                         let _ = ProcessManager::remove_process(child_pid);
                     }
@@ -1347,7 +1412,7 @@ pub mod tests {
                         serial_println!("[TEST] ✗ Failed to create child process: {:?}", e);
                     }
                 }
-                
+
                 // Clean up parent
                 let _ = ProcessManager::remove_process(parent_pid);
             }
@@ -1356,22 +1421,29 @@ pub mod tests {
             }
         }
     }
-    
+
     /// Test integration with scheduler
     pub fn test_scheduler_integration() {
         serial_println!("[TEST] Testing scheduler integration...");
-        
+
         // Test creating a process-task pair
         fn dummy_task() -> ! {
             loop {
-                unsafe { core::arch::asm!("hlt"); }
+                unsafe {
+                    core::arch::asm!("hlt");
+                }
             }
         }
-        
-        match sched::spawn_process_task("integration_test", dummy_task, TaskPriority::Normal, None) {
+
+        match sched::spawn_process_task("integration_test", dummy_task, TaskPriority::Normal, None)
+        {
             Ok((process_id, task_id)) => {
-                serial_println!("[TEST] ✓ Created process {} with task {}", process_id, task_id);
-                
+                serial_println!(
+                    "[TEST] ✓ Created process {} with task {}",
+                    process_id,
+                    task_id
+                );
+
                 // Test synchronization
                 match sync_process_with_task(process_id, task_id) {
                     Ok(()) => {
@@ -1381,48 +1453,56 @@ pub mod tests {
                         serial_println!("[TEST] ✗ Process-task synchronization failed: {:?}", e);
                     }
                 }
-                
+
                 // Test mapping functions
                 if let Some(found_process_id) = get_process_for_task(task_id) {
                     if found_process_id == process_id {
                         serial_println!("[TEST] ✓ Task->Process mapping works");
                     } else {
-                        serial_println!("[TEST] ✗ Task->Process mapping incorrect: {} != {}", 
-                                       found_process_id, process_id);
+                        serial_println!(
+                            "[TEST] ✗ Task->Process mapping incorrect: {} != {}",
+                            found_process_id,
+                            process_id
+                        );
                     }
                 }
-                
+
                 if let Some(found_task_id) = get_task_for_process(process_id) {
                     if found_task_id == task_id {
                         serial_println!("[TEST] ✓ Process->Task mapping works");
                     } else {
-                        serial_println!("[TEST] ✗ Process->Task mapping incorrect: {} != {}", 
-                                       found_task_id, task_id);
+                        serial_println!(
+                            "[TEST] ✗ Process->Task mapping incorrect: {} != {}",
+                            found_task_id,
+                            task_id
+                        );
                     }
                 }
-                
+
                 // Clean up (process will be cleaned up when task is removed)
-                serial_println!("[TEST] Integration test cleanup (task will be cleaned up by scheduler)");
+                serial_println!(
+                    "[TEST] Integration test cleanup (task will be cleaned up by scheduler)"
+                );
             }
             Err(e) => {
                 serial_println!("[TEST] ✗ Failed to create process-task pair: {:?}", e);
             }
         }
     }
-    
+
     /// Run all process management tests
     pub fn run_all_tests() {
         serial_println!("[TEST] ========================================");
         serial_println!("[TEST] Running Process Management Tests");
         serial_println!("[TEST] ========================================");
-        
+
         test_process_creation();
         test_memory_regions();
         test_process_states();
         test_process_table();
         test_zombie_children();
         test_scheduler_integration();
-        
+
         serial_println!("[TEST] ========================================");
         serial_println!("[TEST] Process Management Tests Completed!");
         serial_println!("[TEST] ========================================");
