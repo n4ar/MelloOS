@@ -126,6 +126,12 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
     // TEMPORARILY COMMENTED: serial_println may deadlock
     // serial_println!("[SMP] AP#{} PerCpu and GS.BASE initialized", cpu_id);
     
+    // Initialize GDT and TSS for this AP
+    if let Err(e) = crate::arch::x86_64::gdt::init_gdt_tss_for_cpu(cpu_id) {
+        serial_println!("[SMP] AP#{} failed to initialize GDT/TSS: {}", cpu_id, e);
+        loop { unsafe { core::arch::asm!("hlt"); } }
+    }
+    
     // Initialize Local APIC for this AP using passed address
     let mut lapic = unsafe { LocalApic::new(lapic_address) };
     lapic.init();
@@ -223,6 +229,24 @@ const AP_STACK_PHYS_BASE: usize = 0x100000;
 /// Trampoline binary data
 /// This is the compiled AP boot code that will be copied to 0x8000
 static TRAMPOLINE_CODE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/boot_ap.bin"));
+
+/// Initialize GDT and TSS for BSP (CPU 0)
+/// This should be called early in kernel initialization
+pub fn init_bsp_gdt_tss() -> Result<(), &'static str> {
+    serial_println!("[SMP] Initializing GDT and TSS for BSP (CPU 0)");
+    
+    // Initialize BSP's PerCpu structure first
+    unsafe {
+        percpu::init_percpu(0, 0); // BSP is CPU 0, APIC ID will be set later
+        percpu::setup_gs_base(0);
+    }
+    
+    // Initialize GDT and TSS for BSP
+    crate::arch::x86_64::gdt::init_gdt_tss_for_cpu(0)?;
+    
+    serial_println!("[SMP] BSP GDT and TSS initialized successfully");
+    Ok(())
+}
 
 /// Initialize SMP and bring up Application Processors
 /// 
