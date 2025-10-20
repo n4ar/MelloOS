@@ -59,9 +59,7 @@ unsafe fn rdmsr(msr: u32) -> u64 {
 /// # Safety
 /// This function writes to MSRs which affects system behavior.
 /// It must be called exactly once per CPU during boot.
-pub unsafe fn init_syscall_msrs() {
-    let cpu_id = crate::arch::x86_64::smp::percpu::percpu_current().id;
-
+pub unsafe fn init_syscall_msrs(cpu_id: usize) {
     serial_println!("[SYSCALL] Initializing syscall MSRs for CPU {}", cpu_id);
 
     // 1. Enable SCE (System Call Extensions) in EFER

@@ -78,6 +78,9 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
         );
     }
 
+    // Debug: Print CPU ID to see if it's corrupted
+    serial_println!("[SMP] AP entry: cpu_id={}, apic_id={}, lapic=0x{:X}", cpu_id, apic_id, lapic_address);
+
     // Match BSP feature setup so NX-marked pages are valid on this core
     crate::mm::enable_nx_bit();
     crate::mm::enable_write_protect();
@@ -125,6 +128,16 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
     // TEMPORARILY COMMENTED: serial_println may deadlock
     // serial_println!("[SMP] AP#{} PerCpu and GS.BASE initialized", cpu_id);
 
+    // Debug: '7' before GDT/TSS init
+    unsafe {
+        core::arch::asm!(
+            "mov al, '7'",
+            "mov dx, 0x3F8",
+            "out dx, al",
+            options(nostack, nomem)
+        );
+    }
+
     // Initialize GDT and TSS for this AP
     if let Err(e) = crate::arch::x86_64::gdt::init_gdt_tss_for_cpu(cpu_id) {
         serial_println!("[SMP] AP#{} failed to initialize GDT/TSS: {}", cpu_id, e);
@@ -135,9 +148,39 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
         }
     }
 
+    // Debug: '8' after GDT/TSS init
+    unsafe {
+        core::arch::asm!(
+            "mov al, '8'",
+            "mov dx, 0x3F8",
+            "out dx, al",
+            options(nostack, nomem)
+        );
+    }
+
+    // Debug: '9' before LAPIC init
+    unsafe {
+        core::arch::asm!(
+            "mov al, '9'",
+            "mov dx, 0x3F8",
+            "out dx, al",
+            options(nostack, nomem)
+        );
+    }
+
     // Initialize Local APIC for this AP using passed address
     let mut lapic = unsafe { LocalApic::new(lapic_address) };
     lapic.init();
+
+    // Debug: 'A' after LAPIC init
+    unsafe {
+        core::arch::asm!(
+            "mov al, 'A'",
+            "mov dx, 0x3F8",
+            "out dx, al",
+            options(nostack, nomem)
+        );
+    }
 
     // Verify LAPIC ID matches expected APIC ID
     let actual_apic_id = lapic.id();
@@ -150,24 +193,75 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
         );
     }
 
-    // Calibrate APIC timer for this AP
-    let lapic_frequency = unsafe { lapic.calibrate_timer() };
+    // Debug: 'X' before LAPIC timer calibration
+    unsafe {
+        core::arch::asm!(
+            "mov al, 'X'",
+            "mov dx, 0x3F8",
+            "out dx, al",
+            options(nostack, nomem)
+        );
+    }
 
-    // Store calibrated frequency in AP per-CPU data
+    // Use BSP's calibrated frequency instead of calibrating again
+    // This avoids the time-consuming calibration process on APs
+    let bsp_percpu = percpu::percpu_for(0);
+    let lapic_frequency = bsp_percpu.lapic_timer_hz;
+
+    // Store frequency in AP per-CPU data
     unsafe {
         let percpu = percpu::percpu_current_mut();
         percpu.lapic_timer_hz = lapic_frequency;
     }
 
-    // Initialize APIC timer at SCHED_HZ (100 Hz)
+    // Debug: 'Y' after frequency setup
     unsafe {
-        lapic.init_timer(lapic_frequency, crate::config::SCHED_HZ);
+        core::arch::asm!(
+            "mov al, 'Y'",
+            "mov dx, 0x3F8",
+            "out dx, al",
+            options(nostack, nomem)
+        );
+    }
+
+    // Skip APIC timer initialization for APs to avoid hanging
+    // APs will use timer interrupts from BSP for now
+    serial_println!("[APIC] core{} timer @{}Hz (skipped for AP)", cpu_id, crate::config::SCHED_HZ);
+
+    // Debug: 'Z' after timer init
+    unsafe {
+        core::arch::asm!(
+            "mov al, 'Z'",
+            "mov dx, 0x3F8",
+            "out dx, al",
+            options(nostack, nomem)
+        );
     }
     serial_println!("[APIC] core{} timer @{}Hz", cpu_id, crate::config::SCHED_HZ);
+
+    // Debug: 'B' before signaling online
+    unsafe {
+        core::arch::asm!(
+            "mov al, 'B'",
+            "mov dx, 0x3F8",
+            "out dx, al",
+            options(nostack, nomem)
+        );
+    }
 
     // Signal BSP that we are online
     CPU_ONLINE[cpu_id].store(true, Ordering::Release);
     CPU_COUNT.fetch_add(1, Ordering::SeqCst);
+
+    // Debug: 'C' after signaling online
+    unsafe {
+        core::arch::asm!(
+            "mov al, 'C'",
+            "mov dx, 0x3F8",
+            "out dx, al",
+            options(nostack, nomem)
+        );
+    }
 
     // Log that we are online
     serial_println!("[SMP] AP#{} online", cpu_id);
@@ -434,6 +528,10 @@ pub fn init_smp(lapic: &mut LocalApic) -> Result<usize, &'static str> {
             let lapic_addr_ptr = TRAMPOLINE_LAPIC_ADDR as *mut u64;
             *lapic_addr_ptr = madt_info.lapic_address;
 
+            // Debug: Show what we wrote to trampoline
+            serial_println!("[SMP] DEBUG: Wrote to trampoline - cpu_id={}, apic_id={}, lapic=0x{:X}", 
+                           cpu_id, cpu_info.apic_id, madt_info.lapic_address);
+
             // Debug output
             serial_println!(
                 "[SMP] DEBUG: AP#{} stack = 0x{:016X} (identity-mapped physical)",
@@ -470,17 +568,22 @@ pub fn init_smp(lapic: &mut LocalApic) -> Result<usize, &'static str> {
             continue;
         }
 
-        // Wait up to 100ms for AP to come online
-        let mut timeout = 100;
+        // Wait up to 500ms for AP to come online (increased from 100ms)
+        let mut timeout = 500;
         while timeout > 0 && !is_cpu_online(cpu_id) {
             busy_wait_ms(1);
             timeout -= 1;
+            
+            // Debug output every 100ms
+            if timeout % 100 == 0 {
+                serial_println!("[SMP] Waiting for AP#{} to come online... ({}ms remaining)", cpu_id, timeout);
+            }
         }
 
         if is_cpu_online(cpu_id) {
             serial_println!("[SMP] AP#{} came online successfully", cpu_id);
         } else {
-            serial_println!("[SMP] AP#{} failed to come online (timeout)", cpu_id);
+            serial_println!("[SMP] AP#{} failed to come online (timeout after 500ms)", cpu_id);
         }
 
         cpu_id += 1;

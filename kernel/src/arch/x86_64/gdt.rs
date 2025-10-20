@@ -344,7 +344,7 @@ pub fn init_gdt_tss_for_cpu(cpu_id: usize) -> Result<(), &'static str> {
         serial_println!("[GDT] GDT address: 0x{:x}", gdt_ptr as u64);
 
         // Initialize syscall MSRs for fast syscall support
-        crate::arch::x86_64::syscall::init_syscall_msrs();
+        crate::arch::x86_64::syscall::init_syscall_msrs(cpu_id);
         serial_println!("[GDT] CPU {} syscall MSRs initialized", cpu_id);
     }
 
