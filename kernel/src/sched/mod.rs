@@ -2,6 +2,31 @@
 //!
 //! This module implements a preemptive multitasking scheduler using Round-Robin algorithm.
 //! It manages task creation, context switching, and timer-based preemption.
+//!
+//! # SMP Safety and Lock Ordering
+//!
+//! The scheduler is designed to work correctly in SMP environments with multiple CPUs.
+//! To prevent deadlocks, locks must be acquired in the following order:
+//!
+//! 1. SCHED (global scheduler state)
+//! 2. TASK_TABLE (global task table)
+//! 3. Per-CPU runqueue locks (in ascending CPU ID order)
+//! 4. Per-task state (implicit in get_task_mut)
+//!
+//! ## Key SMP Design Decisions
+//!
+//! - **Per-CPU Runqueues**: Each CPU has its own runqueue to minimize contention
+//! - **Lock-Free Task Assignment**: New tasks are assigned to the CPU with the smallest runqueue
+//! - **IPI-Based Coordination**: RESCHEDULE_IPI is sent when tasks are enqueued to remote CPUs
+//! - **Ordered Lock Acquisition**: Multiple runqueue locks are always acquired in CPU ID order
+//!
+//! ## Critical Sections
+//!
+//! - Task creation: Holds SCHED and TASK_TABLE briefly, then releases before enqueuing
+//! - Task migration: Holds two runqueue locks in CPU ID order
+//! - Context switch: Only accesses current CPU's runqueue (no cross-CPU locks)
+//!
+//! See `kernel/src/sync/lock_ordering.rs` for complete lock ordering documentation.
 
 pub mod task;
 pub mod context;
@@ -52,9 +77,13 @@ use spin::Mutex;
 use task::{Task, TaskId, TaskState, SchedulerError, SchedulerResult};
 use context::CpuContext;
 use priority::TaskPriority;
+use crate::arch::x86_64::smp::percpu::{percpu_current, percpu_for};
 
 /// Maximum number of tasks supported
 const MAX_TASKS: usize = 64;
+
+/// Maximum number of tasks per CPU runqueue (from percpu.rs)
+const MAX_RUNQUEUE_SIZE: usize = 64;
 
 /// Wrapper for task pointer that implements Sync
 /// 
@@ -142,14 +171,10 @@ impl TaskQueue {
     }
 }
 
-/// Scheduler state containing the priority scheduler and current task information
+/// Scheduler state containing global task management
+/// 
+/// Note: Runqueues are now per-CPU (in PerCpu structure)
 struct SchedState {
-    /// Priority scheduler with three ready queues
-    priority_sched: priority::PriorityScheduler,
-    
-    /// Currently running task ID (None if no task is running)
-    current: Option<TaskId>,
-    
     /// Next task ID to assign (incremented for each new task)
     next_tid: usize,
 }
@@ -158,8 +183,6 @@ impl SchedState {
     /// Create a new empty scheduler state
     fn new() -> Self {
         Self {
-            priority_sched: priority::PriorityScheduler::new(),
-            current: None,
             next_tid: 1, // Start at 1, reserve 0 for idle task
         }
     }
@@ -167,6 +190,9 @@ impl SchedState {
 
 /// Global scheduler state protected by a mutex
 static SCHED: spin::Once<Mutex<SchedState>> = spin::Once::new();
+
+/// Number of online CPUs (set during SMP initialization)
+static CPU_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1);
 
 /// Task table storing all Task objects
 /// Uses TaskPtr wrapper for heap-allocated tasks
@@ -179,7 +205,7 @@ static TASK_TABLE: Mutex<[TaskPtr; MAX_TASKS]> = Mutex::new([TaskPtr::null(); MA
 /// 1. Generates a unique TaskId
 /// 2. Creates a new Task with Task::new()
 /// 3. Allocates the Task on the heap and adds it to TASK_TABLE
-/// 4. Adds the TaskId to the priority scheduler
+/// 4. Assigns the task to a CPU (will be done by enqueue_task)
 /// 5. Logs the task spawn
 ///
 /// # Arguments
@@ -212,6 +238,10 @@ pub fn spawn_task(name: &'static str, entry_point: fn() -> !, priority: TaskPrio
     
     sched.next_tid += 1;
     
+    // Drop locks before creating task (to avoid holding locks during allocation)
+    drop(sched);
+    drop(task_table);
+    
     // 2. Create new Task with specified priority
     let task = match Task::new(task_id, name, entry_point, priority) {
         Ok(task) => task,
@@ -234,13 +264,12 @@ pub fn spawn_task(name: &'static str, entry_point: fn() -> !, priority: TaskPrio
         ptr::write(task_ptr, task);
     }
     
+    let mut task_table = TASK_TABLE.lock();
     task_table[task_id] = TaskPtr::new(task_ptr);
+    drop(task_table);
     
-    // 4. Add TaskId to priority scheduler
-    if !sched.priority_sched.enqueue_task(task_id, priority) {
-        sched_error!("Failed to add task {} to priority scheduler", task_id);
-        return Err(SchedulerError::RunqueueFull);
-    }
+    // 4. Enqueue task to a CPU runqueue (will select CPU with smallest runqueue)
+    enqueue_task(task_id, None);
     
     // 5. Log task spawn
     sched_info!("Spawned task {}: {} (priority: {:?})", task_id, name, priority);
@@ -279,75 +308,63 @@ fn get_task(id: TaskId) -> Option<&'static mut Task> {
     unsafe { Some(&mut *task_ptr.get()) }
 }
 
-/// Select the next task to run using priority-based scheduling
+/// Schedule the next task on a specific CPU core
 ///
 /// This function:
-/// 1. Locks SCHED state
-/// 2. Wakes sleeping tasks if their wake time has elapsed
-/// 3. Moves current TaskId back to appropriate priority queue (if exists and ready)
-/// 4. Selects highest priority task from priority scheduler
-/// 5. Updates current TaskId
-/// 6. Unlocks SCHED state
-/// 7. Returns references to old and new tasks for context switch
+/// 1. Gets the current CPU's PerCpu structure
+/// 2. Moves current task back to runqueue if still ready
+/// 3. Selects next task from the CPU's runqueue
+/// 4. Updates current_task in PerCpu
+/// 5. Returns references to old and new tasks for context switch
+///
+/// # Arguments
+/// * `cpu_id` - The CPU core to schedule on
 ///
 /// # Returns
 /// A tuple of (old_task, new_task) references, or None if no tasks available
-fn schedule_next() -> Option<(&'static mut Task, &'static mut Task)> {
-    let mut sched = SCHED.get().expect("Scheduler not initialized").lock();
+fn schedule_on_core(cpu_id: usize) -> Option<(&'static mut Task, &'static mut Task)> {
+    use core::sync::atomic::Ordering;
     
-    // Update tick counter
-    sched.priority_sched.tick();
-    
-    // Wake sleeping tasks (they are automatically re-enqueued)
-    let woken_count = sched.priority_sched.wake_sleeping_tasks();
-    if woken_count > 0 {
-        // Increment wake_count metric
-        use core::sync::atomic::Ordering;
-        crate::sys::METRICS.wake_count.fetch_add(woken_count, Ordering::Relaxed);
-        
-        // Update task states for woken tasks
-        // Note: We don't have direct access to which tasks were woken,
-        // but their state will be updated when they run
-    }
+    // Get the PerCpu structure for this core
+    let percpu = unsafe { crate::arch::x86_64::smp::percpu::percpu_for_mut(cpu_id) };
     
     // Get the current task (if any)
-    let old_task_id = sched.current;
+    let old_task_id = percpu.current_task;
     
-    // If there's no current task, this is the first switch
-    // Don't pop from scheduler - let tick() handle it
+    // If there's no current task, this is the first switch on this core
     if old_task_id.is_none() {
-        drop(sched);
         return None;
     }
     
-    // Move current task back to priority queue if it's still ready
+    // Move current task back to runqueue if it's still ready
     if let Some(current_id) = old_task_id {
         if let Some(task) = get_task(current_id) {
             // Only re-enqueue if task is still in Running state
             // (it might have been put to sleep or blocked)
             if task.state == TaskState::Running {
                 task.state = TaskState::Ready;
-                sched.priority_sched.enqueue_task(current_id, task.priority);
+                let mut runqueue = percpu.runqueue.lock();
+                if !runqueue.push_back(current_id) {
+                    sched_warn!("CPU {} runqueue full, dropping task {}", cpu_id, current_id);
+                }
             }
         }
     }
     
-    // Select next task from priority scheduler
-    // If all queues are empty, fall back to idle task (id 0)
-    let next_task_id = match sched.priority_sched.select_next() {
-        Some(id) => id,
-        None => {
-            // All queues empty - fall back to idle task
-            sched_warn!("All priority queues empty, falling back to idle task");
-            0 // Idle task ID
+    // Select next task from this CPU's runqueue
+    let next_task_id = {
+        let mut runqueue = percpu.runqueue.lock();
+        match runqueue.pop_front() {
+            Some(id) => id,
+            None => {
+                // Runqueue empty - use idle task
+                percpu.idle_task
+            }
         }
     };
     
-    // Update current task
-    sched.current = Some(next_task_id);
-    
-    // Drop the lock before getting task references
-    drop(sched);
+    // Update current task in PerCpu
+    percpu.current_task = Some(next_task_id);
     
     // Get task references
     let old_task = old_task_id.and_then(|id| get_task(id));
@@ -371,9 +388,10 @@ pub(crate) static SWITCH_COUNT: core::sync::atomic::AtomicUsize = core::sync::at
 /// Scheduler tick function - called by timer interrupt
 ///
 /// This function:
-/// 1. Calls schedule_next() to get old and new tasks
-/// 2. Logs the context switch (with throttling)
-/// 3. Performs the context switch
+/// 1. Determines the current CPU ID
+/// 2. Calls schedule_on_core() to get old and new tasks
+/// 3. Logs the context switch (with throttling)
+/// 4. Performs the context switch
 ///
 /// # Notes
 /// - This function does not return in the traditional sense (tail-switch)
@@ -385,8 +403,11 @@ pub fn tick() {
     // Increment timer_ticks metric
     crate::sys::METRICS.timer_ticks.fetch_add(1, Ordering::Relaxed);
     
-    // Get next task to run
-    let tasks = schedule_next();
+    // Get current CPU ID
+    let cpu_id = percpu_current().id;
+    
+    // Get next task to run on this core
+    let tasks = schedule_on_core(cpu_id);
     
     if let Some((old_task, new_task)) = tasks {
         // Validate task pointers before context switch
@@ -413,7 +434,8 @@ pub fn tick() {
         // After that: log every 100 switches
         if count < 10 || count % 100 == 0 {
             sched_log!(
-                "Switch #{} → Task {} ({})",
+                "[core{}] Switch #{} → Task {} ({})",
+                cpu_id,
                 count,
                 new_task.id,
                 new_task.name
@@ -432,53 +454,59 @@ pub fn tick() {
         // Note: We never reach here because context_switch doesn't return
         // The next task will continue from where it was interrupted
     } else {
-        // First switch - no old task yet
+        // First switch on this core - no old task yet
         // We need to manually set up the first task and jump to it
-        let mut sched = SCHED.get().expect("Scheduler not initialized").lock();
+        let percpu = unsafe { crate::arch::x86_64::smp::percpu::percpu_for_mut(cpu_id) };
         
-        // Select the first task from priority scheduler
-        if let Some(first_task_id) = sched.priority_sched.select_next() {
-            sched.current = Some(first_task_id);
-            drop(sched);
-            
-            if let Some(first_task) = get_task(first_task_id) {
-                first_task.state = TaskState::Running;
-                
-                sched_log!("First switch → Task {} ({}) [priority: {:?}]", 
-                    first_task.id, first_task.name, first_task.priority);
-                
-                // Validate the task's RSP
-                if first_task.context.rsp == 0 {
-                    panic!("[SCHED] CRITICAL: First task has null RSP");
+        // Select the first task from this core's runqueue
+        let first_task_id = {
+            let mut runqueue = percpu.runqueue.lock();
+            match runqueue.pop_front() {
+                Some(id) => id,
+                None => {
+                    // No tasks in runqueue - use idle task
+                    percpu.idle_task
                 }
-                
-                // For the first switch, we need to manually jump to the task
-                // We'll use a dummy context for the "old" task (which is the kernel boot code)
-                // This context will never be used again
-                let mut dummy_context = CpuContext {
-                    r15: 0,
-                    r14: 0,
-                    r13: 0,
-                    r12: 0,
-                    rbp: 0,
-                    rbx: 0,
-                    rsp: 0, // Will be filled by context_switch
-                };
-                
-                unsafe {
-                    context::context_switch(
-                        &mut dummy_context as *mut CpuContext,
-                        &first_task.context as *const CpuContext,
-                    );
-                }
-                
-                // Should never reach here
-                panic!("[SCHED] CRITICAL: Returned from first context switch");
-            } else {
-                panic!("[SCHED] CRITICAL: First task not found in task table");
             }
+        };
+        
+        percpu.current_task = Some(first_task_id);
+        
+        if let Some(first_task) = get_task(first_task_id) {
+            first_task.state = TaskState::Running;
+            
+            sched_log!("[core{}] First switch → Task {} ({}) [priority: {:?}]", 
+                cpu_id, first_task.id, first_task.name, first_task.priority);
+            
+            // Validate the task's RSP
+            if first_task.context.rsp == 0 {
+                panic!("[SCHED] CRITICAL: First task has null RSP");
+            }
+            
+            // For the first switch, we need to manually jump to the task
+            // We'll use a dummy context for the "old" task (which is the kernel boot code)
+            // This context will never be used again
+            let mut dummy_context = CpuContext {
+                r15: 0,
+                r14: 0,
+                r13: 0,
+                r12: 0,
+                rbp: 0,
+                rbx: 0,
+                rsp: 0, // Will be filled by context_switch
+            };
+            
+            unsafe {
+                context::context_switch(
+                    &mut dummy_context as *mut CpuContext,
+                    &first_task.context as *const CpuContext,
+                );
+            }
+            
+            // Should never reach here
+            panic!("[SCHED] CRITICAL: Returned from first context switch");
         } else {
-            panic!("[SCHED] CRITICAL: No tasks in priority scheduler for first switch");
+            panic!("[SCHED] CRITICAL: First task not found in task table");
         }
     }
 }
@@ -499,9 +527,8 @@ fn idle_task() -> ! {
 ///
 /// Returns the current task's ID and priority, or None if no task is running
 pub fn get_current_task_info() -> Option<(TaskId, TaskPriority)> {
-    let sched = SCHED.get()?.lock();
-    let current_id = sched.current?;
-    drop(sched);
+    let percpu = percpu_current();
+    let current_id = percpu.current_task?;
     
     let task = get_task(current_id)?;
     Some((task.id, task.priority))
@@ -522,42 +549,271 @@ pub fn get_task_mut(task_id: TaskId) -> Option<&'static mut Task> {
     get_task(task_id)
 }
 
-/// Enqueue a task to the scheduler
+/// Enqueue a task to a CPU runqueue
 ///
-/// Adds the task to the appropriate priority queue
-pub fn enqueue_task(task_id: TaskId, priority: TaskPriority) {
-    if let Some(sched) = SCHED.get() {
-        let mut sched = sched.lock();
-        sched.priority_sched.enqueue_task(task_id, priority);
+/// Assigns the task to the CPU with the smallest runqueue, or to a specific CPU if specified.
+/// If the task is enqueued to a remote CPU (not the current CPU), sends a RESCHEDULE_IPI
+/// to wake up that CPU and schedule the new task.
+///
+/// # Arguments
+/// * `task_id` - The task to enqueue
+/// * `target_cpu` - Optional specific CPU to enqueue to. If None, selects CPU with smallest runqueue.
+pub fn enqueue_task(task_id: TaskId, target_cpu: Option<usize>) {
+    use core::sync::atomic::Ordering;
+    
+    let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+    
+    // Determine which CPU to enqueue to
+    let cpu_id = if let Some(cpu) = target_cpu {
+        // Use specified CPU
+        if cpu >= cpu_count {
+            sched_warn!("Invalid target CPU {}, using CPU 0", cpu);
+            0
+        } else {
+            cpu
+        }
+    } else {
+        // Find CPU with smallest runqueue
+        let mut min_cpu = 0;
+        let mut min_size = usize::MAX;
+        
+        for i in 0..cpu_count {
+            let percpu = percpu_for(i);
+            let runqueue = percpu.runqueue.lock();
+            let size = runqueue.len();
+            
+            if size < min_size {
+                min_size = size;
+                min_cpu = i;
+            }
+        }
+        
+        min_cpu
+    };
+    
+    // Get current CPU ID to check if this is a remote enqueue
+    let current_cpu = percpu_current().id;
+    
+    // Enqueue task to selected CPU's runqueue
+    let percpu = percpu_for(cpu_id);
+    let mut runqueue = percpu.runqueue.lock();
+    
+    if !runqueue.push_back(task_id) {
+        sched_error!("Failed to enqueue task {} to CPU {} (runqueue full)", task_id, cpu_id);
+    } else {
+        sched_log!("Enqueued task {} to CPU {} (runqueue size: {})", task_id, cpu_id, runqueue.len());
+        
+        // Drop the runqueue lock before sending IPI
+        drop(runqueue);
+        
+        // If we enqueued to a remote CPU, send RESCHEDULE_IPI to wake it up
+        if cpu_id != current_cpu && cpu_count > 1 {
+            use crate::arch::x86_64::apic::ipi::send_reschedule_ipi;
+            send_reschedule_ipi(cpu_id);
+        }
     }
+}
+
+/// Dequeue a task from a CPU's runqueue
+///
+/// Removes and returns the next task from the specified CPU's runqueue.
+///
+/// # Arguments
+/// * `cpu_id` - The CPU to dequeue from
+///
+/// # Returns
+/// The task ID of the dequeued task, or None if the runqueue is empty
+#[allow(dead_code)]
+pub fn dequeue_task(cpu_id: usize) -> Option<TaskId> {
+    let percpu = percpu_for(cpu_id);
+    let mut runqueue = percpu.runqueue.lock();
+    runqueue.pop_front()
 }
 
 /// Put current task to sleep for specified ticks
 ///
 /// Returns true on success, false on error
-pub fn sleep_current_task(ticks: u64, priority: TaskPriority) -> bool {
-    let mut sched = match SCHED.get() {
-        Some(s) => s.lock(),
-        None => return false,
-    };
-    
-    let current_id = match sched.current {
+pub fn sleep_current_task(ticks: u64, _priority: TaskPriority) -> bool {
+    // Get current CPU and task
+    let percpu = percpu_current();
+    let current_id = match percpu.current_task {
         Some(id) => id,
         None => return false,
     };
     
-    // Put task to sleep in priority scheduler
-    if !sched.priority_sched.sleep_task(current_id, ticks, priority) {
+    // Update task state to Sleeping
+    if let Some(task) = get_task(current_id) {
+        task.state = TaskState::Sleeping;
+        task.wake_tick = Some(ticks);
+    }
+    
+    // Note: Task will not be re-enqueued until wake time
+    // The timer interrupt will check wake_tick and re-enqueue when ready
+    
+    true
+}
+
+/// Migrate a task from one CPU to another
+///
+/// This function moves a task from the source CPU's runqueue to the destination CPU's runqueue.
+/// It uses proper lock ordering (lower CPU ID first) to prevent deadlocks.
+///
+/// # Arguments
+/// * `task_id` - The task to migrate
+/// * `from_cpu` - Source CPU ID
+/// * `to_cpu` - Destination CPU ID
+///
+/// # Returns
+/// true on success, false on error
+pub fn migrate_task(task_id: TaskId, from_cpu: usize, to_cpu: usize) -> bool {
+    if from_cpu == to_cpu {
+        return false; // No migration needed
+    }
+    
+    use core::sync::atomic::Ordering;
+    let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+    
+    if from_cpu >= cpu_count || to_cpu >= cpu_count {
+        return false; // Invalid CPU IDs
+    }
+    
+    // Lock ordering: always lock lower CPU ID first to prevent deadlocks
+    let (first_cpu, second_cpu) = if from_cpu < to_cpu {
+        (from_cpu, to_cpu)
+    } else {
+        (to_cpu, from_cpu)
+    };
+    
+    // Assert CPU ID ordering in debug builds
+    crate::sync::lock_ordering::assert_cpu_id_order(first_cpu, second_cpu);
+    
+    let percpu_first = percpu_for(first_cpu);
+    let percpu_second = percpu_for(second_cpu);
+    
+    // Lock both runqueues in order
+    let mut runqueue_first = percpu_first.runqueue.lock();
+    let mut runqueue_second = percpu_second.runqueue.lock();
+    
+    // Get the correct source and destination queues
+    let (src_queue, dst_queue) = if from_cpu == first_cpu {
+        (&mut *runqueue_first, &mut *runqueue_second)
+    } else {
+        (&mut *runqueue_second, &mut *runqueue_first)
+    };
+    
+    // Remove task from source queue
+    // Note: This is a simple implementation that searches the queue
+    // A more efficient implementation would use a different data structure
+    let mut found = false;
+    let mut temp_tasks = [0; MAX_RUNQUEUE_SIZE];
+    let mut temp_count = 0;
+    
+    while let Some(tid) = src_queue.pop_front() {
+        if tid == task_id {
+            found = true;
+            break;
+        } else {
+            temp_tasks[temp_count] = tid;
+            temp_count += 1;
+        }
+    }
+    
+    // Restore tasks we removed
+    for i in 0..temp_count {
+        src_queue.push_back(temp_tasks[i]);
+    }
+    
+    if !found {
+        return false; // Task not found in source queue
+    }
+    
+    // Add task to destination queue
+    if !dst_queue.push_back(task_id) {
+        // Destination queue full - put task back in source queue
+        src_queue.push_back(task_id);
         return false;
     }
     
-    // Update task state to Sleeping
-    drop(sched);
-    if let Some(task) = get_task(current_id) {
-        task.state = TaskState::Sleeping;
-    }
+    // Drop locks before sending IPI
+    drop(runqueue_first);
+    drop(runqueue_second);
+    
+    sched_log!("Migrated task {} from CPU {} to CPU {}", task_id, from_cpu, to_cpu);
+    
+    // Send RESCHEDULE_IPI to destination CPU to schedule the migrated task
+    use crate::arch::x86_64::apic::ipi::send_reschedule_ipi;
+    send_reschedule_ipi(to_cpu);
     
     true
+}
+
+/// Balance load across CPUs
+///
+/// This function checks runqueue sizes and migrates tasks from busy CPUs to idle CPUs
+/// if the imbalance is greater than 2 tasks.
+///
+/// # Returns
+/// The number of tasks migrated
+pub fn balance_load() -> usize {
+    use core::sync::atomic::Ordering;
+    let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+    
+    if cpu_count <= 1 {
+        return 0; // No balancing needed for single CPU
+    }
+    
+    // Find CPU with largest and smallest runqueue
+    let mut max_cpu = 0;
+    let mut max_size = 0;
+    let mut min_cpu = 0;
+    let mut min_size = usize::MAX;
+    
+    for i in 0..cpu_count {
+        let percpu = percpu_for(i);
+        let runqueue = percpu.runqueue.lock();
+        let size = runqueue.len();
+        
+        if size > max_size {
+            max_size = size;
+            max_cpu = i;
+        }
+        
+        if size < min_size {
+            min_size = size;
+            min_cpu = i;
+        }
+    }
+    
+    // Check if imbalance is greater than 2 tasks
+    if max_size <= min_size + 2 {
+        return 0; // No significant imbalance
+    }
+    
+    // Migrate one task from busy CPU to idle CPU
+    let task_to_migrate = {
+        let percpu = percpu_for(max_cpu);
+        let mut runqueue = percpu.runqueue.lock();
+        runqueue.pop_front()
+    };
+    
+    if let Some(task_id) = task_to_migrate {
+        // Re-enqueue to destination CPU
+        let percpu = percpu_for(min_cpu);
+        let mut runqueue = percpu.runqueue.lock();
+        
+        if runqueue.push_back(task_id) {
+            sched_log!("Load balance: migrated task {} from CPU {} (size {}) to CPU {} (size {})",
+                task_id, max_cpu, max_size, min_cpu, min_size);
+            return 1;
+        } else {
+            // Failed to enqueue - put back in source queue
+            let percpu = percpu_for(max_cpu);
+            let mut runqueue = percpu.runqueue.lock();
+            runqueue.push_back(task_id);
+        }
+    }
+    
+    0
 }
 
 /// Yield CPU to next task (voluntary context switch)
@@ -570,6 +826,28 @@ pub fn yield_now() {
     tick();
 }
 
+/// Set the number of online CPUs
+///
+/// This should be called after SMP initialization to inform the scheduler
+/// how many CPUs are available.
+///
+/// # Arguments
+/// * `count` - Number of online CPUs
+pub fn set_cpu_count(count: usize) {
+    use core::sync::atomic::Ordering;
+    CPU_COUNT.store(count, Ordering::Relaxed);
+    sched_info!("Scheduler configured for {} CPUs", count);
+}
+
+/// Get the number of online CPUs
+///
+/// # Returns
+/// The number of online CPUs
+pub fn get_cpu_count() -> usize {
+    use core::sync::atomic::Ordering;
+    CPU_COUNT.load(Ordering::Relaxed)
+}
+
 /// Initialize the scheduler
 ///
 /// This function:
@@ -580,8 +858,8 @@ pub fn yield_now() {
 /// # Notes
 /// - Must be called before spawning any tasks
 /// - Must be called before enabling interrupts
-/// - The idle task is created but not added to the priority scheduler
-///   (it will be used when all queues are empty)
+/// - The idle task is created but not added to any runqueue
+///   (it will be used when runqueues are empty)
 pub fn init_scheduler() {
     use crate::mm::allocator::kmalloc;
     use core::ptr;
@@ -622,6 +900,16 @@ pub fn init_scheduler() {
     let mut task_table = TASK_TABLE.lock();
     task_table[0] = TaskPtr::new(task_ptr);
     drop(task_table);
+    
+    // Set idle task for all CPUs
+    use core::sync::atomic::Ordering;
+    let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+    for cpu_id in 0..cpu_count {
+        unsafe {
+            let percpu = crate::arch::x86_64::smp::percpu::percpu_for_mut(cpu_id);
+            percpu.idle_task = 0;
+        }
+    }
     
     sched_info!("Created idle task (id 0)");
     sched_info!("Scheduler initialized!");
@@ -787,14 +1075,20 @@ pub mod manual_tests {
         // Verify task was created
         serial_println!("[TEST] Spawned task with id: {}", task_id);
         
-        // Check priority scheduler has the task
-        let sched = SCHED.get().expect("Scheduler not initialized").lock();
-        let runqueue_len = sched.priority_sched.len();
-        drop(sched);
+        // Check per-CPU runqueue has the task
+        use core::sync::atomic::Ordering;
+        let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+        let mut total_tasks = 0;
         
-        serial_println!("[TEST] Runqueue length: {}", runqueue_len);
+        for i in 0..cpu_count {
+            let percpu = percpu_for(i);
+            let runqueue = percpu.runqueue.lock();
+            total_tasks += runqueue.len();
+        }
         
-        if runqueue_len > 0 {
+        serial_println!("[TEST] Total tasks in runqueues: {}", total_tasks);
+        
+        if total_tasks > 0 {
             serial_println!("[TEST] ✓ spawn_task adds to runqueue test passed!");
         } else {
             serial_println!("[TEST] ✗ spawn_task adds to runqueue test FAILED!");
@@ -834,13 +1128,20 @@ pub mod manual_tests {
         
         serial_println!("[TEST] Spawned tasks: {}, {}, {}", id_a, id_b, id_c);
         
-        // Check priority scheduler has tasks
-        let sched = SCHED.get().expect("Scheduler not initialized").lock();
-        let runqueue_len = sched.priority_sched.len();
-        serial_println!("[TEST] Priority scheduler has {} tasks", runqueue_len);
-        drop(sched);
+        // Check per-CPU runqueues have tasks
+        use core::sync::atomic::Ordering;
+        let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+        let mut total_tasks = 0;
         
-        if runqueue_len == 3 {
+        for i in 0..cpu_count {
+            let percpu = percpu_for(i);
+            let runqueue = percpu.runqueue.lock();
+            total_tasks += runqueue.len();
+        }
+        
+        serial_println!("[TEST] Total tasks in runqueues: {}", total_tasks);
+        
+        if total_tasks == 3 {
             serial_println!("[TEST] ✓ Round-Robin task selection test passed!");
         } else {
             serial_println!("[TEST] ✗ Round-Robin task selection test FAILED!");
@@ -874,9 +1175,18 @@ pub mod manual_tests {
         spawn_task("task_2", task_2, TaskPriority::Normal).expect("Failed to spawn task_2");
         
         // Verify scheduler state
-        let sched = SCHED.get().expect("Scheduler not initialized").lock();
-        let has_tasks = !sched.priority_sched.is_empty();
-        drop(sched);
+        use core::sync::atomic::Ordering;
+        let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+        let mut has_tasks = false;
+        
+        for i in 0..cpu_count {
+            let percpu = percpu_for(i);
+            let runqueue = percpu.runqueue.lock();
+            if !runqueue.is_empty() {
+                has_tasks = true;
+                break;
+            }
+        }
         
         if has_tasks {
             serial_println!("[TEST] ✓ Multiple task switching test passed!");

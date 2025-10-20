@@ -401,48 +401,46 @@ static PREEMPT_OP_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::A
 
 /// Global preemption disable function
 /// 
-/// Disables preemption by incrementing the disable counter.
+/// Disables preemption by disabling interrupts.
 /// Must be called before acquiring spinlocks in IPC operations.
+/// 
+/// Note: In SMP mode, preemption control is handled by interrupt disable/enable
+/// rather than a counter, since each CPU manages its own scheduling independently.
 pub fn preempt_disable() {
-    use crate::sched::SCHED;
     use crate::serial_println;
     use core::sync::atomic::Ordering;
     
-    if let Some(sched) = SCHED.get() {
-        let mut sched = sched.lock();
-        sched.priority_sched.preempt_disable();
-        
-        // Log preemption disable with throttling (every 100th operation)
-        let count = PREEMPT_OP_COUNT.fetch_add(1, Ordering::Relaxed);
-        if count % 100 == 0 {
-            serial_println!(
-                "[SCHED] Preemption disabled (count: {})",
-                sched.priority_sched.preempt_disable_count
-            );
-        }
+    // Disable interrupts to prevent preemption
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
+    }
+    
+    // Log preemption disable with throttling (every 100th operation)
+    let count = PREEMPT_OP_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count % 100 == 0 {
+        serial_println!("[SCHED] Preemption disabled");
     }
 }
 
 /// Global preemption enable function
 /// 
-/// Enables preemption by decrementing the disable counter.
+/// Enables preemption by enabling interrupts.
 /// Must be called after releasing spinlocks in IPC operations.
+/// 
+/// Note: In SMP mode, preemption control is handled by interrupt disable/enable
+/// rather than a counter, since each CPU manages its own scheduling independently.
 pub fn preempt_enable() {
-    use crate::sched::SCHED;
     use crate::serial_println;
     use core::sync::atomic::Ordering;
     
-    if let Some(sched) = SCHED.get() {
-        let mut sched = sched.lock();
-        sched.priority_sched.preempt_enable();
-        
-        // Log preemption enable with throttling (every 100th operation)
-        let count = PREEMPT_OP_COUNT.load(Ordering::Relaxed);
-        if count % 100 == 0 {
-            serial_println!(
-                "[SCHED] Preemption enabled (count: {})",
-                sched.priority_sched.preempt_disable_count
-            );
-        }
+    // Enable interrupts to allow preemption
+    unsafe {
+        core::arch::asm!("sti", options(nomem, nostack));
+    }
+    
+    // Log preemption enable with throttling (every 100th operation)
+    let count = PREEMPT_OP_COUNT.load(Ordering::Relaxed);
+    if count % 100 == 0 {
+        serial_println!("[SCHED] Preemption enabled");
     }
 }

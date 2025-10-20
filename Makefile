@@ -114,7 +114,7 @@ iso: build limine
 # Run kernel in QEMU
 run: iso
 	@echo "$(COLOR_BLUE)Starting QEMU...$(COLOR_RESET)"
-	@./tools/qemu.sh
+	@./tools/qemu/qemu.sh
 
 # Clean build artifacts
 clean:
