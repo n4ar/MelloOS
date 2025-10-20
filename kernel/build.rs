@@ -33,26 +33,57 @@ fn main() {
     println!("cargo:rerun-if-changed=userspace/init/src/main.rs");
     
     // Compile AP trampoline assembly
-    let trampoline_src = PathBuf::from("src/arch/x86_64/smp/boot_ap.asm");
+    let trampoline_src = PathBuf::from("src/arch/x86_64/smp/boot_ap.S");
+    let trampoline_obj = out_dir.join("boot_ap.o");
     let trampoline_bin = out_dir.join("boot_ap.bin");
     
     if trampoline_src.exists() {
-        println!("cargo:warning=Compiling AP trampoline assembly with NASM");
+        println!("cargo:warning=Compiling AP trampoline assembly with GAS");
         
-        // Compile assembly directly to flat binary using NASM
-        let output = Command::new("nasm")
-            .args(&[
-                "-f", "bin",                    // Output flat binary
-                "-o", trampoline_bin.to_str().unwrap(),
-                trampoline_src.to_str().unwrap(),
-            ])
-            .output()
-            .expect("Failed to execute nasm (make sure NASM is installed)");
+        // Compile assembly to object file using assembler
+        // On macOS, use clang; on Linux, use as
+        let output = if cfg!(target_os = "macos") {
+            Command::new("clang")
+                .args(&[
+                    "-target", "x86_64-unknown-none",
+                    "-c",
+                    "-o", trampoline_obj.to_str().unwrap(),
+                    trampoline_src.to_str().unwrap(),
+                ])
+                .output()
+                .expect("Failed to execute clang")
+        } else {
+            Command::new("as")
+                .args(&[
+                    "--64",
+                    "-o", trampoline_obj.to_str().unwrap(),
+                    trampoline_src.to_str().unwrap(),
+                ])
+                .output()
+                .expect("Failed to execute as")
+        };
         
         if !output.status.success() {
-            eprintln!("nasm stdout: {}", String::from_utf8_lossy(&output.stdout));
-            eprintln!("nasm stderr: {}", String::from_utf8_lossy(&output.stderr));
-            panic!("Failed to compile AP trampoline assembly with NASM");
+            eprintln!("assembler stdout: {}", String::from_utf8_lossy(&output.stdout));
+            eprintln!("assembler stderr: {}", String::from_utf8_lossy(&output.stderr));
+            panic!("Failed to compile AP trampoline assembly");
+        }
+        
+        // Extract .text section to flat binary using objcopy
+        let output = Command::new("objcopy")
+            .args(&[
+                "-O", "binary",
+                "--only-section=.text",
+                trampoline_obj.to_str().unwrap(),
+                trampoline_bin.to_str().unwrap(),
+            ])
+            .output()
+            .expect("Failed to execute objcopy");
+        
+        if !output.status.success() {
+            eprintln!("objcopy stdout: {}", String::from_utf8_lossy(&output.stdout));
+            eprintln!("objcopy stderr: {}", String::from_utf8_lossy(&output.stderr));
+            panic!("Failed to extract binary from object file");
         }
         
         println!("cargo:warning=AP trampoline compiled to {:?}", trampoline_bin);
@@ -61,5 +92,5 @@ fn main() {
         fs::write(&trampoline_bin, &[]).expect("Failed to create empty trampoline binary");
     }
     
-    println!("cargo:rerun-if-changed=src/arch/x86_64/smp/boot_ap.asm");
+    println!("cargo:rerun-if-changed=src/arch/x86_64/smp/boot_ap.S");
 }

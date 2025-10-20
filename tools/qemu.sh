@@ -12,6 +12,33 @@ if [ ! -f "mellos.iso" ]; then
     exit 1
 fi
 
+# Parse command line arguments
+SMP_CPUS=4  # Default to 4 CPUs for SMP testing
+ENABLE_KVM=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -smp)
+            SMP_CPUS="$2"
+            shift 2
+            ;;
+        -enable-kvm)
+            ENABLE_KVM="-enable-kvm"
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [-smp N] [-enable-kvm]"
+            exit 1
+            ;;
+    esac
+done
+
+echo "Configuration:"
+echo "  CPUs: $SMP_CPUS"
+echo "  KVM: ${ENABLE_KVM:-disabled}"
+echo ""
+
 # Detect UEFI firmware location based on OS
 # Limine supports both BIOS and UEFI boot, so we'll try UEFI first
 UEFI_MODE=0
@@ -38,26 +65,32 @@ if [ $UEFI_MODE -eq 1 ]; then
     qemu-system-x86_64 \
         -M q35 \
         -m 2G \
+        -smp $SMP_CPUS \
         -cdrom mellos.iso \
         -boot d \
         -serial stdio \
-        -bios "$UEFI_BIOS"
+        -bios "$UEFI_BIOS" \
+        $ENABLE_KVM
 elif [ $UEFI_MODE -eq 2 ]; then
     echo "Booting in UEFI mode (EDK2)..."
     qemu-system-x86_64 \
         -M q35 \
         -m 2G \
+        -smp $SMP_CPUS \
         -cdrom mellos.iso \
         -boot d \
         -serial stdio \
-        -drive if=pflash,format=raw,readonly=on,file="$UEFI_CODE"
+        -drive if=pflash,format=raw,readonly=on,file="$UEFI_CODE" \
+        $ENABLE_KVM
 else
     echo "Booting in BIOS mode (UEFI firmware not found)..."
     echo "Note: Limine supports both BIOS and UEFI boot modes."
     qemu-system-x86_64 \
         -M q35 \
         -m 2G \
+        -smp $SMP_CPUS \
         -cdrom mellos.iso \
         -boot d \
-        -serial stdio
+        -serial stdio \
+        $ENABLE_KVM
 fi

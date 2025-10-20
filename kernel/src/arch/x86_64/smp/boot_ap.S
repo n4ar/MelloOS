@@ -20,6 +20,8 @@
 .set TRAMPOLINE_ENTRY_PTR,  0x8308
 .set TRAMPOLINE_CR3,        0x8310
 .set TRAMPOLINE_CPU_ID,     0x8318
+.set TRAMPOLINE_APIC_ID,    0x8320
+.set TRAMPOLINE_LAPIC_ADDR, 0x8328
 
 .globl trampoline_start
 .globl trampoline_end
@@ -68,10 +70,10 @@ protected_mode_entry:
     movl    (TRAMPOLINE_CR3), %eax
     movl    %eax, %cr3
     
-    /* Enable long mode: set EFER.LME */
+    /* Enable long mode and NX: set EFER.LME and EFER.NXE */
     movl    $0xC0000080, %ecx   /* EFER MSR */
     rdmsr
-    orl     $0x100, %eax        /* Set LME bit (bit 8) */
+    orl     $0x900, %eax        /* Set LME (bit 8) and NXE (bit 11) */
     wrmsr
     
     /* Enable paging: set CR0.PG */
@@ -88,22 +90,93 @@ protected_mode_entry:
 .code64
 long_mode_entry:
     /* Set up 64-bit data segments */
-    movw    $0x10, %ax
+    xorw    %ax, %ax
     movw    %ax, %ds
     movw    %ax, %es
-    movw    %ax, %ss
     movw    %ax, %fs
     movw    %ax, %gs
+    
+    /* Set up stack segment with proper data selector */
+    movw    $0x10, %ax
+    movw    %ax, %ss
     
     /* Load stack pointer */
     movq    (TRAMPOLINE_STACK_PTR), %rsp
     
-    /* Load CPU ID into first argument register (rdi) */
-    movq    (TRAMPOLINE_CPU_ID), %rdi
+    /* Verify stack is valid */
+    testq   %rsp, %rsp
+    jz      .Lhalt_error
     
-    /* Jump to Rust entry point */
+    /* Align stack to 16-byte boundary */
+    /* x86-64 calling convention requires RSP % 16 == 8 before call */
+    andq    $~0xF, %rsp        /* Clear low 4 bits */
+    subq    $8, %rsp           /* Adjust so RSP % 16 == 8 */
+    
+    /* Load arguments for Rust function */
+    movq    (TRAMPOLINE_CPU_ID), %rdi     /* First arg: cpu_id */
+    movq    (TRAMPOLINE_APIC_ID), %rsi    /* Second arg: apic_id (only low byte used) */
+    movq    (TRAMPOLINE_LAPIC_ADDR), %rdx /* Third arg: lapic_address */
+    
+    /* Load entry point address */
     movq    (TRAMPOLINE_ENTRY_PTR), %rax
+    
+    /* Verify entry point is valid */
+    testq   %rax, %rax
+    jz      .Lhalt_error
+    
+    /* Debug: Write 'R' to serial (about to jump) */
+    pushq   %rax
+    movb    $'R', %al
+    movw    $0x3F8, %dx
+    outb    %al, %dx
+    popq    %rax
+    
+    /* Double-check address is in higher-half */
+    movq    %rax, %rcx
+    shrq    $48, %rcx
+    testq   %rcx, %rcx
+    jz      .Lbad_address
+    
+    /* Debug: 'J' before jump */
+    pushq   %rax
+    movb    $'J', %al
+    movw    $0x3F8, %dx
+    outb    %al, %dx
+    popq    %rax
+    
+    /* Save entry point and jump to lower-half wrapper */
+    movq    %rax, %r15
+    leaq    (rust_entry_wrapper - trampoline_start + TRAMPOLINE_BASE), %rax
     jmp     *%rax
+    
+.Lbad_address:
+    movb    $'Z', %al
+    movw    $0x3F8, %dx
+    outb    %al, %dx
+    jmp     .Lhalt_error
+    
+.Lhalt_error:
+    cli
+    hlt
+    jmp     .Lhalt_error
+
+/* Lower-half wrapper that calls higher-half Rust */
+rust_entry_wrapper:
+    /* Debug: 'W' = entered wrapper */
+    movb    $'W', %al
+    movw    $0x3F8, %dx
+    outb    %al, %dx
+    
+    /* Arguments are already in rdi, rsi, rdx from earlier */
+    /* Entry point is in r15 */
+    callq   *%r15
+    
+    /* Should never return */
+    movb    $'N', %al
+    movw    $0x3F8, %dx
+    outb    %al, %dx
+    cli
+    hlt
 
 /* 32-bit GDT for protected mode transition */
 .align 16
@@ -113,19 +186,19 @@ gdt32:
     .quad   0x00CF92000000FFFF  /* Data segment: base=0, limit=4GB, writable */
 
 gdt32_desc:
-    .word   gdt32_desc - gdt32 - 1  /* Limit */
-    .long   gdt32 - trampoline_start + TRAMPOLINE_BASE  /* Base */
+    .word   23                                              /* Limit (3 entries * 8 - 1) */
+    .long   gdt32 - trampoline_start + TRAMPOLINE_BASE      /* Base */
 
 /* 64-bit GDT for long mode */
 .align 16
 gdt64:
     .quad   0x0000000000000000  /* Null descriptor */
-    .quad   0x00AF9A000000FFFF  /* Code segment: 64-bit, executable, readable */
-    .quad   0x00AF92000000FFFF  /* Data segment: 64-bit, writable */
+    .quad   0x00209A0000000000  /* Code segment: L=1, 64-bit, executable, readable */
+    .quad   0x0000920000000000  /* Data segment: 64-bit, writable */
 
 gdt64_desc:
-    .word   gdt64_desc - gdt64 - 1  /* Limit */
-    .long   gdt64 - trampoline_start + TRAMPOLINE_BASE  /* Base */
+    .word   23                                              /* Limit (3 entries * 8 - 1) */
+    .long   gdt64 - trampoline_start + TRAMPOLINE_BASE      /* Base */
 
 .align 16
 trampoline_end:

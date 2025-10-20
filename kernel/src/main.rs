@@ -501,6 +501,166 @@ fn test_ipc_stress_pong() -> ! {
     }
 }
 
+// ============================================================================
+// SMP Multi-Core Test Tasks (Phase 5)
+// ============================================================================
+
+/// SMP Test Task A - High priority task
+/// Logs with format "[SCHED][coreN] run A" and performs simple work with yield
+fn smp_test_task_a() -> ! {
+    // Helper function to invoke sys_yield syscall
+    unsafe fn sys_yield() {
+        core::arch::asm!(
+            "int 0x80",
+            in("rax") 1, // sys_yield is syscall 1
+            in("rdi") 0,
+            in("rsi") 0,
+            in("rdx") 0,
+            options(nostack, preserves_flags)
+        );
+    }
+    
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    static EXEC_COUNT: AtomicUsize = AtomicUsize::new(0);
+    
+    loop {
+        let count = EXEC_COUNT.fetch_add(1, Ordering::Relaxed);
+        
+        // Get current CPU ID from per-CPU data
+        let cpu_id = arch::x86_64::smp::percpu::percpu_current().id;
+        
+        // Log execution with required format
+        if count < 20 {
+            serial_println!("[SCHED][core{}] run A", cpu_id);
+        }
+        
+        // Perform simple work (busy loop)
+        for _ in 0..500_000 {
+            unsafe { core::arch::asm!("nop"); }
+        }
+        
+        // Yield to allow other tasks to run
+        unsafe { sys_yield(); }
+    }
+}
+
+/// SMP Test Task B - Normal priority task
+/// Logs with format "[SCHED][coreN] run B" and performs simple work with yield
+fn smp_test_task_b() -> ! {
+    // Helper function to invoke sys_yield syscall
+    unsafe fn sys_yield() {
+        core::arch::asm!(
+            "int 0x80",
+            in("rax") 1, // sys_yield is syscall 1
+            in("rdi") 0,
+            in("rsi") 0,
+            in("rdx") 0,
+            options(nostack, preserves_flags)
+        );
+    }
+    
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    static EXEC_COUNT: AtomicUsize = AtomicUsize::new(0);
+    
+    loop {
+        let count = EXEC_COUNT.fetch_add(1, Ordering::Relaxed);
+        
+        // Get current CPU ID from per-CPU data
+        let cpu_id = arch::x86_64::smp::percpu::percpu_current().id;
+        
+        // Log execution with required format
+        if count < 20 {
+            serial_println!("[SCHED][core{}] run B", cpu_id);
+        }
+        
+        // Perform simple work (busy loop)
+        for _ in 0..500_000 {
+            unsafe { core::arch::asm!("nop"); }
+        }
+        
+        // Yield to allow other tasks to run
+        unsafe { sys_yield(); }
+    }
+}
+
+/// SMP Test Task C - Normal priority task
+/// Logs with format "[SCHED][coreN] run C" and performs simple work with yield
+fn smp_test_task_c() -> ! {
+    // Helper function to invoke sys_yield syscall
+    unsafe fn sys_yield() {
+        core::arch::asm!(
+            "int 0x80",
+            in("rax") 1, // sys_yield is syscall 1
+            in("rdi") 0,
+            in("rsi") 0,
+            in("rdx") 0,
+            options(nostack, preserves_flags)
+        );
+    }
+    
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    static EXEC_COUNT: AtomicUsize = AtomicUsize::new(0);
+    
+    loop {
+        let count = EXEC_COUNT.fetch_add(1, Ordering::Relaxed);
+        
+        // Get current CPU ID from per-CPU data
+        let cpu_id = arch::x86_64::smp::percpu::percpu_current().id;
+        
+        // Log execution with required format
+        if count < 20 {
+            serial_println!("[SCHED][core{}] run C", cpu_id);
+        }
+        
+        // Perform simple work (busy loop)
+        for _ in 0..500_000 {
+            unsafe { core::arch::asm!("nop"); }
+        }
+        
+        // Yield to allow other tasks to run
+        unsafe { sys_yield(); }
+    }
+}
+
+/// SMP Test Task D - Low priority task
+/// Logs with format "[SCHED][coreN] run D" and performs simple work with yield
+fn smp_test_task_d() -> ! {
+    // Helper function to invoke sys_yield syscall
+    unsafe fn sys_yield() {
+        core::arch::asm!(
+            "int 0x80",
+            in("rax") 1, // sys_yield is syscall 1
+            in("rdi") 0,
+            in("rsi") 0,
+            in("rdx") 0,
+            options(nostack, preserves_flags)
+        );
+    }
+    
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    static EXEC_COUNT: AtomicUsize = AtomicUsize::new(0);
+    
+    loop {
+        let count = EXEC_COUNT.fetch_add(1, Ordering::Relaxed);
+        
+        // Get current CPU ID from per-CPU data
+        let cpu_id = arch::x86_64::smp::percpu::percpu_current().id;
+        
+        // Log execution with required format
+        if count < 20 {
+            serial_println!("[SCHED][core{}] run D", cpu_id);
+        }
+        
+        // Perform simple work (busy loop)
+        for _ in 0..500_000 {
+            unsafe { core::arch::asm!("nop"); }
+        }
+        
+        // Yield to allow other tasks to run
+        unsafe { sys_yield(); }
+    }
+}
+
 /// Kernel entry point called by the Limine bootloader
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
@@ -597,6 +757,7 @@ pub extern "C" fn _start() -> ! {
     serial_println!("[APIC] core0 timer @{}Hz", config::SCHED_HZ);
     
     serial_println!("[KERNEL] Initializing SMP (bringing up Application Processors)...");
+    
     // Initialize SMP and bring up Application Processors
     let cpu_count = match arch::x86_64::smp::init_smp(&mut bsp_lapic) {
         Ok(count) => {
@@ -660,7 +821,24 @@ pub extern "C" fn _start() -> ! {
     init_loader::load_init_process().expect("Failed to load init process");
     
     serial_println!("[KERNEL] ========================================");
-    serial_println!("[KERNEL] All test tasks spawned successfully!");
+    serial_println!("[KERNEL] All Phase 4 test tasks spawned successfully!");
+    serial_println!("[KERNEL] ========================================");
+    
+    // Phase 5: SMP Multi-Core Test Tasks
+    serial_println!("[KERNEL] ========================================");
+    serial_println!("[KERNEL] Phase 5 SMP Multi-Core Tests");
+    serial_println!("[KERNEL] ========================================");
+    
+    serial_println!("[KERNEL] Spawning SMP test tasks (A, B, C, D)...");
+    spawn_task("SMP-A", smp_test_task_a, TaskPriority::High).expect("Failed to spawn SMP-A");
+    spawn_task("SMP-B", smp_test_task_b, TaskPriority::Normal).expect("Failed to spawn SMP-B");
+    spawn_task("SMP-C", smp_test_task_c, TaskPriority::Normal).expect("Failed to spawn SMP-C");
+    spawn_task("SMP-D", smp_test_task_d, TaskPriority::Low).expect("Failed to spawn SMP-D");
+    
+    serial_println!("[KERNEL] ========================================");
+    serial_println!("[KERNEL] All SMP test tasks spawned successfully!");
+    serial_println!("[KERNEL] CPU count: {}", cpu_count);
+    serial_println!("[KERNEL] Tasks will be distributed across cores");
     serial_println!("[KERNEL] ========================================");
     
     serial_println!("[KERNEL] Initializing timer interrupt...");

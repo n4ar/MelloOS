@@ -168,19 +168,77 @@ static mut PERCPU_ARRAY: [PerCpu; MAX_CPUS] = {
 /// This function must be called exactly once per CPU during initialization.
 /// It accesses the mutable static PERCPU_ARRAY.
 pub unsafe fn init_percpu(cpu_id: usize, apic_id: u8) {
+    // Debug: 'A' at start of init_percpu
+    core::arch::asm!(
+        "mov al, 'A'",
+        "mov dx, 0x3F8",
+        "out dx, al",
+        options(nostack, nomem)
+    );
+    
     if cpu_id >= MAX_CPUS {
         panic!("[PERCPU] Invalid CPU ID: {}", cpu_id);
     }
     
+    // Debug: 'B' after bounds check
+    core::arch::asm!(
+        "mov al, 'B'",
+        "mov dx, 0x3F8",
+        "out dx, al",
+        options(nostack, nomem)
+    );
+    
     let percpu = &mut PERCPU_ARRAY[cpu_id];
+    
+    // Debug: 'C' after getting percpu reference
+    core::arch::asm!(
+        "mov al, 'C'",
+        "mov dx, 0x3F8",
+        "out dx, al",
+        options(nostack, nomem)
+    );
+    
+    // Test: Try reading the current value first
+    let _test_read = percpu.id;
+    core::arch::asm!("mov al, 'X'", "mov dx, 0x3F8", "out dx, al", options(nostack, nomem));
+    
+    // Test: Try a simple write to a local variable on stack
+    let mut test_var: usize = 0;
+    test_var = cpu_id;
+    core::arch::asm!("mov al, 'Y'", "mov dx, 0x3F8", "out dx, al", options(nostack, nomem));
+    
+    // Now try the actual write
     percpu.id = cpu_id;
+    core::arch::asm!("mov al, 'E'", "mov dx, 0x3F8", "out dx, al", options(nostack, nomem));
+    
     percpu.apic_id = apic_id;
-    percpu.node_id = 0; // Default to node 0 (NUMA support not yet implemented)
+    core::arch::asm!("mov al, 'F'", "mov dx, 0x3F8", "out dx, al", options(nostack, nomem));
+    
+    percpu.node_id = 0;
+    core::arch::asm!("mov al, 'G'", "mov dx, 0x3F8", "out dx, al", options(nostack, nomem));
+    
     percpu.current_task = None;
-    percpu.idle_task = 0; // Will be set later when idle task is created
-    percpu.lapic_timer_hz = 0; // Will be set during timer calibration
+    core::arch::asm!("mov al, 'H'", "mov dx, 0x3F8", "out dx, al", options(nostack, nomem));
+    
+    percpu.idle_task = 0;
+    core::arch::asm!("mov al, 'I'", "mov dx, 0x3F8", "out dx, al", options(nostack, nomem));
+    
+    percpu.lapic_timer_hz = 0;
+    core::arch::asm!("mov al, 'J'", "mov dx, 0x3F8", "out dx, al", options(nostack, nomem));
+    
     percpu.ticks = AtomicU64::new(0);
+    core::arch::asm!("mov al, 'K'", "mov dx, 0x3F8", "out dx, al", options(nostack, nomem));
+    
     percpu.in_interrupt = false;
+    core::arch::asm!("mov al, 'L'", "mov dx, 0x3F8", "out dx, al", options(nostack, nomem));
+    
+    // Debug: 'D' after setting all fields
+    core::arch::asm!(
+        "mov al, 'D'",
+        "mov dx, 0x3F8",
+        "out dx, al",
+        options(nostack, nomem)
+    );
     
     // Runqueue is already initialized by new_uninit()
 }
