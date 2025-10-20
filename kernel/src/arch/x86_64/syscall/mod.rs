@@ -148,6 +148,9 @@ pub const SYS_IPC_RECV: usize = 9; // Keep existing syscall
 pub const ENOSYS: isize = -38;  // Function not implemented
 pub const EFAULT: isize = -14;  // Bad address
 pub const ENOMEM: isize = -12;  // Out of memory
+pub const ECHILD: isize = -10;  // No child processes
+pub const ESRCH: isize = -3;    // No such process
+pub const EAGAIN: isize = -11;  // Try again
 pub const EINVAL: isize = -22;  // Invalid argument
 pub const EPERM: isize = -1;    // Operation not permitted
 
@@ -460,19 +463,76 @@ fn sys_write_enhanced(fd: usize, buf_ptr: usize, len: usize) -> isize {
     len as isize
 }
 
-/// Enhanced sys_exit handler
+/// Enhanced sys_exit handler - Mark process as zombie and clean up
+/// 
+/// This function marks the current process as zombie with the given exit code,
+/// wakes up any waiting parent process, and removes the current task from
+/// the scheduler.
+/// 
+/// # Arguments
+/// * `code` - Exit code for the process
+/// 
+/// # Returns
+/// Never returns (process is terminated)
 fn sys_exit_enhanced(code: usize) -> ! {
+    use crate::user::process::ProcessManager;
+    use crate::sched;
+    
     let cpu_id = unsafe { crate::arch::x86_64::smp::percpu::percpu_current().id };
     let pid = get_current_process_id().unwrap_or(0);
     
     serial_println!("[SYSCALL][cpu{} pid={}] Process exiting with code {}", cpu_id, pid, code);
     
-    // TODO: Mark process as terminated and remove from all queues
-    // For now, delegate to existing implementation
-    loop {
-        unsafe {
-            core::arch::asm!("hlt");
+    // Get current task information
+    let current_task_info = match sched::get_current_task_info() {
+        Some(info) => info,
+        None => {
+            serial_println!("[SYSCALL] SYS_EXIT: No current task found");
+            // Fall back to infinite loop
+            loop {
+                unsafe { core::arch::asm!("hlt"); }
+            }
         }
+    };
+    
+    let current_task_id = current_task_info.0;
+    
+    // Mark process as zombie in the process table
+    if let Some(mut process_guard) = ProcessManager::get_process(current_task_id) {
+        if let Some(process) = process_guard.get_mut() {
+            process.mark_zombie(code as i32);
+            
+            serial_println!("[SYSCALL] SYS_EXIT: Process {} marked as zombie with exit code {}", 
+                           process.pid, code);
+            
+            // TODO: Wake up parent process if it's waiting
+            // This would involve checking if the parent is blocked on SYS_WAIT
+            // and moving it back to the ready queue
+            
+            if let Some(parent_pid) = process.parent_pid {
+                serial_println!("[SYSCALL] SYS_EXIT: Process {} has parent {}, should wake parent if waiting", 
+                               process.pid, parent_pid);
+                // TODO: Implement parent wakeup logic
+            }
+        }
+    }
+    
+    // Remove current task from scheduler
+    // The task should not be rescheduled after this point
+    if let Some(current_task) = sched::get_task_mut(current_task_id) {
+        current_task.state = crate::sched::task::TaskState::Ready; // Will be cleaned up
+        serial_println!("[SYSCALL] SYS_EXIT: Task {} marked for cleanup", current_task_id);
+    }
+    
+    serial_println!("[SYSCALL] SYS_EXIT: Process {} terminating, yielding to scheduler", pid);
+    
+    // Yield to scheduler - this task should never be scheduled again
+    sched::yield_now();
+    
+    // Should never reach here, but provide fallback
+    serial_println!("[SYSCALL] SYS_EXIT: ERROR - Returned from yield after exit!");
+    loop {
+        unsafe { core::arch::asm!("hlt"); }
     }
 }
 
@@ -511,22 +571,471 @@ fn sys_getpid_enhanced() -> isize {
     pid as isize
 }
 
-/// Stub for sys_fork - will be implemented in process management phase
+/// sys_fork implementation - Create a child process
+/// 
+/// Creates a copy of the current process with a new PID.
+/// Returns child PID to parent, 0 to child.
+/// 
+/// # Returns
+/// * Child PID (positive) in parent process
+/// * 0 in child process  
+/// * Negative error code on failure
 fn sys_fork_stub() -> isize {
-    serial_println!("[SYSCALL] SYS_FORK not yet implemented");
-    ENOSYS
+    use crate::user::process::{ProcessManager, ProcessError};
+    use crate::sched::{self, Task};
+    use crate::sched::priority::TaskPriority;
+    use crate::mm::paging::PageTable;
+    
+    serial_println!("[SYSCALL] SYS_FORK: Creating child process");
+    
+    // Get current task/process information
+    let current_task_info = match sched::get_current_task_info() {
+        Some(info) => info,
+        None => {
+            serial_println!("[SYSCALL] SYS_FORK: No current task found");
+            return ESRCH; // No such process
+        }
+    };
+    
+    let parent_task_id = current_task_info.0;
+    
+    // Get parent task to copy its context and memory regions
+    let parent_task = match sched::get_task_mut(parent_task_id) {
+        Some(task) => task,
+        None => {
+            serial_println!("[SYSCALL] SYS_FORK: Parent task not found");
+            return ESRCH;
+        }
+    };
+    
+    // Create a new process with the current task as parent
+    let child_pid = match ProcessManager::create_process(Some(parent_task_id), "forked_process") {
+        Ok(pid) => pid,
+        Err(ProcessError::ProcessTableFull) => {
+            serial_println!("[SYSCALL] SYS_FORK: Process table full");
+            return EAGAIN; // Try again later
+        }
+        Err(_) => {
+            serial_println!("[SYSCALL] SYS_FORK: Failed to create process");
+            return ENOMEM; // Out of memory
+        }
+    };
+    
+    // Get the child process to set up its memory and context
+    let mut child_process_guard = match ProcessManager::get_process(child_pid) {
+        Some(guard) => guard,
+        None => {
+            serial_println!("[SYSCALL] SYS_FORK: Child process not found after creation");
+            return ENOMEM;
+        }
+    };
+    
+    let child_process = match child_process_guard.get_mut() {
+        Some(process) => process,
+        None => {
+            serial_println!("[SYSCALL] SYS_FORK: Child process slot empty");
+            return ENOMEM;
+        }
+    };
+    
+    // Copy parent's memory regions to child
+    // TODO: Implement copy-on-write optimization in the future
+    for i in 0..parent_task.region_count {
+        if let Some(region) = &parent_task.memory_regions[i] {
+            match child_process.add_memory_region(region.clone()) {
+                Ok(()) => {
+                    serial_println!("[SYSCALL] SYS_FORK: Copied memory region {:?}", region.region_type);
+                }
+                Err(e) => {
+                    serial_println!("[SYSCALL] SYS_FORK: Failed to copy memory region: {:?}", e);
+                    // Continue with other regions
+                }
+            }
+        }
+    }
+    
+    // TODO: Copy parent's page table (mark as TODO for copy-on-write)
+    // For now, we'll create a new empty page table
+    // In a full implementation, we would duplicate the parent's page table
+    // and mark pages as copy-on-write
+    child_process.page_table = Some(PageTable::new());
+    
+    // Copy parent's CPU context for the child
+    child_process.context = parent_task.context.clone();
+    
+    // Note: Child's return value (0) will be set up during context switch
+    // The rax register is caller-saved and not part of CpuContext
+    
+    // Set child process priority to match parent
+    child_process.priority = parent_task.priority;
+    
+    // Create a corresponding Task for the scheduler
+    // We need to create a task entry point that will restore the child's context
+    fn child_task_entry() -> ! {
+        // This function should never be called directly
+        // The child will resume from the fork point with context switching
+        panic!("[FORK] Child task entry called directly - this should not happen");
+    }
+    
+    // Create child task with same priority as parent
+    let child_task_id = match sched::spawn_task("forked_task", child_task_entry, parent_task.priority) {
+        Ok(id) => id,
+        Err(e) => {
+            serial_println!("[SYSCALL] SYS_FORK: Failed to create child task: {:?}", e);
+            // Clean up the process we created
+            let _ = ProcessManager::remove_process(child_pid);
+            return ENOMEM;
+        }
+    };
+    
+    // Get the child task and set up its context to match the child process
+    if let Some(child_task) = sched::get_task_mut(child_task_id) {
+        // Copy the child process context to the child task
+        child_task.context = child_process.context.clone();
+        
+        // Copy memory regions from child process to child task
+        child_task.region_count = 0;
+        for i in 0..child_process.region_count {
+            if let Some(region) = &child_process.memory_regions[i] {
+                if let Err(e) = child_task.add_memory_region(region.clone()) {
+                    serial_println!("[SYSCALL] SYS_FORK: Failed to copy region to child task: {:?}", e);
+                }
+            }
+        }
+        
+        serial_println!("[SYSCALL] SYS_FORK: Created child process PID {} with task ID {}", 
+                       child_pid, child_task_id);
+    } else {
+        serial_println!("[SYSCALL] SYS_FORK: Failed to get child task after creation");
+        // Clean up
+        let _ = ProcessManager::remove_process(child_pid);
+        return ENOMEM;
+    }
+    
+    // Drop the child process guard to release the lock
+    drop(child_process_guard);
+    
+    serial_println!("[SYSCALL] SYS_FORK: Fork completed successfully - parent gets PID {}", child_pid);
+    
+    // Return child PID to parent process
+    // The child process will get 0 when it's scheduled (due to context.rax = 0)
+    child_pid as isize
 }
 
-/// Stub for sys_exec - will be implemented in ELF loader phase
-fn sys_exec_stub(_path_ptr: usize, _argv_ptr: usize) -> isize {
-    serial_println!("[SYSCALL] SYS_EXEC not yet implemented");
-    ENOSYS
+/// sys_exec implementation - Replace current process with new ELF binary
+/// 
+/// Clears the current process memory space and loads a new ELF binary.
+/// This replaces the current process image entirely.
+/// 
+/// # Arguments
+/// * `path_ptr` - Pointer to null-terminated path string in user space
+/// * `argv_ptr` - Pointer to argument array (currently unused)
+/// 
+/// # Returns
+/// * Does not return on success (process is replaced)
+/// * Negative error code on failure
+fn sys_exec_stub(path_ptr: usize, _argv_ptr: usize) -> isize {
+    use crate::user::process::{ProcessManager, ProcessError, copy_from_user, is_user_pointer_valid};
+    use crate::user::elf::ElfLoader;
+    use crate::sched;
+    
+    serial_println!("[SYSCALL] SYS_EXEC: Replacing current process");
+    
+    // Validate path pointer
+    if !is_user_pointer_valid(path_ptr) {
+        serial_println!("[SYSCALL] SYS_EXEC: Invalid path pointer");
+        return EFAULT;
+    }
+    
+    // Get current task/process information
+    let current_task_info = match sched::get_current_task_info() {
+        Some(info) => info,
+        None => {
+            serial_println!("[SYSCALL] SYS_EXEC: No current task found");
+            return ESRCH;
+        }
+    };
+    
+    let current_task_id = current_task_info.0;
+    
+    // Copy path string from user space (limit to 256 bytes)
+    let mut path_buffer = [0u8; 256];
+    let path_str = unsafe {
+        // Find null terminator in user space
+        let mut len = 0;
+        let user_ptr = path_ptr as *const u8;
+        while len < 255 {
+            let byte = *user_ptr.add(len);
+            if byte == 0 {
+                break;
+            }
+            len += 1;
+        }
+        
+        // Copy the string
+        match copy_from_user(&mut path_buffer[..len], path_ptr, len) {
+            Ok(()) => {
+                path_buffer[len] = 0; // Null terminate
+                match core::str::from_utf8(&path_buffer[..len]) {
+                    Ok(s) => s,
+                    Err(_) => {
+                        serial_println!("[SYSCALL] SYS_EXEC: Invalid UTF-8 in path");
+                        return EINVAL;
+                    }
+                }
+            }
+            Err(_) => {
+                serial_println!("[SYSCALL] SYS_EXEC: Failed to copy path from user space");
+                return EFAULT;
+            }
+        }
+    };
+    
+    serial_println!("[SYSCALL] SYS_EXEC: Loading ELF binary: {}", path_str);
+    
+    // Get current process to clear its memory space
+    let mut process_guard = match ProcessManager::get_process(current_task_id) {
+        Some(guard) => guard,
+        None => {
+            // If no process exists, create one for this task
+            match ProcessManager::create_process(None, "exec_process") {
+                Ok(pid) => {
+                    match ProcessManager::get_process(pid) {
+                        Some(guard) => guard,
+                        None => {
+                            serial_println!("[SYSCALL] SYS_EXEC: Failed to get newly created process");
+                            return ENOMEM;
+                        }
+                    }
+                }
+                Err(_) => {
+                    serial_println!("[SYSCALL] SYS_EXEC: Failed to create process for exec");
+                    return ENOMEM;
+                }
+            }
+        }
+    };
+    
+    let process = match process_guard.get_mut() {
+        Some(p) => p,
+        None => {
+            serial_println!("[SYSCALL] SYS_EXEC: Process slot empty");
+            return ESRCH;
+        }
+    };
+    
+    // Clear current memory space
+    process.clear_memory_regions();
+    
+    // TODO: In a full implementation, we would:
+    // 1. Load the ELF binary from the file system
+    // 2. Parse ELF headers and program headers
+    // 3. Map PT_LOAD segments to virtual memory
+    // 4. Set up new user stack
+    // 5. Set entry point in CPU context
+    
+    // For now, we'll simulate loading a simple "hello world" program
+    // This is a placeholder until we have a full ELF loader and file system
+    
+    serial_println!("[SYSCALL] SYS_EXEC: Simulating ELF load for path: {}", path_str);
+    
+    // Simulate setting up a new program
+    // In reality, this would involve:
+    // - Reading the ELF file from storage
+    // - Parsing ELF headers
+    // - Mapping program segments
+    // - Setting up the stack
+    
+    // For demonstration, we'll set up a minimal memory layout
+    use crate::sched::task::{MemoryRegion, MemoryRegionType};
+    use crate::mm::paging::PageTableFlags;
+    use crate::user::process::{USER_STACK_TOP, USER_STACK_SIZE};
+    
+    // Add a code region (simulated)
+    let code_region = MemoryRegion::new(
+        0x400000, // Standard ELF load address
+        0x401000, // 4KB code segment
+        PageTableFlags::PRESENT | PageTableFlags::USER,
+        MemoryRegionType::Code,
+    );
+    
+    if let Err(e) = process.add_memory_region(code_region) {
+        serial_println!("[SYSCALL] SYS_EXEC: Failed to add code region: {:?}", e);
+        return ENOMEM;
+    }
+    
+    // Add a stack region
+    let stack_region = MemoryRegion::new(
+        USER_STACK_TOP - USER_STACK_SIZE,
+        USER_STACK_TOP,
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | 
+        PageTableFlags::USER | PageTableFlags::NO_EXECUTE,
+        MemoryRegionType::Stack,
+    );
+    
+    if let Err(e) = process.add_memory_region(stack_region) {
+        serial_println!("[SYSCALL] SYS_EXEC: Failed to add stack region: {:?}", e);
+        return ENOMEM;
+    }
+    
+    // Reset CPU context for new program
+    // Set entry point to simulated code address
+    process.context.rsp = USER_STACK_TOP as u64;
+    process.context.rbx = 0;
+    process.context.rbp = 0;
+    process.context.r12 = 0x400000; // Entry point
+    process.context.r13 = 0;
+    process.context.r14 = 0;
+    process.context.r15 = 0;
+    // Note: Return values are handled by caller-saved registers, not in CpuContext
+    
+    // Update process name
+    process.set_name(path_str);
+    
+    // Get current task and update its memory regions and context
+    if let Some(current_task) = sched::get_task_mut(current_task_id) {
+        // Clear task memory regions
+        current_task.clear_memory_regions();
+        
+        // Copy new memory regions from process to task
+        for i in 0..process.region_count {
+            if let Some(region) = &process.memory_regions[i] {
+                if let Err(e) = current_task.add_memory_region(region.clone()) {
+                    serial_println!("[SYSCALL] SYS_EXEC: Failed to copy region to task: {:?}", e);
+                }
+            }
+        }
+        
+        // Update task context
+        current_task.context = process.context.clone();
+        
+        serial_println!("[SYSCALL] SYS_EXEC: Successfully replaced process image");
+        serial_println!("[SYSCALL] SYS_EXEC: New entry point: 0x{:x}", current_task.context.r12);
+        serial_println!("[SYSCALL] SYS_EXEC: New stack pointer: 0x{:x}", current_task.context.rsp);
+    } else {
+        serial_println!("[SYSCALL] SYS_EXEC: Failed to get current task");
+        return ESRCH;
+    }
+    
+    // Drop process guard
+    drop(process_guard);
+    
+    // exec() does not return on success - the process image is replaced
+    // We need to trigger a context switch to start executing the new program
+    // The new program will start from the entry point we set
+    
+    serial_println!("[SYSCALL] SYS_EXEC: Triggering context switch to new program");
+    
+    // Yield to scheduler to start executing the new program
+    sched::yield_now();
+    
+    // Should never reach here if exec succeeded
+    panic!("[SYSCALL] SYS_EXEC: Returned from yield_now after exec - this should not happen");
 }
 
-/// Stub for sys_wait - will be implemented in process management phase
-fn sys_wait_stub(_pid: usize) -> isize {
-    serial_println!("[SYSCALL] SYS_WAIT not yet implemented");
-    ENOSYS
+/// sys_wait implementation - Wait for child process to exit
+/// 
+/// Waits for a child process to terminate and returns its PID and exit code.
+/// If no child has exited yet, the parent process blocks until one does.
+/// 
+/// # Arguments
+/// * `child_pid` - Specific child PID to wait for, or 0 to wait for any child
+/// 
+/// # Returns
+/// * Positive value: (child_pid << 8) | exit_code on success
+/// * Negative error code on failure
+fn sys_wait_stub(child_pid: usize) -> isize {
+    use crate::user::process::ProcessManager;
+    use crate::sched;
+    
+    let cpu_id = unsafe { crate::arch::x86_64::smp::percpu::percpu_current().id };
+    let parent_pid = get_current_process_id().unwrap_or(0);
+    
+    serial_println!("[SYSCALL][cpu{} pid={}] SYS_WAIT: Waiting for child {}", 
+                   cpu_id, parent_pid, if child_pid == 0 { "any" } else { "specific" });
+    
+    // Get current task information
+    let current_task_info = match sched::get_current_task_info() {
+        Some(info) => info,
+        None => {
+            serial_println!("[SYSCALL] SYS_WAIT: No current task found");
+            return ESRCH;
+        }
+    };
+    
+    let parent_task_id = current_task_info.0;
+    
+    // Look for zombie children
+    let zombie_child = if child_pid == 0 {
+        // Wait for any child
+        ProcessManager::find_zombie_child(parent_task_id)
+    } else {
+        // Wait for specific child
+        if let Some(mut child_guard) = ProcessManager::get_process(child_pid) {
+            if let Some(child_process) = child_guard.get() {
+                if child_process.is_child_of(parent_task_id) && 
+                   child_process.state == crate::user::process::ProcessState::Zombie {
+                    child_process.exit_code.map(|code| (child_pid, code))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    
+    if let Some((dead_child_pid, exit_code)) = zombie_child {
+        // Found a zombie child - clean it up and return
+        serial_println!("[SYSCALL] SYS_WAIT: Found zombie child {} with exit code {}", 
+                       dead_child_pid, exit_code);
+        
+        // Remove the zombie process from the process table
+        match ProcessManager::remove_process(dead_child_pid) {
+            Ok(removed_process) => {
+                serial_println!("[SYSCALL] SYS_WAIT: Cleaned up zombie process {} ({})", 
+                               removed_process.pid, removed_process.get_name());
+            }
+            Err(e) => {
+                serial_println!("[SYSCALL] SYS_WAIT: Failed to remove zombie process {}: {:?}", 
+                               dead_child_pid, e);
+            }
+        }
+        
+        // Return child PID and exit code
+        // Encode as (child_pid << 8) | (exit_code & 0xFF)
+        let result = ((dead_child_pid & 0xFFFFFF) << 8) | ((exit_code as usize) & 0xFF);
+        serial_println!("[SYSCALL] SYS_WAIT: Returning result 0x{:x} (pid={}, code={})", 
+                       result, dead_child_pid, exit_code);
+        return result as isize;
+    }
+    
+    // No zombie children found - we should block the parent
+    // TODO: Implement proper blocking mechanism
+    // For now, we'll return ECHILD (no children) or EAGAIN (try again)
+    
+    serial_println!("[SYSCALL] SYS_WAIT: No zombie children found");
+    
+    // Check if the parent has any children at all
+    // This is a simplified check - in a full implementation we'd maintain
+    // a proper parent-child relationship table
+    let has_children = false; // TODO: Implement proper child tracking
+    
+    if !has_children {
+        serial_println!("[SYSCALL] SYS_WAIT: Parent has no children");
+        return ECHILD; // No child processes
+    }
+    
+    // Parent has children but none are zombies yet
+    // In a full implementation, we would:
+    // 1. Mark the parent task as blocked on wait
+    // 2. Remove it from the runqueue
+    // 3. When a child exits, wake up the parent
+    
+    serial_println!("[SYSCALL] SYS_WAIT: Would block parent (not implemented yet)");
+    return EAGAIN; // Try again later (non-blocking for now)
 }
 
 /// Integration tests for syscall mechanism

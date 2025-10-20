@@ -916,6 +916,177 @@ pub fn init_scheduler() {
     sched_info!("Scheduler initialized!");
 }
 
+/// Process-aware context switching
+/// 
+/// Enhanced version of schedule_on_core that integrates with process management.
+/// This function coordinates between Task and Process state during context switches.
+/// 
+/// # Arguments
+/// * `cpu_id` - The CPU core to schedule on
+/// 
+/// # Returns
+/// A tuple of (old_task, new_task) references, or None if no tasks available
+pub fn schedule_with_process_integration(cpu_id: usize) -> Option<(&'static mut Task, &'static mut Task)> {
+    // Use the existing scheduler logic
+    let result = schedule_on_core(cpu_id);
+    
+    // If we have a context switch, update process states
+    if let Some((old_task, new_task)) = &result {
+        // Update process states through integration functions
+        use crate::user::process::{get_process_for_task, prepare_process_context_switch};
+        
+        let old_process_id = get_process_for_task(old_task.id);
+        let new_process_id = get_process_for_task(new_task.id);
+        
+        if let Some(new_pid) = new_process_id {
+            if let Err(e) = prepare_process_context_switch(old_process_id, new_pid) {
+                sched_warn!("Failed to prepare process context switch: {:?}", e);
+            }
+        }
+    }
+    
+    result
+}
+
+/// Enhanced tick function with process integration
+/// 
+/// This version of tick() integrates with the process management system
+/// to ensure consistent state between Tasks and Processes.
+pub fn tick_with_process_integration() {
+    use core::sync::atomic::Ordering;
+    
+    // Increment timer_ticks metric
+    crate::sys::METRICS.timer_ticks.fetch_add(1, Ordering::Relaxed);
+    
+    // Get current CPU ID
+    let cpu_id = percpu_current().id;
+    
+    // Get next task to run on this core (with process integration)
+    let tasks = schedule_with_process_integration(cpu_id);
+    
+    if let Some((old_task, new_task)) = tasks {
+        // Validate task pointers before context switch
+        if old_task.context.rsp == 0 {
+            panic!("[SCHED] CRITICAL: Old task has invalid RSP (null stack pointer)");
+        }
+        if new_task.context.rsp == 0 {
+            panic!("[SCHED] CRITICAL: New task has invalid RSP (null stack pointer)");
+        }
+        
+        // Increment switch counter
+        let count = SWITCH_COUNT.fetch_add(1, Ordering::Relaxed);
+        
+        // Increment ctx_switches metric
+        crate::sys::METRICS.ctx_switches.fetch_add(1, Ordering::Relaxed);
+        
+        // Check if this is a preemptive switch (old task was still Running/Ready)
+        if old_task.state == TaskState::Running || old_task.state == TaskState::Ready {
+            crate::sys::METRICS.preemptions.fetch_add(1, Ordering::Relaxed);
+        }
+        
+        // Log context switch with throttling
+        if count < 10 || count % 100 == 0 {
+            sched_log!(
+                "[core{}] Switch #{} → Task {} ({})",
+                cpu_id,
+                count,
+                new_task.id,
+                new_task.name
+            );
+        }
+        
+        // Perform context switch
+        unsafe {
+            context::context_switch(
+                &mut old_task.context as *mut CpuContext,
+                &new_task.context as *const CpuContext,
+            );
+        }
+    } else {
+        // Use the existing first-switch logic
+        let percpu = unsafe { crate::arch::x86_64::smp::percpu::percpu_for_mut(cpu_id) };
+        
+        let first_task_id = {
+            let mut runqueue = percpu.runqueue.lock();
+            match runqueue.pop_front() {
+                Some(id) => id,
+                None => percpu.idle_task
+            }
+        };
+        
+        percpu.current_task = Some(first_task_id);
+        
+        if let Some(first_task) = get_task(first_task_id) {
+            first_task.state = TaskState::Running;
+            
+            sched_log!("[core{}] First switch → Task {} ({}) [priority: {:?}]", 
+                cpu_id, first_task.id, first_task.name, first_task.priority);
+            
+            if first_task.context.rsp == 0 {
+                panic!("[SCHED] CRITICAL: First task has null RSP");
+            }
+            
+            let mut dummy_context = CpuContext {
+                r15: 0, r14: 0, r13: 0, r12: 0, rbp: 0, rbx: 0, rsp: 0,
+            };
+            
+            unsafe {
+                context::context_switch(
+                    &mut dummy_context as *mut CpuContext,
+                    &first_task.context as *const CpuContext,
+                );
+            }
+            
+            panic!("[SCHED] CRITICAL: Returned from first context switch");
+        } else {
+            panic!("[SCHED] CRITICAL: First task not found in task table");
+        }
+    }
+}
+
+/// Create a process-aware task
+/// 
+/// This function creates both a Process and a Task, linking them together
+/// for integrated management.
+/// 
+/// # Arguments
+/// * `name` - Process/task name
+/// * `entry_point` - Task entry point function
+/// * `priority` - Task priority
+/// * `parent_pid` - Optional parent process ID
+/// 
+/// # Returns
+/// Ok((process_id, task_id)) if creation succeeded, or an error
+pub fn spawn_process_task(
+    name: &'static str, 
+    entry_point: fn() -> !, 
+    priority: TaskPriority,
+    parent_pid: Option<usize>
+) -> SchedulerResult<(usize, TaskId)> {
+    use crate::user::process::{ProcessManager, ProcessError};
+    
+    // Create the process first
+    let process_id = ProcessManager::create_process(parent_pid, name)
+        .map_err(|e| match e {
+            ProcessError::ProcessTableFull => SchedulerError::TooManyTasks,
+            ProcessError::OutOfMemory => SchedulerError::OutOfMemory,
+            _ => SchedulerError::OutOfMemory,
+        })?;
+    
+    // Create the corresponding task
+    let task_id = spawn_task(name, entry_point, priority)?;
+    
+    // Link them together through synchronization
+    use crate::user::process::sync_task_with_process;
+    if let Err(e) = sync_task_with_process(task_id, process_id) {
+        sched_warn!("Failed to sync task {} with process {}: {:?}", task_id, process_id, e);
+    }
+    
+    sched_info!("Created process {} with task {} ({})", process_id, task_id, name);
+    
+    Ok((process_id, task_id))
+}
+
 /// End-to-end integration test for task switching
 /// 
 /// This test verifies that:

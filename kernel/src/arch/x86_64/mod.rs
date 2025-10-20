@@ -2,6 +2,7 @@
 
 pub mod acpi;
 pub mod apic;
+pub mod fault;
 pub mod gdt;
 pub mod smp;
 pub mod syscall;

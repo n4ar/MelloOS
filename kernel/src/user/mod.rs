@@ -6,5 +6,7 @@
 /// - User-kernel memory management
 
 pub mod elf;
+pub mod process;
 
 pub use elf::*;
+pub use process::*;
