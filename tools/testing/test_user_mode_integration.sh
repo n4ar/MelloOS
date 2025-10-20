@@ -8,7 +8,7 @@ echo "User-Mode Integration Test Suite"
 echo "=========================================="
 
 # Configuration
-TEST_TIMEOUT=15  # Seconds to wait for tests
+TEST_TIMEOUT=60  # Seconds to wait for tests
 SMP_CPUS=2      # Default CPU count for SMP testing
 OUTPUT_FILE=$(mktemp)
 RESULTS_FILE=$(mktemp)

@@ -503,7 +503,7 @@ static BALANCE_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// It:
 /// 1. Increments the per-CPU tick counter
 /// 2. Sends EOI to the Local APIC
-/// 3. Performs load balancing every 100ms (10 ticks at 100Hz)
+/// 3. Performs load balancing every 100ms (2 ticks at 20Hz)
 /// 4. Calls the scheduler tick function for the current core
 ///
 /// # Notes
@@ -537,9 +537,9 @@ extern "C" fn apic_timer_interrupt_handler() {
         lapic.eoi();
     }
 
-    // Perform load balancing every 100ms (10 ticks at 100Hz)
+    // Perform load balancing every 100ms (2 ticks at 20Hz)
     // Only CPU 0 performs load balancing to avoid conflicts
-    if percpu.id == 0 && global_ticks % 10 == 0 {
+    if percpu.id == 0 && global_ticks % 2 == 0 {
         crate::sched::balance_load();
     }
 

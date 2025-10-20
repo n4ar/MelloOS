@@ -703,9 +703,9 @@ fn print_test_results_delayed() -> ! {
         );
     }
 
-    // Wait for tests to complete (10 seconds at ~100Hz timer)
+    // Wait for tests to complete (10 seconds at ~20Hz timer)
     unsafe {
-        sys_sleep(1000);
+        sys_sleep(200);
     }
 
     // Print integration test results
