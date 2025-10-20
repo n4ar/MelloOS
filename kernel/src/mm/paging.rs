@@ -8,19 +8,62 @@ use crate::mm::{phys_to_virt, PhysAddr, VirtAddr};
 
 /// Page table entry flags
 /// These flags control the behavior and permissions of mapped pages
-pub struct PageTableFlags;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageTableFlags(pub u64);
 
 impl PageTableFlags {
-    pub const PRESENT: u64 = 1 << 0;        // Page is present in memory
-    pub const WRITABLE: u64 = 1 << 1;       // Page is writable
-    pub const USER: u64 = 1 << 2;           // Page is accessible from user mode
-    pub const WRITE_THROUGH: u64 = 1 << 3;  // Write-through caching
-    pub const NO_CACHE: u64 = 1 << 4;       // Disable caching
-    pub const ACCESSED: u64 = 1 << 5;       // Page has been accessed
-    pub const DIRTY: u64 = 1 << 6;          // Page has been written to
-    pub const HUGE: u64 = 1 << 7;           // Huge page (2MB or 1GB)
-    pub const GLOBAL: u64 = 1 << 8;         // Global page (not flushed from TLB)
-    pub const NO_EXECUTE: u64 = 1 << 63;    // Page is not executable (requires NXE bit)
+    pub const PRESENT: PageTableFlags = PageTableFlags(1 << 0);        // Page is present in memory
+    pub const WRITABLE: PageTableFlags = PageTableFlags(1 << 1);       // Page is writable
+    pub const USER: PageTableFlags = PageTableFlags(1 << 2);           // Page is accessible from user mode
+    pub const WRITE_THROUGH: PageTableFlags = PageTableFlags(1 << 3);  // Write-through caching
+    pub const NO_CACHE: PageTableFlags = PageTableFlags(1 << 4);       // Disable caching
+    pub const ACCESSED: PageTableFlags = PageTableFlags(1 << 5);       // Page has been accessed
+    pub const DIRTY: PageTableFlags = PageTableFlags(1 << 6);          // Page has been written to
+    pub const HUGE: PageTableFlags = PageTableFlags(1 << 7);           // Huge page (2MB or 1GB)
+    pub const GLOBAL: PageTableFlags = PageTableFlags(1 << 8);         // Global page (not flushed from TLB)
+    pub const NO_EXECUTE: PageTableFlags = PageTableFlags(1 << 63);    // Page is not executable (requires NXE bit)
+}
+
+impl core::ops::BitOr for PageTableFlags {
+    type Output = Self;
+    
+    fn bitor(self, rhs: Self) -> Self::Output {
+        PageTableFlags(self.0 | rhs.0)
+    }
+}
+
+impl core::ops::BitOrAssign for PageTableFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl core::ops::BitAnd for PageTableFlags {
+    type Output = u64;
+    
+    fn bitand(self, rhs: Self) -> Self::Output {
+        self.0 & rhs.0
+    }
+}
+
+impl core::ops::BitAnd<PageTableFlags> for u64 {
+    type Output = u64;
+    
+    fn bitand(self, rhs: PageTableFlags) -> Self::Output {
+        self & rhs.0
+    }
+}
+
+impl From<PageTableFlags> for u64 {
+    fn from(flags: PageTableFlags) -> Self {
+        flags.0
+    }
+}
+
+impl PageTableFlags {
+    pub fn bits(&self) -> u64 {
+        self.0
+    }
 }
 
 /// Page table entry
@@ -56,15 +99,15 @@ impl PageTableEntry {
     
     /// Set physical address and flags
     /// The address must be 4KB aligned
-    pub fn set(&mut self, addr: PhysAddr, flags: u64) {
+    pub fn set(&mut self, addr: PhysAddr, flags: PageTableFlags) {
         // Ensure address is 4KB aligned by masking lower 12 bits
         let addr_masked = (addr as u64) & 0x000F_FFFF_FFFF_F000;
-        self.0 = addr_masked | flags;
+        self.0 = addr_masked | flags.bits();
     }
     
     /// Check if entry is present
     pub fn is_present(&self) -> bool {
-        (self.0 & PageTableFlags::PRESENT) != 0
+        (self.0 & PageTableFlags::PRESENT.bits()) != 0
     }
     
     /// Clear entry (set to zero)
@@ -136,7 +179,7 @@ impl PageMapper {
         &mut self,
         virt_addr: VirtAddr,
         phys_addr: PhysAddr,
-        flags: u64,
+        flags: PageTableFlags,
         pmm: &mut PhysicalMemoryManager,
     ) -> Result<(), &'static str> {
         // Validate alignment
@@ -320,7 +363,7 @@ impl PageMapper {
         }
         
         // Check for 1GB huge page
-        if (pdpt_entry.raw() & PageTableFlags::HUGE) != 0 {
+        if (pdpt_entry.raw() & PageTableFlags::HUGE.bits()) != 0 {
             let page_offset = virt_addr & 0x3FFF_FFFF; // 1GB offset
             return Some(pdpt_entry.addr() + page_offset);
         }
@@ -336,7 +379,7 @@ impl PageMapper {
         }
         
         // Check for 2MB huge page
-        if (pd_entry.raw() & PageTableFlags::HUGE) != 0 {
+        if (pd_entry.raw() & PageTableFlags::HUGE.bits()) != 0 {
             let page_offset = virt_addr & 0x1F_FFFF; // 2MB offset
             return Some(pd_entry.addr() + page_offset);
         }
@@ -433,7 +476,7 @@ impl PageMapper {
         end_virt: VirtAddr,
         kernel_base_virt: VirtAddr,
         kernel_base_phys: PhysAddr,
-        flags: u64,
+        flags: PageTableFlags,
         pmm: &mut PhysicalMemoryManager,
     ) -> Result<(), &'static str> {
         // Align start down to page boundary

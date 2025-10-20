@@ -74,7 +74,8 @@ macro_rules! sched_error {
 }
 
 use spin::Mutex;
-use task::{Task, TaskId, TaskState, SchedulerError, SchedulerResult};
+use task::{TaskId, TaskState, SchedulerError, SchedulerResult};
+pub use task::Task;
 use context::CpuContext;
 use priority::TaskPriority;
 use crate::arch::x86_64::smp::percpu::{percpu_current, percpu_for};

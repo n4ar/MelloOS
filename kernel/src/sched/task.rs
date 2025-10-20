@@ -5,9 +5,75 @@
 
 use super::context::CpuContext;
 use super::priority::TaskPriority;
+use crate::mm::paging::PageTableFlags;
 
 /// Task identifier type
 pub type TaskId = usize;
+
+/// Memory region types for process memory tracking
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryRegionType {
+    /// Code segment (.text)
+    Code,
+    /// Data segment (.data)
+    Data,
+    /// BSS segment (uninitialized data)
+    Bss,
+    /// Stack segment
+    Stack,
+    /// Heap segment (future use)
+    Heap,
+}
+
+/// Memory region descriptor for process memory tracking
+#[derive(Debug, Clone)]
+pub struct MemoryRegion {
+    /// Start virtual address (inclusive)
+    pub start: usize,
+    /// End virtual address (exclusive)
+    pub end: usize,
+    /// Page table flags for this region
+    pub flags: PageTableFlags,
+    /// Type of memory region
+    pub region_type: MemoryRegionType,
+}
+
+impl MemoryRegion {
+    /// Create a new memory region
+    pub fn new(
+        start: usize,
+        end: usize,
+        flags: PageTableFlags,
+        region_type: MemoryRegionType,
+    ) -> Self {
+        Self {
+            start,
+            end,
+            flags,
+            region_type,
+        }
+    }
+    
+    /// Check if this region contains the given address
+    pub fn contains(&self, addr: usize) -> bool {
+        addr >= self.start && addr < self.end
+    }
+    
+    /// Check if this region overlaps with another region
+    pub fn overlaps_with(&self, other: &MemoryRegion) -> bool {
+        !(self.end <= other.start || other.end <= self.start)
+    }
+    
+    /// Get the size of this region in bytes
+    pub fn size(&self) -> usize {
+        self.end - self.start
+    }
+    
+    /// Check if the region is page-aligned
+    pub fn is_page_aligned(&self) -> bool {
+        (self.start % 4096 == 0) && (self.end % 4096 == 0)
+    }
+}
 
 /// Scheduler error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +86,14 @@ pub enum SchedulerError {
     InvalidTaskId,
     /// Runqueue is full
     RunqueueFull,
+    /// Memory region overlap detected
+    RegionOverlap,
+    /// Invalid memory region (start >= end)
+    InvalidRegion,
+    /// Address not in user space
+    InvalidUserAddress,
+    /// Too many memory regions
+    TooManyRegions,
 }
 
 /// Result type for scheduler operations
@@ -40,6 +114,12 @@ pub enum TaskState {
     /// Task is blocked on IPC
     Blocked,
 }
+
+/// Maximum number of memory regions per task
+const MAX_MEMORY_REGIONS: usize = 16;
+
+/// User space address limit (512GB)
+pub const USER_LIMIT: usize = 0x0000_8000_0000_0000;
 
 /// Task Control Block (TCB)
 /// 
@@ -73,6 +153,12 @@ pub struct Task {
     
     /// Port ID the task is blocked on (if blocked on IPC)
     pub blocked_on_port: Option<usize>,
+    
+    /// Memory regions for this task (Code, Data, BSS, Stack)
+    pub memory_regions: [Option<MemoryRegion>; MAX_MEMORY_REGIONS],
+    
+    /// Number of active memory regions
+    pub region_count: usize,
 }
 
 
@@ -153,7 +239,153 @@ impl Task {
             priority,
             wake_tick: None,
             blocked_on_port: None,
+            memory_regions: [const { None }; MAX_MEMORY_REGIONS],
+            region_count: 0,
         })
+    }
+    
+    /// Add a memory region to this task
+    /// 
+    /// Validates the region and ensures no overlaps with existing regions.
+    /// All regions must be within user space limits.
+    /// 
+    /// # Arguments
+    /// * `region` - The memory region to add
+    /// 
+    /// # Returns
+    /// Ok(()) if the region was added successfully, or an error if validation fails
+    pub fn add_memory_region(&mut self, region: MemoryRegion) -> SchedulerResult<()> {
+        // Validate region bounds
+        if region.start >= region.end {
+            return Err(SchedulerError::InvalidRegion);
+        }
+        
+        // Ensure region is in user space
+        if region.start >= USER_LIMIT || region.end > USER_LIMIT {
+            return Err(SchedulerError::InvalidUserAddress);
+        }
+        
+        // Check for overlaps with existing regions
+        for existing_region in &self.memory_regions[..self.region_count] {
+            if let Some(existing) = existing_region {
+                if region.overlaps_with(existing) {
+                    return Err(SchedulerError::RegionOverlap);
+                }
+            }
+        }
+        
+        // Check if we have space for another region
+        if self.region_count >= MAX_MEMORY_REGIONS {
+            return Err(SchedulerError::TooManyRegions);
+        }
+        
+        // Add the region
+        self.memory_regions[self.region_count] = Some(region);
+        self.region_count += 1;
+        
+        Ok(())
+    }
+    
+    /// Find the memory region containing the given address
+    /// 
+    /// # Arguments
+    /// * `addr` - Virtual address to look up
+    /// 
+    /// # Returns
+    /// Some(region) if found, None if the address is not in any region
+    pub fn find_memory_region(&self, addr: usize) -> Option<&MemoryRegion> {
+        for region_opt in &self.memory_regions[..self.region_count] {
+            if let Some(region) = region_opt {
+                if region.contains(addr) {
+                    return Some(region);
+                }
+            }
+        }
+        None
+    }
+    
+    /// Get all memory regions of a specific type
+    /// 
+    /// # Arguments
+    /// * `region_type` - The type of regions to find
+    /// 
+    /// # Returns
+    /// Iterator over regions of the specified type
+    pub fn get_regions_by_type(&self, region_type: MemoryRegionType) -> impl Iterator<Item = &MemoryRegion> {
+        self.memory_regions[..self.region_count]
+            .iter()
+            .filter_map(|region_opt| region_opt.as_ref())
+            .filter(move |region| region.region_type == region_type)
+    }
+    
+    /// Remove a memory region by address range
+    /// 
+    /// # Arguments
+    /// * `start` - Start address of the region to remove
+    /// * `end` - End address of the region to remove
+    /// 
+    /// # Returns
+    /// Ok(()) if the region was removed, or an error if not found
+    pub fn remove_memory_region(&mut self, start: usize, end: usize) -> SchedulerResult<()> {
+        for i in 0..self.region_count {
+            if let Some(region) = &self.memory_regions[i] {
+                if region.start == start && region.end == end {
+                    // Remove this region by shifting others down
+                    for j in i..self.region_count - 1 {
+                        self.memory_regions[j] = self.memory_regions[j + 1].take();
+                    }
+                    self.memory_regions[self.region_count - 1] = None;
+                    self.region_count -= 1;
+                    return Ok(());
+                }
+            }
+        }
+        Err(SchedulerError::InvalidRegion)
+    }
+    
+    /// Validate that an address range is within a valid memory region
+    /// 
+    /// Used for page fault handling and memory access validation.
+    /// 
+    /// # Arguments
+    /// * `addr` - Start address
+    /// * `size` - Size of the access
+    /// 
+    /// # Returns
+    /// Ok(region) if the entire range is within a valid region, or an error
+    pub fn validate_memory_access(&self, addr: usize, size: usize) -> SchedulerResult<&MemoryRegion> {
+        let end_addr = addr.saturating_add(size);
+        
+        // Find region containing the start address
+        let region = self.find_memory_region(addr)
+            .ok_or(SchedulerError::InvalidUserAddress)?;
+        
+        // Ensure the entire range is within this region
+        if end_addr > region.end {
+            return Err(SchedulerError::InvalidUserAddress);
+        }
+        
+        Ok(region)
+    }
+    
+    /// Get total memory usage for this task
+    /// 
+    /// # Returns
+    /// Total size in bytes of all memory regions
+    pub fn total_memory_usage(&self) -> usize {
+        self.memory_regions[..self.region_count]
+            .iter()
+            .filter_map(|region_opt| region_opt.as_ref())
+            .map(|region| region.size())
+            .sum()
+    }
+    
+    /// Clear all memory regions (used during exec)
+    pub fn clear_memory_regions(&mut self) {
+        for region in &mut self.memory_regions {
+            *region = None;
+        }
+        self.region_count = 0;
     }
 }
 

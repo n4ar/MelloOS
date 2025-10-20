@@ -354,7 +354,7 @@ pub struct MemoryRegion {
 /// External assembly functions
 extern "C" {
     /// Transition to user mode - never returns
-    fn user_entry_trampoline(entry_point: u64, user_stack: u64) -> !;
+    pub fn user_entry_trampoline(entry_point: u64, user_stack: u64) -> !;
     
     /// Get current privilege level (0-3)
     fn get_current_privilege_level() -> u8;

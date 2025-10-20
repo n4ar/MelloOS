@@ -5,3 +5,6 @@ pub mod apic;
 pub mod gdt;
 pub mod smp;
 pub mod syscall;
+
+// Re-export user_entry_trampoline for external use
+pub use gdt::user_entry_trampoline;
