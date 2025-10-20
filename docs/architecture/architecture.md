@@ -18,6 +18,7 @@ This document provides detailed architecture information about MelloOS kernel co
 │  │  - Syscall dispatcher (int 0x80)                     │  │
 │  │  - 5 syscalls: write, exit, sleep, ipc_send/recv    │  │
 │  │  - Kernel metrics collection                         │  │
+│  │  - SMP-safe with per-object locking                  │  │
 │  └──────────────────────────────────────────────────────┘  │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐  │
@@ -25,15 +26,17 @@ This document provides detailed architecture information about MelloOS kernel co
 │  │  - Port-based message passing                        │  │
 │  │  - 256 ports with 16-message queues                  │  │
 │  │  - Blocking receive with FIFO wake policy            │  │
+│  │  - Cross-core IPC with reschedule IPIs               │  │
 │  └──────────────────────────────────────────────────────┘  │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │           Task Scheduler (sched/)                    │  │
+│  │           SMP Multi-Core Scheduler (sched/)          │  │
+│  │  - Per-core runqueues with load balancing            │  │
 │  │  - Priority-based scheduling (High/Normal/Low)       │  │
 │  │  - Sleep/wake mechanism                              │  │
 │  │  - Context switching (< 1μs)                         │  │
-│  │  - Timer interrupts (100 Hz)                         │  │
-│  │  - Preemption control                                │  │
+│  │  - Per-core APIC timers (100 Hz)                     │  │
+│  │  - Inter-processor interrupts (IPIs)                 │  │
 │  └──────────────────────────────────────────────────────┘  │
 │                                                             │
 │  ┌──────────────────────────────────────────────────────┐  │
@@ -43,14 +46,23 @@ This document provides detailed architecture information about MelloOS kernel co
 │  │  │  (Bitmap)  │ │ (4-level)│ │ (Buddy System)   │   │  │
 │  │  └────────────┘ └──────────┘ └──────────────────┘   │  │
 │  └──────────────────────────────────────────────────────┘  │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │           SMP Infrastructure (arch/x86_64/smp/)      │  │
+│  │  ┌────────────┐ ┌──────────┐ ┌──────────────────┐   │  │
+│  │  │ ACPI/MADT  │ │ Per-CPU  │ │ Synchronization  │   │  │
+│  │  │  Parser    │ │   Data   │ │   (SpinLocks)    │   │  │
+│  │  └────────────┘ └──────────┘ └──────────────────┘   │  │
+│  └──────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                  Hardware Abstraction                       │
-│  - x86_64 CPU (registers, instructions)                    │
+│  - x86_64 Multi-Core CPUs (BSP + APs)                      │
+│  - Local APIC (per-core timers, IPIs)                      │
+│  - I/O APIC (external interrupt routing)                   │
 │  - PIT (Programmable Interval Timer)                       │
-│  - PIC (Programmable Interrupt Controller)                 │
 │  - Serial Port (COM1)                                      │
 │  - Framebuffer (UEFI GOP)                                  │
 └─────────────────────────────────────────────────────────────┘
@@ -60,7 +72,66 @@ This document provides detailed architecture information about MelloOS kernel co
 │                  Userland Processes                         │
 │  - Init process (PID 1)                                    │
 │  - Syscall wrappers for kernel services                    │
+│  - Tasks distributed across multiple CPU cores             │
 └─────────────────────────────────────────────────────────────┘
+```
+
+## SMP (Symmetric Multi-Processing) Architecture
+
+MelloOS supports symmetric multi-processing with up to 8 CPU cores. The SMP implementation provides:
+
+- **CPU Discovery**: ACPI MADT parsing to detect available cores
+- **AP Bootstrap**: Bringing Application Processors online via INIT/SIPI sequence
+- **Per-Core Data**: Isolated data structures for each CPU core
+- **Load Balancing**: Automatic task distribution across cores
+- **Synchronization**: SpinLocks and atomic operations for thread safety
+- **Inter-Processor Communication**: IPIs for cross-core coordination
+
+### SMP Boot Sequence
+
+```
+BSP (Bootstrap Processor):
+1. Parse ACPI MADT table → Discover CPU cores
+2. Initialize BSP Local APIC
+3. Setup AP trampoline code at 0x8000
+4. For each AP:
+   - Send INIT IPI
+   - Send SIPI with trampoline address
+   - Wait for AP to signal online
+5. Initialize per-core timers
+6. Start multi-core scheduler
+
+APs (Application Processors):
+1. Wake up in real mode at trampoline
+2. Transition: Real → Protected → Long mode
+3. Initialize per-CPU data structures
+4. Configure Local APIC and timer
+5. Signal BSP that AP is online
+6. Enter scheduler loop
+```
+
+### Multi-Core Task Distribution
+
+```
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│   Core 0    │  │   Core 1    │  │   Core 2    │  │   Core 3    │
+│    (BSP)    │  │    (AP)     │  │    (AP)     │  │    (AP)     │
+├─────────────┤  ├─────────────┤  ├─────────────┤  ├─────────────┤
+│ Runqueue    │  │ Runqueue    │  │ Runqueue    │  │ Runqueue    │
+│ [Task A]    │  │ [Task C]    │  │ [Task B]    │  │ [Task D]    │
+│ [Idle]      │  │ [Idle]      │  │ [Idle]      │  │ [Idle]      │
+├─────────────┤  ├─────────────┤  ├─────────────┤  ├─────────────┤
+│ LAPIC Timer │  │ LAPIC Timer │  │ LAPIC Timer │  │ LAPIC Timer │
+│ 100 Hz      │  │ 100 Hz      │  │ 100 Hz      │  │ 100 Hz      │
+└─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘
+       │                │                │                │
+       └────────────────┼────────────────┼────────────────┘
+                        │                │
+              ┌─────────┴────────────────┴─────────┐
+              │     Load Balancer (100ms)          │
+              │  - Migrate tasks between cores     │
+              │  - Send RESCHEDULE_IPI to target   │
+              └────────────────────────────────────┘
 ```
 
 ## Memory Management Architecture
@@ -698,6 +769,102 @@ pub extern "C" fn _start() -> ! {
 3. Embed into kernel image
 4. Kernel loads init at boot
 5. Kernel spawns init task with entry point
+
+## SMP Synchronization Architecture
+
+### SpinLock Implementation
+
+**Location:** `kernel/src/sync/spin.rs`
+
+MelloOS uses spinlocks for protecting shared data structures in the multi-core environment:
+
+```rust
+pub struct SpinLock<T> {
+    locked: AtomicBool,
+    data: UnsafeCell<T>,
+}
+
+pub struct IrqSpinLock<T> {
+    inner: SpinLock<T>,
+}
+```
+
+**Features:**
+- **Atomic Operations**: Uses `compare_exchange` with Acquire/Release ordering
+- **Exponential Backoff**: Reduces bus contention during lock acquisition
+- **IRQ-Safe Variant**: Disables interrupts while holding lock
+- **RAII Guards**: Automatic unlock on scope exit
+- **Deadlock Prevention**: Documented lock ordering rules
+
+**Lock Hierarchy (to prevent deadlocks):**
+1. Global locks before per-object locks
+2. Task locks before port locks  
+3. Runqueue locks ordered by CPU ID (lower ID first)
+4. Never hold multiple runqueue locks unless migrating tasks
+
+### Per-CPU Data Structures
+
+**Location:** `kernel/src/arch/x86_64/smp/percpu.rs`
+
+Each CPU core maintains its own data structures to minimize lock contention:
+
+```rust
+#[repr(C, align(64))]  // Cache line aligned
+pub struct PerCpu {
+    pub id: usize,
+    pub apic_id: u8,
+    pub runqueue: SpinLock<VecDeque<TaskId>>,
+    pub current_task: Option<TaskId>,
+    pub idle_task: TaskId,
+    pub lapic_timer_hz: u64,
+    pub ticks: AtomicU64,
+    pub in_interrupt: bool,
+}
+```
+
+**Access Methods:**
+- **Current CPU**: `percpu_current()` using GS.BASE MSR
+- **Remote CPU**: `percpu_for(cpu_id)` for cross-core access
+- **Cache Alignment**: 64-byte alignment prevents false sharing
+
+### Inter-Processor Interrupts (IPIs)
+
+**Location:** `kernel/src/arch/x86_64/apic/ipi.rs`
+
+IPIs enable cores to coordinate operations:
+
+**IPI Types:**
+- `RESCHEDULE_IPI (0x30)`: Trigger scheduler on target core
+- `TLB_FLUSH_IPI (0x31)`: Flush TLB on target core (future)
+- `HALT_IPI (0x32)`: Halt target core (future)
+
+**Usage Examples:**
+```rust
+// Wake up remote core after task migration
+send_reschedule_ipi(target_cpu);
+
+// Broadcast to all cores except self
+broadcast_ipi(RESCHEDULE_IPI_VECTOR, true);
+```
+
+### SMP-Safe Syscall Infrastructure
+
+All Phase 4 syscalls are made SMP-safe through fine-grained locking:
+
+**Synchronization Strategy:**
+- **No Global Syscall Lock**: Each syscall uses appropriate per-object locks
+- **Task Operations**: Protected by per-task spinlocks
+- **IPC Operations**: Port queues protected by per-port spinlocks
+- **Scheduler Operations**: Per-core runqueues with per-CPU spinlocks
+
+**Cross-Core IPC Flow:**
+```
+Task on Core 0 → sys_ipc_send(port, msg) → Port Queue → Wake Task on Core 1
+                                              ↓
+                                    Send RESCHEDULE_IPI → Core 1
+                                              ↓
+                                    Core 1 scheduler runs → Task receives message
+```
 
 ## Security Architecture
 

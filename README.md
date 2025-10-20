@@ -4,7 +4,18 @@ A minimal x86_64 operating system kernel written in Rust, featuring preemptive m
 
 ## 🌟 Features
 
-### Phase 4: Advanced Scheduling, System Calls, and IPC (Current) ✅
+### Phase 5: SMP Multi-Core Support (Current) ✅
+
+- **Symmetric Multi-Processing**: Support for up to 8 CPU cores with automatic detection
+- **ACPI MADT Integration**: CPU discovery via ACPI Multiple APIC Description Table
+- **AP Bootstrap**: INIT/SIPI sequence to bring Application Processors online
+- **Per-Core Scheduling**: Independent runqueues with automatic load balancing
+- **Inter-Processor Interrupts**: Cross-core communication and coordination
+- **SMP-Safe Synchronization**: SpinLocks with exponential backoff and IRQ-safe variants
+- **Per-CPU Data Structures**: Cache-aligned per-core data to minimize contention
+- **Cross-Core IPC**: Message passing between tasks on different CPU cores
+
+### Phase 4: Advanced Scheduling, System Calls, and IPC ✅
 
 - **Priority-Based Scheduler**: Three-level priority system (High, Normal, Low) with O(1) task selection
 - **System Call Interface**: x86 `int 0x80` mechanism with 5 syscalls (write, exit, sleep, ipc_send, ipc_recv)
@@ -126,8 +137,18 @@ make userspace
 # Create bootable ISO
 make iso
 
-# Run in QEMU
+# Run in QEMU (default: 4 CPUs with KVM)
 make run
+
+# Run with specific CPU count
+./tools/qemu/qemu.sh -smp 2 -enable-kvm
+
+# Quick SMP tests
+./tools/qemu/qemu-test-smp2.sh    # 2 CPUs
+./tools/qemu/qemu-test-smp4.sh    # 4 CPUs
+
+# Automated boot test with SMP
+./tools/testing/test_boot.sh -smp 4
 
 # Clean build artifacts
 make clean
@@ -140,32 +161,46 @@ make clean
 Hello from MelloOS ✨
 ```
 
-**On Serial Console:**
+**On Serial Console (SMP Boot):**
 ```
 [MM] Initializing memory management...
 [MM] ✓ PMM tests passed
 [MM] ✓ Paging tests passed
 [MM] ✓ Allocator tests passed
+[ACPI] RSDP found at 0x...
+[ACPI] MADT found at 0x...
+[SMP] CPUs detected: 4 (apic_ids=[0,1,2,3])
+[APIC] BSP LAPIC initialized at 0xFEE00000
+[SMP] BSP online (apic_id=0)
+[SMP] Trampoline copied to 0x8000
+[SMP] Sending INIT to AP#1 (apic_id=1)
+[SMP] Sending SIPI to AP#1 (vector=0x08)
+[SMP] AP#1 online
+[APIC] core1 timer @1000000Hz
+[SMP] Sending INIT to AP#2 (apic_id=2)
+[SMP] Sending SIPI to AP#2 (vector=0x08)
+[SMP] AP#2 online
+[APIC] core2 timer @1000000Hz
+[SMP] Sending INIT to AP#3 (apic_id=3)
+[SMP] Sending SIPI to AP#3 (vector=0x08)
+[SMP] AP#3 online
+[APIC] core3 timer @1000000Hz
 [IPC] Initializing IPC subsystem...
 [IPC] Created 16 system ports (0-15)
 [SCHED] INFO: Initializing scheduler...
 [KERNEL] ========================================
-[KERNEL] Phase 4 Integration Tests
+[KERNEL] Phase 5 SMP Integration Tests
 [KERNEL] ========================================
-[KERNEL] Spawning Test 7.1: Priority scheduling test...
-[KERNEL] Spawning Test 7.2: Sleep/wake test...
-[KERNEL] Spawning Test 7.3: Syscall integration test...
-[KERNEL] Spawning Test 7.4: IPC integration test...
-[KERNEL] Spawning Test 7.5: IPC stress test...
-[KERNEL] Loading Test 7.6: Init process (end-to-end test)...
-[INIT] Init process task spawned successfully
-[TIMER] Timer initialized at 100 Hz
-[KERNEL] Boot complete! Entering idle loop...
-[TEST-7.1] HIGH priority task executing (count: 0)
-[SYSCALL] Task 1 invoked SYS_SLEEP (id=2)
-[SCHED] Task 1 sleeping for 20 ticks (wake at tick 20)
-[IPC] Sent 4 bytes to port 1
+[SCHED] Created task A (priority=10)
+[SCHED] Created task B (priority=5)
+[SCHED] Created task C (priority=8)
+[SCHED] Created task D (priority=3)
+[SCHED][core0] run A
+[SCHED][core1] run C
+[SCHED][core2] run B
+[SCHED][core3] run D
 [USERLAND] Hello from userland! ✨
+[SCHED] send RESCHED IPI → core1
 ...
 ```
 
@@ -206,17 +241,16 @@ mellos/
 │   └── linker.ld          # Kernel linker script
 ├── boot/
 │   └── limine.cfg         # Bootloader configuration
-├── tools/
-│   ├── qemu.sh            # QEMU launch script
-│   ├── test_boot.sh       # Boot test script
-│   └── verify_build.sh    # Build verification
+├── tools/                  # Development tools
+│   ├── qemu/              # QEMU virtualization scripts
+│   ├── debug/             # Debugging tools
+│   ├── testing/           # Testing and verification
+│   └── README.md          # Tools documentation
 ├── docs/                  # Documentation
-│   ├── architecture.md    # System architecture
-│   ├── api-guide.md       # API usage guide
-│   ├── testing.md         # Testing procedures
-│   ├── troubleshooting.md # Common issues
-│   ├── task-scheduler.md  # Scheduler details
-│   └── memory-management-logging.md
+│   ├── architecture/      # System architecture docs
+│   ├── development/       # Development guides
+│   ├── troubleshooting/   # Debugging and issues
+│   └── README.md          # Documentation index
 ├── Makefile               # Build system
 ├── CHANGELOG.md           # Version history
 └── README.md              # This file
@@ -372,16 +406,57 @@ sched_info!("Spawned task: {}", name);
 
 ```bash
 # Run build verification
-./tools/verify_build.sh
+./tools/testing/verify_build.sh
 
-# Test boot in QEMU
-./tools/test_boot.sh
+# Test boot in QEMU (single CPU)
+./tools/testing/test_boot.sh
+
+# Test SMP boot with multiple CPUs
+./tools/testing/test_boot.sh -smp 2
+./tools/testing/test_boot.sh -smp 4 -timeout 10
+```
+
+### QEMU Testing Commands
+
+```bash
+# Basic QEMU launch (4 CPUs, KVM enabled)
+./tools/qemu/qemu.sh
+
+# Specific CPU configurations
+./tools/qemu/qemu.sh -smp 1           # Single CPU (disable SMP)
+./tools/qemu/qemu.sh -smp 2 -enable-kvm  # 2 CPUs with KVM
+./tools/qemu/qemu.sh -smp 8           # Maximum 8 CPUs
+
+# Quick test presets
+./tools/qemu/qemu.sh -preset smp2     # 2 CPUs + KVM
+./tools/qemu/qemu.sh -preset smp4     # 4 CPUs + KVM  
+./tools/qemu/qemu.sh -preset debug    # 2 CPUs for debugging
+./tools/qemu/qemu.sh -preset single   # Single CPU mode
+
+# Dedicated SMP test scripts
+./tools/qemu/qemu-test-smp2.sh        # Optimized 2-CPU test
+./tools/qemu/qemu-test-smp4.sh        # Optimized 4-CPU test
+
+# Debug mode with extensive logging
+./tools/qemu/qemu-debug-smp.sh        # 2 CPUs with debug output
+
+# Help and options
+./tools/qemu/qemu.sh --help           # Show all available options
 ```
 
 ### Integration Tests
 
-The kernel includes comprehensive Phase 4 integration tests:
+The kernel includes comprehensive Phase 5 SMP integration tests:
 
+**SMP-Specific Tests:**
+- **CPU Detection**: ACPI MADT parsing and CPU enumeration
+- **AP Bootstrap**: Application Processor bringup via INIT/SIPI
+- **Multi-Core Scheduling**: Task distribution across CPU cores
+- **Load Balancing**: Automatic task migration between cores
+- **Cross-Core IPC**: Message passing between tasks on different CPUs
+- **Synchronization**: SpinLock correctness under concurrent access
+
+**Legacy Phase 4 Tests:**
 - **Test 7.1**: Priority scheduling (High/Normal/Low tasks)
 - **Test 7.2**: Sleep/wake mechanism
 - **Test 7.3**: Syscall integration (write, sleep)
@@ -389,7 +464,7 @@ The kernel includes comprehensive Phase 4 integration tests:
 - **Test 7.5**: IPC stress test (100 ping-pong messages)
 - **Test 7.6**: Init process (end-to-end system test)
 
-Expected output shows tasks executing in priority order, successful IPC message passing, and proper sleep/wake behavior.
+Expected output shows all CPUs coming online, tasks executing on multiple cores, successful cross-core IPC, and proper load balancing behavior.
 
 ### CI/CD
 
@@ -428,7 +503,7 @@ pub struct KernelMetrics {
 
 ## 🗺️ Roadmap
 
-### Phase 5: User Space (Next)
+### Phase 6: User Space (Next)
 - [ ] User mode execution (Ring 3)
 - [ ] Process isolation with separate page tables
 - [ ] ELF binary loading
@@ -436,28 +511,30 @@ pub struct KernelMetrics {
 - [ ] Copy-to/from-user validation
 - [ ] Separate user/kernel stacks
 
-### Phase 6: File System
+### Phase 7: File System
 - [ ] VFS (Virtual File System) layer
 - [ ] Simple file system implementation (FAT or custom)
 - [ ] Device file support (/dev)
 - [ ] File descriptors and file operations
 
-### Phase 7: Advanced Features
+### Phase 8: Advanced Features
 - [ ] Network stack (TCP/IP)
 - [ ] Device drivers (keyboard, disk, network)
-- [ ] Multi-core support (SMP)
 - [ ] Advanced scheduling (CFS, real-time)
 - [ ] Virtual memory management (demand paging, swap)
+- [ ] NUMA awareness and CPU affinity
 
 ## 📚 Documentation
 
 Comprehensive documentation is available in the `docs/` directory:
 
-- **[Architecture](docs/architecture.md)**: Detailed system architecture with diagrams
-- **[API Guide](docs/api-guide.md)**: API usage examples and best practices
-- **[Testing](docs/testing.md)**: Testing procedures and verification
-- **[Troubleshooting](docs/troubleshooting.md)**: Common issues and solutions
-- **[Task Scheduler](docs/task-scheduler.md)**: Scheduler implementation details
+- **[Documentation Index](docs/README.md)**: Complete documentation overview
+- **[System Architecture](docs/architecture/architecture.md)**: Detailed system architecture with diagrams
+- **[SMP Implementation](docs/architecture/smp.md)**: Multi-core support implementation details
+- **[API Guide](docs/development/api-guide.md)**: API usage examples and best practices
+- **[Testing Guide](docs/development/testing.md)**: Testing procedures and verification
+- **[Troubleshooting](docs/troubleshooting/troubleshooting.md)**: Common issues and solutions
+- **[Tools Documentation](tools/README.md)**: Development tools reference
 - **[CHANGELOG](CHANGELOG.md)**: Version history and release notes
 
 ## 🔧 Technical Specifications
