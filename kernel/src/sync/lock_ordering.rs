@@ -7,18 +7,25 @@
 //!
 //! Locks must be acquired in the following order (from outermost to innermost):
 //!
-//! 1. **PORT_MANAGER.table_lock** - Port creation/deletion
-//! 2. **TASK_TABLE** - Task table access
-//! 3. **SCHED** - Scheduler state
-//! 4. **Per-CPU runqueue locks** - Must be acquired in CPU ID order (lower ID first)
-//! 5. **Per-port locks** - Individual port operations
-//! 6. **Per-task locks** - Individual task state (implicit in get_task_mut)
+//! 1. **PTY_TABLE** - Global PTY allocation table
+//! 2. **SESSION_TABLE** - Global session table
+//! 3. **PROCESS_GROUP_TABLE** - Global process group table
+//! 4. **PORT_MANAGER.table_lock** - Port creation/deletion
+//! 5. **TASK_TABLE** - Task table access
+//! 6. **SCHED** - Scheduler state
+//! 7. **Per-CPU runqueue locks** - Must be acquired in CPU ID order (lower ID first)
+//! 8. **Session locks** - Individual session state
+//! 9. **Process group locks** - Individual process group state
+//! 10. **Task locks** - Individual task state (implicit in get_task_mut)
+//! 11. **PTY pair locks** - Individual PTY pair operations
+//! 12. **Per-port locks** - Individual port operations
 //!
 //! # Lock Ordering Rules
 //!
 //! ## Rule 1: Global before Per-Object
-//! Always acquire global locks (PORT_MANAGER, TASK_TABLE, SCHED) before
-//! per-object locks (port locks, task locks).
+//! Always acquire global locks (PTY_TABLE, SESSION_TABLE, PROCESS_GROUP_TABLE,
+//! PORT_MANAGER, TASK_TABLE, SCHED) before per-object locks (session locks,
+//! process group locks, task locks, PTY pair locks, port locks).
 //!
 //! ## Rule 2: CPU ID Ordering
 //! When acquiring multiple per-CPU runqueue locks (e.g., during task migration),
@@ -35,16 +42,25 @@
 //! let lock2 = percpu_for(second_cpu).runqueue.lock();
 //! ```
 //!
-//! ## Rule 3: Port before Task
-//! When both port and task locks are needed, acquire port lock first.
+//! ## Rule 3: Session → Process Group → Task → PTY Pair
+//! When multiple per-object locks are needed, acquire them in this order:
+//! 1. Session lock
+//! 2. Process group lock
+//! 3. Task lock
+//! 4. PTY pair lock
 //!
 //! ## Rule 4: Preemption Disable
 //! Disable preemption (preempt_disable) before acquiring any spinlock
 //! that might be accessed from interrupt context. Re-enable after release.
 //!
-//! ## Rule 5: No Nested Port Locks
-//! Never hold more than one port lock at a time. If multiple ports need
-//! to be accessed, release the first lock before acquiring the second.
+//! ## Rule 5: No Nested Same-Level Locks
+//! Never hold more than one lock at the same level (e.g., two PTY pair locks,
+//! two port locks). If multiple objects at the same level need to be accessed,
+//! release the first lock before acquiring the second.
+//!
+//! ## Rule 6: Trylock with Timeout for PTY Operations
+//! PTY operations should use trylock with timeout to prevent deadlocks when
+//! master and slave sides interact. Maximum timeout: 100ms.
 //!
 //! # Common Lock Patterns
 //!
@@ -83,6 +99,48 @@
 //! drop(lock1);
 //! ```
 //!
+//! ## Pattern 4: PTY Resize with Signal Delivery
+//! ```rust,ignore
+//! // Acquire locks in correct order: PTY table → Session → PTY pair
+//! let pty_table = PTY_TABLE.lock();
+//! let pty_pair = &pty_table.pairs[pty_num];
+//! 
+//! // Use trylock with timeout for PTY pair
+//! let pty_lock = match pty_pair.try_lock_timeout(100) {
+//!     Some(lock) => lock,
+//!     None => return Err(EBUSY),
+//! };
+//! 
+//! pty_lock.winsize = new_size;
+//! let foreground_pgid = pty_lock.slave.foreground_pgid;
+//! drop(pty_lock);
+//! drop(pty_table);
+//! 
+//! // Now send SIGWINCH to foreground group
+//! if let Some(pgid) = foreground_pgid {
+//!     send_signal_to_group(pgid, SIGWINCH);
+//! }
+//! ```
+//!
+//! ## Pattern 5: Signal Delivery to Process Group
+//! ```rust,ignore
+//! // Acquire locks in correct order: Session → Process Group → Task
+//! let session_table = SESSION_TABLE.lock();
+//! let session = &session_table.sessions[sid];
+//! 
+//! let pg_table = PROCESS_GROUP_TABLE.lock();
+//! let pg = &pg_table.groups[pgid];
+//! 
+//! // Iterate over processes and send signal
+//! for pid in pg.iter() {
+//!     let task_table = TASK_TABLE.lock();
+//!     if let Some(task) = task_table.get_mut(pid) {
+//!         task.pending_signals.fetch_or(1 << signal, Ordering::SeqCst);
+//!     }
+//!     drop(task_table);
+//! }
+//! ```
+//!
 //! # Deadlock Prevention
 //!
 //! To prevent deadlocks:
@@ -102,6 +160,18 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+/// Global flag to track if PTY_TABLE is held (debug only)
+#[cfg(debug_assertions)]
+static PTY_TABLE_LOCK_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Global flag to track if SESSION_TABLE is held (debug only)
+#[cfg(debug_assertions)]
+static SESSION_TABLE_LOCK_HELD: AtomicBool = AtomicBool::new(false);
+
+/// Global flag to track if PROCESS_GROUP_TABLE is held (debug only)
+#[cfg(debug_assertions)]
+static PROCESS_GROUP_TABLE_LOCK_HELD: AtomicBool = AtomicBool::new(false);
+
 /// Global flag to track if PORT_MANAGER.table_lock is held (debug only)
 #[cfg(debug_assertions)]
 static PORT_TABLE_LOCK_HELD: AtomicBool = AtomicBool::new(false);
@@ -120,6 +190,18 @@ static SCHED_LOCK_HELD: AtomicBool = AtomicBool::new(false);
 /// the lock hierarchy is being followed.
 #[cfg(debug_assertions)]
 pub fn assert_no_global_locks_held() {
+    debug_assert!(
+        !PTY_TABLE_LOCK_HELD.load(Ordering::Relaxed),
+        "PTY_TABLE is held - violates lock ordering"
+    );
+    debug_assert!(
+        !SESSION_TABLE_LOCK_HELD.load(Ordering::Relaxed),
+        "SESSION_TABLE is held - violates lock ordering"
+    );
+    debug_assert!(
+        !PROCESS_GROUP_TABLE_LOCK_HELD.load(Ordering::Relaxed),
+        "PROCESS_GROUP_TABLE is held - violates lock ordering"
+    );
     debug_assert!(
         !PORT_TABLE_LOCK_HELD.load(Ordering::Relaxed),
         "PORT_MANAGER.table_lock is held - violates lock ordering"
@@ -184,10 +266,70 @@ pub fn mark_sched_lock_released() {
     SCHED_LOCK_HELD.store(false, Ordering::Relaxed);
 }
 
+/// Mark PTY_TABLE as acquired (debug only)
+#[cfg(debug_assertions)]
+pub fn mark_pty_table_lock_acquired() {
+    PTY_TABLE_LOCK_HELD.store(true, Ordering::Relaxed);
+}
+
+/// Mark PTY_TABLE as released (debug only)
+#[cfg(debug_assertions)]
+pub fn mark_pty_table_lock_released() {
+    PTY_TABLE_LOCK_HELD.store(false, Ordering::Relaxed);
+}
+
+/// Mark SESSION_TABLE as acquired (debug only)
+#[cfg(debug_assertions)]
+pub fn mark_session_table_lock_acquired() {
+    SESSION_TABLE_LOCK_HELD.store(true, Ordering::Relaxed);
+}
+
+/// Mark SESSION_TABLE as released (debug only)
+#[cfg(debug_assertions)]
+pub fn mark_session_table_lock_released() {
+    SESSION_TABLE_LOCK_HELD.store(false, Ordering::Relaxed);
+}
+
+/// Mark PROCESS_GROUP_TABLE as acquired (debug only)
+#[cfg(debug_assertions)]
+pub fn mark_process_group_table_lock_acquired() {
+    PROCESS_GROUP_TABLE_LOCK_HELD.store(true, Ordering::Relaxed);
+}
+
+/// Mark PROCESS_GROUP_TABLE as released (debug only)
+#[cfg(debug_assertions)]
+pub fn mark_process_group_table_lock_released() {
+    PROCESS_GROUP_TABLE_LOCK_HELD.store(false, Ordering::Relaxed);
+}
+
 // No-op versions for release builds
 #[cfg(not(debug_assertions))]
 #[inline(always)]
 pub fn assert_no_global_locks_held() {}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn mark_pty_table_lock_acquired() {}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn mark_pty_table_lock_released() {}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn mark_session_table_lock_acquired() {}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn mark_session_table_lock_released() {}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn mark_process_group_table_lock_acquired() {}
+
+#[cfg(not(debug_assertions))]
+#[inline(always)]
+pub fn mark_process_group_table_lock_released() {}
 
 #[cfg(not(debug_assertions))]
 #[inline(always)]

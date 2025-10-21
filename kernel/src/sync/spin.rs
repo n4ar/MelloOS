@@ -99,6 +99,54 @@ impl<T> SpinLock<T> {
         }
     }
 
+    /// Attempts to acquire the lock with a timeout
+    ///
+    /// Returns `Some(SpinLockGuard)` if the lock was successfully acquired
+    /// within the timeout period, or `None` if the timeout expired.
+    ///
+    /// # Arguments
+    /// * `timeout_ms` - Maximum time to wait in milliseconds
+    ///
+    /// This function uses exponential backoff and checks the timeout periodically.
+    pub fn try_lock_timeout(&self, timeout_ms: u64) -> Option<SpinLockGuard<T>> {
+        // Get current timestamp (assuming we have a TSC-based timer)
+        let start = unsafe { core::arch::x86_64::_rdtsc() };
+        // Approximate TSC frequency (2.4 GHz typical)
+        // This is a rough estimate; real implementation should use calibrated value
+        const TSC_PER_MS: u64 = 2_400_000;
+        let timeout_tsc = timeout_ms * TSC_PER_MS;
+
+        let mut backoff = 1;
+        const MAX_BACKOFF: usize = 256;
+
+        loop {
+            // Try to acquire the lock
+            if self
+                .locked
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+            {
+                return Some(SpinLockGuard { lock: self });
+            }
+
+            // Check if timeout expired
+            let now = unsafe { core::arch::x86_64::_rdtsc() };
+            if now - start >= timeout_tsc {
+                return None;
+            }
+
+            // Spin with exponential backoff
+            for _ in 0..backoff {
+                core::hint::spin_loop();
+            }
+
+            // Exponential backoff: double the wait time up to MAX_BACKOFF
+            if backoff < MAX_BACKOFF {
+                backoff *= 2;
+            }
+        }
+    }
+
     /// Consumes the lock and returns the underlying data
     pub fn into_inner(self) -> T {
         self.data.into_inner()

@@ -8,6 +8,7 @@ use super::priority::TaskPriority;
 use super::process_group::{Pid, Pgid, Sid, DeviceId};
 use crate::mm::paging::PageTableFlags;
 use crate::signal::{SigAction, signals};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Task identifier type
 pub type TaskId = usize;
@@ -169,10 +170,12 @@ pub struct Task {
     pub signal_handlers: [SigAction; MAX_SIGNALS],
 
     /// Pending signals bitset (bit N = signal N is pending)
-    pub pending_signals: u64,
+    /// Uses atomic operations for race-free signal delivery in SMP
+    pub pending_signals: AtomicU64,
 
     /// Signal mask (bit N = signal N is blocked)
-    pub signal_mask: u64,
+    /// Uses atomic operations for race-free mask updates
+    pub signal_mask: AtomicU64,
 
     /// Process ID (same as task ID for now)
     pub pid: Pid,
@@ -284,8 +287,8 @@ impl Task {
             memory_regions: [const { None }; MAX_MEMORY_REGIONS],
             region_count: 0,
             signal_handlers,
-            pending_signals: 0,
-            signal_mask: 0,
+            pending_signals: AtomicU64::new(0),
+            signal_mask: AtomicU64::new(0),
             pid: id,        // PID = task ID
             ppid: 0,        // Will be set by parent
             pgid: id,       // Initially, pgid = pid
@@ -481,8 +484,8 @@ impl Task {
                 *handler = SigAction::default();
             }
         }
-        // Clear pending signals
-        self.pending_signals = 0;
+        // Clear pending signals atomically
+        self.pending_signals.store(0, Ordering::Release);
         // Keep signal mask (inherited across exec)
     }
 
@@ -498,7 +501,9 @@ impl Task {
             return false;
         }
         let mask = 1u64 << signal;
-        (self.pending_signals & mask) != 0 && (self.signal_mask & mask) == 0
+        let pending = self.pending_signals.load(Ordering::Acquire);
+        let blocked = self.signal_mask.load(Ordering::Acquire);
+        (pending & mask) != 0 && (blocked & mask) == 0
     }
 
     /// Get the next pending unblocked signal
@@ -506,7 +511,9 @@ impl Task {
     /// # Returns
     /// Some(signal_number) if there's a pending unblocked signal, None otherwise
     pub fn next_pending_signal(&self) -> Option<u32> {
-        let unblocked_pending = self.pending_signals & !self.signal_mask;
+        let pending = self.pending_signals.load(Ordering::Acquire);
+        let blocked = self.signal_mask.load(Ordering::Acquire);
+        let unblocked_pending = pending & !blocked;
         if unblocked_pending == 0 {
             return None;
         }
@@ -514,31 +521,68 @@ impl Task {
         Some(unblocked_pending.trailing_zeros())
     }
 
-    /// Clear a pending signal
+    /// Clear a pending signal (atomically)
     ///
     /// # Arguments
     /// * `signal` - Signal number to clear
-    pub fn clear_pending_signal(&mut self, signal: u32) {
+    pub fn clear_pending_signal(&self, signal: u32) {
         if signal < MAX_SIGNALS as u32 {
             let mask = 1u64 << signal;
-            self.pending_signals &= !mask;
+            // Use fetch_and with inverted mask to clear the bit atomically
+            self.pending_signals.fetch_and(!mask, Ordering::Release);
         }
     }
 
     /// Add a signal to the pending set (atomically)
+    ///
+    /// This is the core function for signal delivery. It uses atomic
+    /// fetch_or to ensure race-free signal delivery in SMP environments.
     ///
     /// # Arguments
     /// * `signal` - Signal number to add
     ///
     /// # Returns
     /// true if the signal was added, false if invalid signal number
-    pub fn add_pending_signal(&mut self, signal: u32) -> bool {
+    pub fn add_pending_signal(&self, signal: u32) -> bool {
         if signal >= MAX_SIGNALS as u32 {
             return false;
         }
         let mask = 1u64 << signal;
-        self.pending_signals |= mask;
+        // Use fetch_or to set the bit atomically
+        self.pending_signals.fetch_or(mask, Ordering::Release);
         true
+    }
+
+    /// Set signal mask (atomically)
+    ///
+    /// # Arguments
+    /// * `mask` - New signal mask value
+    pub fn set_signal_mask(&self, mask: u64) {
+        self.signal_mask.store(mask, Ordering::Release);
+    }
+
+    /// Get signal mask (atomically)
+    ///
+    /// # Returns
+    /// Current signal mask value
+    pub fn get_signal_mask(&self) -> u64 {
+        self.signal_mask.load(Ordering::Acquire)
+    }
+
+    /// Block signals (add to mask atomically)
+    ///
+    /// # Arguments
+    /// * `mask` - Signals to block (bit N = block signal N)
+    pub fn block_signals(&self, mask: u64) {
+        self.signal_mask.fetch_or(mask, Ordering::Release);
+    }
+
+    /// Unblock signals (remove from mask atomically)
+    ///
+    /// # Arguments
+    /// * `mask` - Signals to unblock (bit N = unblock signal N)
+    pub fn unblock_signals(&self, mask: u64) {
+        self.signal_mask.fetch_and(!mask, Ordering::Release);
     }
 }
 

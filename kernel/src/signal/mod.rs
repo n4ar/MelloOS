@@ -196,6 +196,55 @@ pub mod sigmask {
 /// Adds the signal to the task's pending signal set atomically.
 /// The signal will be delivered when the task returns to userspace.
 ///
+/// This function uses atomic operations to ensure race-free signal
+/// delivery in SMP environments. Multiple CPUs can safely send signals
+/// to the same task concurrently.
+///
+/// # Arguments
+/// * `task` - The task to send the signal to
+/// * `signal` - Signal number to send
+///
+/// # Returns
+/// `true` if the signal was successfully added, `false` if invalid signal
+///
+/// # Example
+/// ```rust,ignore
+/// // Send SIGINT to a task
+/// send_signal_to_task(&task, signals::SIGINT);
+/// ```
+pub fn send_signal_to_task(task: &crate::sched::task::Task, signal: Signal) -> bool {
+    // Validate signal number
+    if signal == 0 || signal >= signals::MAX_SIGNAL {
+        return false;
+    }
+
+    // Add signal to pending set atomically
+    task.add_pending_signal(signal)
+}
+
+/// Send a signal to a process group
+///
+/// Sends the signal to all processes in the specified process group.
+/// This is used for job control signals (SIGINT, SIGTSTP, etc.).
+///
+/// # Arguments
+/// * `pgid` - Process group ID
+/// * `signal` - Signal number to send
+///
+/// # Note
+/// This function requires access to the task table and process group table.
+/// The actual implementation will be in the scheduler module.
+pub fn send_signal_to_group(pgid: usize, signal: Signal) {
+    // This is a placeholder - actual implementation will be in scheduler
+    // where we have access to the task table
+    let _ = (pgid, signal);
+}
+
+/// Legacy function for compatibility
+///
+/// Adds the signal to the task's pending signal set atomically.
+/// The signal will be delivered when the task returns to userspace.
+///
 /// # Arguments
 /// * `task` - The task to send the signal to
 /// * `signal` - The signal number to send

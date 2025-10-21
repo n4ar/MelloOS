@@ -8,7 +8,7 @@
 use crate::config::MAX_CPUS;
 use crate::sched::task::TaskId;
 use crate::sync::SpinLock;
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Maximum number of tasks per CPU runqueue
 const MAX_RUNQUEUE_SIZE: usize = 64;
@@ -79,6 +79,40 @@ impl RunQueue {
     }
 }
 
+/// Per-CPU statistics for observability
+///
+/// These counters track important events on each CPU core for debugging
+/// and performance monitoring.
+#[repr(C, align(64))]
+pub struct PerCpuStats {
+    /// Number of context switches performed
+    pub context_switches: AtomicU64,
+    /// Number of signals delivered
+    pub signals_delivered: AtomicU64,
+    /// Number of system calls executed
+    pub syscalls: AtomicU64,
+    /// Number of page faults handled
+    pub page_faults: AtomicU64,
+    /// Number of TLB shootdowns received
+    pub tlb_shootdowns: AtomicU64,
+    /// Number of scheduler ticks
+    pub sched_ticks: AtomicU64,
+}
+
+impl PerCpuStats {
+    /// Create a new zeroed statistics structure
+    pub const fn new() -> Self {
+        Self {
+            context_switches: AtomicU64::new(0),
+            signals_delivered: AtomicU64::new(0),
+            syscalls: AtomicU64::new(0),
+            page_faults: AtomicU64::new(0),
+            tlb_shootdowns: AtomicU64::new(0),
+            sched_ticks: AtomicU64::new(0),
+        }
+    }
+}
+
 /// Per-CPU data structure
 ///
 /// This structure contains all data that is specific to a single CPU core.
@@ -94,6 +128,7 @@ impl RunQueue {
 /// * `lapic_timer_hz` - Calibrated LAPIC timer frequency in Hz
 /// * `ticks` - Number of timer ticks since boot
 /// * `in_interrupt` - True if currently executing an interrupt handler
+/// * `stats` - Per-CPU statistics counters
 #[repr(C, align(64))]
 pub struct PerCpu {
     /// Logical CPU ID (0 for BSP, 1..N for APs)
@@ -122,6 +157,9 @@ pub struct PerCpu {
 
     /// True if currently executing an interrupt handler
     pub in_interrupt: bool,
+
+    /// Per-CPU statistics
+    pub stats: PerCpuStats,
 }
 
 impl PerCpu {
@@ -140,7 +178,44 @@ impl PerCpu {
             lapic_timer_hz: 0,
             ticks: AtomicU64::new(0),
             in_interrupt: false,
+            stats: PerCpuStats::new(),
         }
+    }
+
+    /// Increment context switch counter
+    #[inline]
+    pub fn inc_context_switches(&self) {
+        self.stats.context_switches.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment signals delivered counter
+    #[inline]
+    pub fn inc_signals_delivered(&self) {
+        self.stats.signals_delivered.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment syscalls counter
+    #[inline]
+    pub fn inc_syscalls(&self) {
+        self.stats.syscalls.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment page faults counter
+    #[inline]
+    pub fn inc_page_faults(&self) {
+        self.stats.page_faults.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment TLB shootdowns counter
+    #[inline]
+    pub fn inc_tlb_shootdowns(&self) {
+        self.stats.tlb_shootdowns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment scheduler ticks counter
+    #[inline]
+    pub fn inc_sched_ticks(&self) {
+        self.stats.sched_ticks.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -276,6 +351,14 @@ pub unsafe fn init_percpu(cpu_id: usize, apic_id: u8) {
     percpu.in_interrupt = false;
     core::arch::asm!(
         "mov al, 'L'",
+        "mov dx, 0x3F8",
+        "out dx, al",
+        options(nostack, nomem)
+    );
+
+    percpu.stats = PerCpuStats::new();
+    core::arch::asm!(
+        "mov al, 'M'",
         "mov dx, 0x3F8",
         "out dx, al",
         options(nostack, nomem)
@@ -450,4 +533,49 @@ pub fn percpu_current() -> &'static PerCpu {
 pub unsafe fn percpu_current_mut() -> &'static mut PerCpu {
     let percpu_ptr = rdmsr(MSR_GS_BASE) as *mut PerCpu;
     &mut *percpu_ptr
+}
+
+/// Aggregate statistics structure
+///
+/// Contains system-wide statistics aggregated across all CPUs.
+#[derive(Debug, Clone, Copy)]
+pub struct AggregateStats {
+    pub context_switches: u64,
+    pub signals_delivered: u64,
+    pub syscalls: u64,
+    pub page_faults: u64,
+    pub tlb_shootdowns: u64,
+    pub sched_ticks: u64,
+}
+
+/// Get aggregate statistics across all CPUs
+///
+/// This function sums up the statistics from all initialized CPU cores.
+///
+/// # Arguments
+/// * `num_cpus` - Number of initialized CPUs
+///
+/// # Returns
+/// Aggregate statistics structure
+pub fn get_aggregate_stats(num_cpus: usize) -> AggregateStats {
+    let mut stats = AggregateStats {
+        context_switches: 0,
+        signals_delivered: 0,
+        syscalls: 0,
+        page_faults: 0,
+        tlb_shootdowns: 0,
+        sched_ticks: 0,
+    };
+
+    for cpu_id in 0..num_cpus.min(MAX_CPUS) {
+        let percpu = percpu_for(cpu_id);
+        stats.context_switches += percpu.stats.context_switches.load(Ordering::Relaxed);
+        stats.signals_delivered += percpu.stats.signals_delivered.load(Ordering::Relaxed);
+        stats.syscalls += percpu.stats.syscalls.load(Ordering::Relaxed);
+        stats.page_faults += percpu.stats.page_faults.load(Ordering::Relaxed);
+        stats.tlb_shootdowns += percpu.stats.tlb_shootdowns.load(Ordering::Relaxed);
+        stats.sched_ticks += percpu.stats.sched_ticks.load(Ordering::Relaxed);
+    }
+
+    stats
 }
