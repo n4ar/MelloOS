@@ -8,41 +8,58 @@ use crate::{Shell, syscalls, jobs::JobState};
 /// Returns Some(status) if command was a built-in, None otherwise
 pub fn execute(shell: &mut Shell, cmd: &str, args: &[String]) -> Option<i32> {
     match cmd {
-        "cd" => Some(builtin_cd(args)),
+        "cd" => Some(builtin_cd(shell, args)),
         "pwd" => Some(builtin_pwd()),
         "echo" => Some(builtin_echo(args)),
-        "export" => Some(builtin_export(args)),
-        "unset" => Some(builtin_unset(args)),
+        "export" => Some(builtin_export(shell, args)),
+        "unset" => Some(builtin_unset(shell, args)),
         "jobs" => Some(builtin_jobs(shell)),
         "fg" => Some(builtin_fg(shell, args)),
         "bg" => Some(builtin_bg(shell, args)),
         "exit" => Some(builtin_exit(shell, args)),
-        "which" => Some(builtin_which(args)),
+        "which" => Some(builtin_which(shell, args)),
         _ => None,
     }
 }
 
 /// cd - change directory
-fn builtin_cd(args: &[String]) -> i32 {
-    let path = if args.is_empty() {
-        "/\0" // Default to root for now (should be $HOME)
-    } else {
-        let mut p = args[0].clone();
-        p.push('\0');
-        return if syscalls::chdir(p.as_bytes()) < 0 {
-            syscalls::write(2, b"cd: failed\n");
-            1
+fn builtin_cd(shell: &mut Shell, args: &[String]) -> i32 {
+    // Determine target directory
+    let target = if args.is_empty() {
+        // Default to $HOME
+        if let Some(home) = shell.get_env("HOME") {
+            home.clone()
         } else {
-            0
-        };
+            syscalls::write(2, b"cd: HOME not set\n");
+            return 1;
+        }
+    } else {
+        args[0].clone()
     };
 
-    if syscalls::chdir(path.as_bytes()) < 0 {
-        syscalls::write(2, b"cd: failed\n");
-        1
-    } else {
-        0
+    // Add null terminator for syscall
+    let mut path_with_null = target.clone();
+    path_with_null.push('\0');
+
+    // Call chdir system call
+    if syscalls::chdir(path_with_null.as_bytes()) < 0 {
+        syscalls::write(2, b"cd: ");
+        syscalls::write(2, target.as_bytes());
+        syscalls::write(2, b": No such file or directory\n");
+        return 1;
     }
+
+    // Update PWD environment variable
+    let mut buf = [0u8; 4096];
+    let len = syscalls::getcwd(&mut buf);
+    
+    if len > 0 {
+        if let Ok(pwd) = core::str::from_utf8(&buf[..len as usize]) {
+            shell.set_env(String::from("PWD"), String::from(pwd));
+        }
+    }
+
+    0
 }
 
 /// pwd - print working directory
@@ -119,15 +136,58 @@ fn builtin_echo(args: &[String]) -> i32 {
     0
 }
 
-/// export - set environment variable (stub)
-fn builtin_export(_args: &[String]) -> i32 {
-    syscalls::write(2, b"export: not implemented\n");
+/// export - set environment variable
+fn builtin_export(shell: &mut Shell, args: &[String]) -> i32 {
+    if args.is_empty() {
+        // Print all environment variables
+        for (key, value) in shell.env() {
+            syscalls::write(1, b"export ");
+            syscalls::write(1, key.as_bytes());
+            syscalls::write(1, b"=");
+            syscalls::write(1, value.as_bytes());
+            syscalls::write(1, b"\n");
+        }
+        return 0;
+    }
+
+    // Parse VAR=value syntax
+    for arg in args {
+        if let Some(eq_pos) = arg.find('=') {
+            let key = &arg[..eq_pos];
+            let value = &arg[eq_pos + 1..];
+            
+            if key.is_empty() {
+                syscalls::write(2, b"export: invalid variable name\n");
+                return 1;
+            }
+
+            shell.set_env(String::from(key), String::from(value));
+        } else {
+            // Just mark variable for export (already in environment)
+            // For now, we don't distinguish between exported and non-exported
+            if shell.get_env(arg).is_none() {
+                syscalls::write(2, b"export: ");
+                syscalls::write(2, arg.as_bytes());
+                syscalls::write(2, b": not found\n");
+                return 1;
+            }
+        }
+    }
+
     0
 }
 
-/// unset - unset environment variable (stub)
-fn builtin_unset(_args: &[String]) -> i32 {
-    syscalls::write(2, b"unset: not implemented\n");
+/// unset - unset environment variable
+fn builtin_unset(shell: &mut Shell, args: &[String]) -> i32 {
+    if args.is_empty() {
+        syscalls::write(2, b"unset: missing argument\n");
+        return 1;
+    }
+
+    for var in args {
+        shell.unset_env(var);
+    }
+
     0
 }
 
@@ -265,21 +325,57 @@ fn builtin_exit(shell: &mut Shell, args: &[String]) -> i32 {
 }
 
 /// which - show command path
-fn builtin_which(args: &[String]) -> i32 {
+fn builtin_which(shell: &Shell, args: &[String]) -> i32 {
     if args.is_empty() {
         syscalls::write(2, b"which: missing argument\n");
         return 1;
     }
 
+    let mut found_all = true;
+
     for cmd in args {
         // Check if it's a built-in
         if matches!(cmd.as_str(), "cd" | "pwd" | "echo" | "export" | "unset" | "jobs" | "fg" | "bg" | "exit" | "which") {
             syscalls::write(1, format!("{}: shell built-in command\n", cmd).as_bytes());
-        } else {
-            // Assume it's in /bin
-            syscalls::write(1, format!("/bin/{}\n", cmd).as_bytes());
+            continue;
+        }
+
+        // Search PATH environment variable
+        let path_var = shell.get_env("PATH").map(|s| s.as_str()).unwrap_or("/bin");
+        let mut found = false;
+
+        // Split PATH by colon
+        for dir in path_var.split(':') {
+            if dir.is_empty() {
+                continue;
+            }
+
+            // Construct full path
+            let mut full_path = String::from(dir);
+            if !full_path.ends_with('/') {
+                full_path.push('/');
+            }
+            full_path.push_str(cmd);
+            full_path.push('\0');
+
+            // Try to open the file to check if it exists
+            let fd = syscalls::open(full_path.as_bytes(), syscalls::O_RDONLY, 0);
+            if fd >= 0 {
+                syscalls::close(fd as i32);
+                // Print without null terminator
+                let output = &full_path[..full_path.len() - 1];
+                syscalls::write(1, output.as_bytes());
+                syscalls::write(1, b"\n");
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            syscalls::write(2, format!("which: {}: not found\n", cmd).as_bytes());
+            found_all = false;
         }
     }
 
-    0
+    if found_all { 0 } else { 1 }
 }

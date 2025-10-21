@@ -10,6 +10,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::collections::BTreeMap;
 use core::panic::PanicInfo;
 
 mod allocator;
@@ -29,16 +30,25 @@ pub struct Shell {
     history: History,
     tty_fd: Option<i32>,
     exit_requested: bool,
+    env: BTreeMap<String, String>,
 }
 
 impl Shell {
     /// Create a new shell instance
     pub fn new() -> Self {
+        let mut env = BTreeMap::new();
+        
+        // Initialize default environment variables
+        env.insert(String::from("HOME"), String::from("/"));
+        env.insert(String::from("PATH"), String::from("/bin"));
+        env.insert(String::from("PWD"), String::from("/"));
+        
         Self {
             jobs: JobTable::new(),
             history: History::new(),
             tty_fd: None,
             exit_requested: false,
+            env,
         }
     }
 
@@ -163,6 +173,26 @@ impl Shell {
     /// Get history reference
     pub fn history(&self) -> &History {
         &self.history
+    }
+
+    /// Get environment variable
+    pub fn get_env(&self, key: &str) -> Option<&String> {
+        self.env.get(key)
+    }
+
+    /// Set environment variable
+    pub fn set_env(&mut self, key: String, value: String) {
+        self.env.insert(key, value);
+    }
+
+    /// Remove environment variable
+    pub fn unset_env(&mut self, key: &str) {
+        self.env.remove(key);
+    }
+
+    /// Get all environment variables
+    pub fn env(&self) -> &BTreeMap<String, String> {
+        &self.env
     }
 }
 
