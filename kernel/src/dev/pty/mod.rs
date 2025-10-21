@@ -149,7 +149,7 @@ impl Winsize {
 ///
 /// Implements a circular buffer for efficient data transfer between
 /// master and slave sides of the PTY.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct RingBuffer {
     /// Buffer data (fixed size)
     data: [u8; PTY_BUFFER_SIZE],
@@ -252,7 +252,7 @@ impl RingBuffer {
 ///
 /// The master side is typically used by the terminal emulator.
 /// It reads output from the slave and writes input to the slave.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct PtyMaster {
     /// Output buffer (slave → master)
     pub output_buffer: RingBuffer,
@@ -280,7 +280,7 @@ impl PtyMaster {
 ///
 /// The slave side is typically used by the shell or application.
 /// It reads input from the master and writes output to the master.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct PtySlave {
     /// Input buffer (master → slave)
     pub input_buffer: RingBuffer,
@@ -304,7 +304,7 @@ impl PtySlave {
 /// PTY pair structure
 ///
 /// Represents a complete pseudo-terminal with both master and slave sides.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct PtyPair {
     /// PTY number (used for /dev/pts/<n>)
     pub number: PtyNumber,
@@ -318,7 +318,7 @@ pub struct PtyPair {
 
 impl PtyPair {
     /// Create a new PTY pair
-    pub fn new(number: PtyNumber) -> Self {
+    pub const fn new(number: PtyNumber) -> Self {
         Self {
             number,
             master: PtyMaster::new(),
@@ -340,5 +340,368 @@ impl PtyPair {
         self.allocated = false;
         self.master.output_buffer.clear();
         self.slave.input_buffer.clear();
+    }
+}
+
+use crate::sync::SpinLock;
+
+/// Global PTY table
+///
+/// Manages all PTY pairs in the system. Protected by a spinlock for SMP safety.
+pub struct PtyTable {
+    /// Array of PTY pairs (fixed size)
+    pairs: [PtyPair; MAX_PTY_PAIRS],
+}
+
+impl PtyTable {
+    /// Create a new PTY table
+    pub const fn new() -> Self {
+        // Create array of PTY pairs using const initialization
+        const INIT_PAIR: PtyPair = PtyPair::new(0);
+        let mut pairs = [INIT_PAIR; MAX_PTY_PAIRS];
+        
+        // Initialize each pair with its correct number
+        let mut i = 0;
+        while i < MAX_PTY_PAIRS {
+            pairs[i] = PtyPair::new(i as PtyNumber);
+            i += 1;
+        }
+        
+        Self { pairs }
+    }
+
+    /// Initialize the PTY table (no-op since we use const initialization)
+    pub fn init(&mut self) {
+        // Nothing to do - pairs are already initialized
+    }
+
+    /// Allocate a new PTY pair
+    ///
+    /// Returns the PTY number on success, or None if no pairs are available.
+    pub fn allocate_pty(&mut self) -> Option<PtyNumber> {
+        for pair in &mut self.pairs {
+            if !pair.allocated {
+                pair.allocate();
+                return Some(pair.number);
+            }
+        }
+        None
+    }
+
+    /// Deallocate a PTY pair
+    ///
+    /// Returns true if the pair was deallocated, false if it wasn't allocated.
+    pub fn deallocate_pty(&mut self, number: PtyNumber) -> bool {
+        if let Some(pair) = self.pairs.get_mut(number as usize) {
+            if pair.allocated {
+                pair.deallocate();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get a reference to a PTY pair
+    pub fn get_pty(&self, number: PtyNumber) -> Option<&PtyPair> {
+        if (number as usize) < MAX_PTY_PAIRS {
+            let pair = &self.pairs[number as usize];
+            if pair.allocated {
+                Some(pair)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Get a mutable reference to a PTY pair
+    pub fn get_pty_mut(&mut self, number: PtyNumber) -> Option<&mut PtyPair> {
+        if (number as usize) < MAX_PTY_PAIRS {
+            let pair = &mut self.pairs[number as usize];
+            if pair.allocated {
+                Some(pair)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+}
+
+/// Global PTY table instance
+static PTY_TABLE: SpinLock<PtyTable> = SpinLock::new(PtyTable::new());
+
+/// Initialize the PTY subsystem
+///
+/// Must be called once during kernel initialization.
+pub fn init() {
+    let mut table = PTY_TABLE.lock();
+    table.init();
+    crate::serial_println!("[PTY] Initialized PTY subsystem with {} pairs", MAX_PTY_PAIRS);
+}
+
+/// Allocate a new PTY pair
+///
+/// This is called when /dev/ptmx is opened.
+/// Returns the PTY number on success, or None if no pairs are available.
+pub fn allocate_pty() -> Option<PtyNumber> {
+    let mut table = PTY_TABLE.lock();
+    let number = table.allocate_pty();
+    if let Some(n) = number {
+        crate::serial_println!("[PTY] Allocated PTY pair {}", n);
+    } else {
+        crate::serial_println!("[PTY] ERROR: No PTY pairs available");
+    }
+    number
+}
+
+/// Deallocate a PTY pair
+///
+/// This is called when both master and slave sides are closed.
+pub fn deallocate_pty(number: PtyNumber) -> bool {
+    let mut table = PTY_TABLE.lock();
+    let result = table.deallocate_pty(number);
+    if result {
+        crate::serial_println!("[PTY] Deallocated PTY pair {}", number);
+    }
+    result
+}
+
+/// Get the slave number for a PTY (for TIOCGPTN ioctl)
+///
+/// Returns the PTY number if it's allocated, or None otherwise.
+pub fn get_pty_slave_number(number: PtyNumber) -> Option<PtyNumber> {
+    let table = PTY_TABLE.lock();
+    table.get_pty(number).map(|p| p.number)
+}
+
+/// Get termios settings for a PTY
+///
+/// Returns the termios structure if the PTY is allocated.
+pub fn get_termios(number: PtyNumber) -> Option<Termios> {
+    let table = PTY_TABLE.lock();
+    table.get_pty(number).map(|p| p.master.termios)
+}
+
+/// Set termios settings for a PTY
+///
+/// Returns true if successful, false if PTY not allocated.
+pub fn set_termios(number: PtyNumber, termios: Termios) -> bool {
+    let mut table = PTY_TABLE.lock();
+    if let Some(pair) = table.get_pty_mut(number) {
+        pair.master.termios = termios;
+        true
+    } else {
+        false
+    }
+}
+
+/// Get window size for a PTY
+///
+/// Returns the window size if the PTY is allocated.
+pub fn get_winsize(number: PtyNumber) -> Option<Winsize> {
+    let table = PTY_TABLE.lock();
+    table.get_pty(number).map(|p| p.master.winsize)
+}
+
+/// Set window size for a PTY
+///
+/// Returns true if successful, false if PTY not allocated.
+/// TODO: Generate SIGWINCH signal to foreground process group.
+pub fn set_winsize(number: PtyNumber, winsize: Winsize) -> bool {
+    let mut table = PTY_TABLE.lock();
+    if let Some(pair) = table.get_pty_mut(number) {
+        pair.master.winsize = winsize;
+        // TODO: Send SIGWINCH to foreground process group
+        crate::serial_println!("[PTY] Window size changed for PTY {}: {}x{}", 
+                              number, winsize.ws_row, winsize.ws_col);
+        true
+    } else {
+        false
+    }
+}
+
+/// Read from PTY master (reads from slave output buffer)
+///
+/// Returns the number of bytes read.
+pub fn read_master(number: PtyNumber, buf: &mut [u8]) -> usize {
+    let mut table = PTY_TABLE.lock();
+    if let Some(pair) = table.get_pty_mut(number) {
+        let bytes_read = pair.master.output_buffer.read(buf);
+        if bytes_read > 0 {
+            crate::serial_println!("[PTY] Master read {} bytes from PTY {}", bytes_read, number);
+        }
+        bytes_read
+    } else {
+        0
+    }
+}
+
+/// Write to PTY master (writes to slave input buffer)
+///
+/// Returns the number of bytes written.
+/// Processes data according to termios settings (canonical mode, echo, etc.)
+pub fn write_master(number: PtyNumber, data: &[u8]) -> usize {
+    let mut table = PTY_TABLE.lock();
+    if let Some(pair) = table.get_pty_mut(number) {
+        let termios = pair.master.termios;
+        let mut bytes_written = 0;
+        
+        for &byte in data {
+            // Process input according to termios flags
+            let mut processed_byte = byte;
+            
+            // Input processing (c_iflag)
+            if termios.c_iflag & iflag::ICRNL != 0 && byte == b'\r' {
+                processed_byte = b'\n'; // Map CR to NL
+            } else if termios.c_iflag & iflag::INLCR != 0 && byte == b'\n' {
+                processed_byte = b'\r'; // Map NL to CR
+            }
+            
+            // Check for special characters if ISIG is enabled
+            if termios.c_lflag & lflag::ISIG != 0 {
+                if byte == termios.c_cc[cc::VINTR] {
+                    // Ctrl-C - generate SIGINT
+                    crate::serial_println!("[PTY] SIGINT triggered on PTY {}", number);
+                    // TODO: Send SIGINT to foreground process group
+                    continue;
+                } else if byte == termios.c_cc[cc::VSUSP] {
+                    // Ctrl-Z - generate SIGTSTP
+                    crate::serial_println!("[PTY] SIGTSTP triggered on PTY {}", number);
+                    // TODO: Send SIGTSTP to foreground process group
+                    continue;
+                } else if byte == termios.c_cc[cc::VQUIT] {
+                    // Ctrl-\ - generate SIGQUIT
+                    crate::serial_println!("[PTY] SIGQUIT triggered on PTY {}", number);
+                    // TODO: Send SIGQUIT to foreground process group
+                    continue;
+                }
+            }
+            
+            // Write to slave input buffer
+            if pair.slave.input_buffer.write(&[processed_byte]) > 0 {
+                bytes_written += 1;
+                
+                // Echo back if ECHO is enabled
+                if termios.c_lflag & lflag::ECHO != 0 {
+                    // Echo to master output buffer
+                    let mut echo_byte = processed_byte;
+                    
+                    // Output processing for echo
+                    if termios.c_oflag & oflag::OPOST != 0 {
+                        if termios.c_oflag & oflag::ONLCR != 0 && echo_byte == b'\n' {
+                            // Map NL to CR-NL on output
+                            pair.master.output_buffer.write(&[b'\r']);
+                        }
+                    }
+                    
+                    pair.master.output_buffer.write(&[echo_byte]);
+                }
+            } else {
+                // Buffer full
+                break;
+            }
+        }
+        
+        if bytes_written > 0 {
+            crate::serial_println!("[PTY] Master wrote {} bytes to PTY {}", bytes_written, number);
+        }
+        bytes_written
+    } else {
+        0
+    }
+}
+
+/// Read from PTY slave (reads from master output buffer)
+///
+/// Returns the number of bytes read.
+/// In canonical mode, blocks until a newline is available.
+pub fn read_slave(number: PtyNumber, buf: &mut [u8]) -> usize {
+    let mut table = PTY_TABLE.lock();
+    if let Some(pair) = table.get_pty_mut(number) {
+        let termios = pair.master.termios;
+        
+        // In canonical mode, read until newline
+        if termios.c_lflag & lflag::ICANON != 0 {
+            // Check if there's a newline in the buffer
+            let mut temp_buf = [0u8; PTY_BUFFER_SIZE];
+            let available = pair.slave.input_buffer.peek(&mut temp_buf);
+            
+            // Look for newline
+            let mut newline_pos = None;
+            for i in 0..available {
+                if temp_buf[i] == b'\n' {
+                    newline_pos = Some(i + 1); // Include the newline
+                    break;
+                }
+            }
+            
+            if let Some(pos) = newline_pos {
+                // Read up to and including the newline
+                let to_read = pos.min(buf.len());
+                let bytes_read = pair.slave.input_buffer.read(&mut buf[..to_read]);
+                if bytes_read > 0 {
+                    crate::serial_println!("[PTY] Slave read {} bytes from PTY {} (canonical)", 
+                                          bytes_read, number);
+                }
+                bytes_read
+            } else {
+                // No complete line available
+                0
+            }
+        } else {
+            // Raw mode - read whatever is available
+            let bytes_read = pair.slave.input_buffer.read(buf);
+            if bytes_read > 0 {
+                crate::serial_println!("[PTY] Slave read {} bytes from PTY {} (raw)", 
+                                      bytes_read, number);
+            }
+            bytes_read
+        }
+    } else {
+        0
+    }
+}
+
+/// Write to PTY slave (writes to master output buffer)
+///
+/// Returns the number of bytes written.
+/// Processes output according to termios settings.
+pub fn write_slave(number: PtyNumber, data: &[u8]) -> usize {
+    let mut table = PTY_TABLE.lock();
+    if let Some(pair) = table.get_pty_mut(number) {
+        let termios = pair.master.termios;
+        let mut bytes_written = 0;
+        
+        for &byte in data {
+            let mut processed_byte = byte;
+            
+            // Output processing (c_oflag)
+            if termios.c_oflag & oflag::OPOST != 0 {
+                if termios.c_oflag & oflag::ONLCR != 0 && byte == b'\n' {
+                    // Map NL to CR-NL on output
+                    if pair.master.output_buffer.write(&[b'\r']) > 0 {
+                        // Successfully wrote CR
+                    }
+                }
+            }
+            
+            // Write to master output buffer
+            if pair.master.output_buffer.write(&[processed_byte]) > 0 {
+                bytes_written += 1;
+            } else {
+                // Buffer full
+                break;
+            }
+        }
+        
+        if bytes_written > 0 {
+            crate::serial_println!("[PTY] Slave wrote {} bytes to PTY {}", bytes_written, number);
+        }
+        bytes_written
+    } else {
+        0
     }
 }

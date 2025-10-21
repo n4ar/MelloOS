@@ -4,6 +4,7 @@
 //! It provides syscall entry point, dispatcher, and handler functions.
 
 use crate::sched::task::USER_LIMIT;
+use crate::sync::SpinLock;
 use crate::sys::METRICS;
 use crate::{serial_print, serial_println};
 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -134,6 +135,10 @@ pub const SYS_YIELD: usize = 6;
 pub const SYS_FORK: usize = 7;
 pub const SYS_WAIT: usize = 8;
 pub const SYS_EXEC: usize = 9;
+pub const SYS_OPEN: usize = 10;
+pub const SYS_READ: usize = 11;
+pub const SYS_CLOSE: usize = 12;
+pub const SYS_IOCTL: usize = 13;
 
 static NEXT_FAKE_PID: AtomicUsize = AtomicUsize::new(2000);
 
@@ -176,6 +181,10 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_FORK => "SYS_FORK",
         SYS_WAIT => "SYS_WAIT",
         SYS_EXEC => "SYS_EXEC",
+        SYS_OPEN => "SYS_OPEN",
+        SYS_READ => "SYS_READ",
+        SYS_CLOSE => "SYS_CLOSE",
+        SYS_IOCTL => "SYS_IOCTL",
         _ => "INVALID",
     };
 
@@ -209,6 +218,10 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_FORK => sys_fork(),
         SYS_WAIT => sys_wait(arg1),
         SYS_EXEC => sys_exec(arg1, arg2),
+        SYS_OPEN => sys_open(arg1, arg2),
+        SYS_READ => sys_read(arg1, arg2, arg3),
+        SYS_CLOSE => sys_close(arg1),
+        SYS_IOCTL => sys_ioctl(arg1, arg2, arg3),
         _ => {
             serial_println!("[SYSCALL] ERROR: Invalid syscall ID: {}", syscall_id);
             -1 // Invalid syscall
@@ -261,21 +274,16 @@ fn kernel_buffer_allowed() -> bool {
     }
 }
 
-/// sys_write handler - Write data to serial output
+/// sys_write handler - Write data to file descriptor
 ///
 /// # Arguments
-/// * `fd` - File descriptor (only 0/stdout supported in Phase 4)
+/// * `fd` - File descriptor
 /// * `buf_ptr` - Pointer to buffer
 /// * `len` - Length of data to write
 ///
 /// # Returns
 /// Number of bytes written, or -1 on error
 fn sys_write(fd: usize, buf_ptr: usize, len: usize) -> isize {
-    // Validate file descriptor (support stdout/stderr style 0/1)
-    if fd != 0 && fd != 1 {
-        return -1;
-    }
-
     if len == 0 {
         return 0; // Nothing to write
     }
@@ -288,16 +296,45 @@ fn sys_write(fd: usize, buf_ptr: usize, len: usize) -> isize {
         }
     }
 
-    // Convert pointer to slice (kernel context shares address space)
+    // Convert pointer to slice
     let buffer = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
 
-    // Convert to string (lossy for non-UTF8)
-    let s = core::str::from_utf8(buffer).unwrap_or("[invalid UTF-8]");
+    // Handle stdout/stderr (FD 0/1) - write to serial
+    if fd == 0 || fd == 1 {
+        // Convert to string (lossy for non-UTF8)
+        let s = core::str::from_utf8(buffer).unwrap_or("[invalid UTF-8]");
+        serial_print!("{}", s);
+        return len as isize;
+    }
 
-    // Write to serial
-    serial_print!("{}", s);
+    // Look up file descriptor
+    let fd_table = FD_TABLE.lock();
+    let fd_entry = match fd_table.get(fd) {
+        Some(entry) => entry,
+        None => {
+            serial_println!("[SYSCALL] sys_write: invalid FD {}", fd);
+            return -1; // EBADF
+        }
+    };
+    drop(fd_table);
 
-    len as isize
+    // Handle based on FD type
+    match fd_entry.fd_type {
+        FdType::PtyMaster(pty_num) => {
+            // Write to PTY master (writes to slave input)
+            let bytes_written = crate::dev::pty::write_master(pty_num, buffer);
+            bytes_written as isize
+        }
+        FdType::PtySlave(pty_num) => {
+            // Write to PTY slave (writes to master output)
+            let bytes_written = crate::dev::pty::write_slave(pty_num, buffer);
+            bytes_written as isize
+        }
+        FdType::Invalid => {
+            serial_println!("[SYSCALL] sys_write: invalid FD type");
+            -1 // EBADF
+        }
+    }
 }
 
 /// sys_exit handler - Terminate current task
@@ -482,4 +519,437 @@ fn sys_wait(_child_pid: usize) -> isize {
 fn sys_exec(_elf_ptr: usize, _len: usize) -> isize {
     serial_println!("[SYSCALL] SYS_EXEC: not implemented");
     -1
+}
+
+/// File descriptor type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FdType {
+    /// Invalid/closed FD
+    Invalid,
+    /// PTY master device
+    PtyMaster(u32),
+    /// PTY slave device
+    PtySlave(u32),
+}
+
+/// File descriptor table entry
+#[derive(Debug, Clone, Copy)]
+struct FileDescriptor {
+    /// Type of file descriptor
+    fd_type: FdType,
+    /// Flags (FD_CLOEXEC, etc.)
+    flags: u32,
+}
+
+impl FileDescriptor {
+    const fn new() -> Self {
+        Self {
+            fd_type: FdType::Invalid,
+            flags: 0,
+        }
+    }
+}
+
+/// Maximum number of file descriptors per process
+const MAX_FDS: usize = 256;
+
+/// Per-task file descriptor table
+///
+/// For now, we use a simple global table. In a full implementation,
+/// this would be per-task.
+struct FdTable {
+    fds: [FileDescriptor; MAX_FDS],
+}
+
+impl FdTable {
+    const fn new() -> Self {
+        Self {
+            fds: [FileDescriptor::new(); MAX_FDS],
+        }
+    }
+
+    fn allocate(&mut self, fd_type: FdType) -> Option<usize> {
+        // Start from FD 3 (after stdin/stdout/stderr)
+        for i in 3..MAX_FDS {
+            if matches!(self.fds[i].fd_type, FdType::Invalid) {
+                self.fds[i] = FileDescriptor { fd_type, flags: 0 };
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    fn get(&self, fd: usize) -> Option<FileDescriptor> {
+        if fd < MAX_FDS && !matches!(self.fds[fd].fd_type, FdType::Invalid) {
+            Some(self.fds[fd])
+        } else {
+            None
+        }
+    }
+
+    fn close(&mut self, fd: usize) -> Option<FileDescriptor> {
+        if fd < MAX_FDS && !matches!(self.fds[fd].fd_type, FdType::Invalid) {
+            let old = self.fds[fd];
+            self.fds[fd] = FileDescriptor::new();
+            Some(old)
+        } else {
+            None
+        }
+    }
+}
+
+static FD_TABLE: SpinLock<FdTable> = SpinLock::new(FdTable::new());
+
+/// sys_open handler - Open a device or file
+///
+/// # Arguments
+/// * `path_ptr` - Pointer to null-terminated path string
+/// * `flags` - Open flags (O_RDONLY, O_WRONLY, O_RDWR, etc.)
+///
+/// # Returns
+/// File descriptor on success, or -1 on error
+fn sys_open(path_ptr: usize, _flags: usize) -> isize {
+    // Validate path pointer
+    if !validate_user_buffer(path_ptr, 1) {
+        return -1;
+    }
+
+    // Read path string (simplified - just check for /dev/ptmx)
+    // In a full implementation, we'd properly parse the path
+    let path_bytes = unsafe {
+        let mut len = 0;
+        let ptr = path_ptr as *const u8;
+        while len < 256 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let path = core::str::from_utf8(path_bytes).unwrap_or("");
+    serial_println!("[SYSCALL] sys_open: path={}", path);
+
+    // Check if opening /dev/ptmx
+    if path == "/dev/ptmx" {
+        // Allocate a new PTY pair
+        match crate::dev::pty::allocate_pty() {
+            Some(pty_num) => {
+                // Allocate a file descriptor
+                let mut fd_table = FD_TABLE.lock();
+                match fd_table.allocate(FdType::PtyMaster(pty_num)) {
+                    Some(fd) => {
+                        serial_println!("[SYSCALL] sys_open: allocated PTY {} as FD {}", pty_num, fd);
+                        fd as isize
+                    }
+                    None => {
+                        // Failed to allocate FD, deallocate PTY
+                        crate::dev::pty::deallocate_pty(pty_num);
+                        serial_println!("[SYSCALL] sys_open: no FDs available");
+                        -1 // EMFILE - too many open files
+                    }
+                }
+            }
+            None => {
+                serial_println!("[SYSCALL] sys_open: failed to allocate PTY");
+                -1 // ENODEV - no PTY pairs available
+            }
+        }
+    } else if path.starts_with("/dev/pts/") {
+        // Parse PTY slave number
+        let num_str = &path[9..]; // Skip "/dev/pts/"
+        if let Ok(pty_num) = num_str.parse::<u32>() {
+            // Verify PTY exists
+            if crate::dev::pty::get_pty_slave_number(pty_num).is_some() {
+                // Allocate a file descriptor
+                let mut fd_table = FD_TABLE.lock();
+                match fd_table.allocate(FdType::PtySlave(pty_num)) {
+                    Some(fd) => {
+                        serial_println!("[SYSCALL] sys_open: opened PTY slave {} as FD {}", pty_num, fd);
+                        fd as isize
+                    }
+                    None => {
+                        serial_println!("[SYSCALL] sys_open: no FDs available");
+                        -1 // EMFILE - too many open files
+                    }
+                }
+            } else {
+                serial_println!("[SYSCALL] sys_open: PTY {} not allocated", pty_num);
+                -1 // ENOENT - PTY doesn't exist
+            }
+        } else {
+            serial_println!("[SYSCALL] sys_open: invalid PTY number in path");
+            -1 // EINVAL
+        }
+    } else {
+        serial_println!("[SYSCALL] sys_open: unsupported path");
+        -1 // ENOENT - file not found
+    }
+}
+
+/// sys_read handler - Read from a file descriptor
+///
+/// # Arguments
+/// * `fd` - File descriptor
+/// * `buf_ptr` - Pointer to buffer
+/// * `len` - Maximum bytes to read
+///
+/// # Returns
+/// Number of bytes read, or -1 on error
+fn sys_read(fd: usize, buf_ptr: usize, len: usize) -> isize {
+    if len == 0 {
+        return 0;
+    }
+
+    // Validate buffer
+    if !validate_user_buffer(buf_ptr, len) {
+        return -1;
+    }
+
+    // Look up file descriptor
+    let fd_table = FD_TABLE.lock();
+    let fd_entry = match fd_table.get(fd) {
+        Some(entry) => entry,
+        None => {
+            serial_println!("[SYSCALL] sys_read: invalid FD {}", fd);
+            return -1; // EBADF
+        }
+    };
+    drop(fd_table);
+
+    // Convert pointer to mutable slice
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+
+    // Handle based on FD type
+    match fd_entry.fd_type {
+        FdType::PtyMaster(pty_num) => {
+            // Read from PTY master (reads from slave output)
+            let bytes_read = crate::dev::pty::read_master(pty_num, buffer);
+            bytes_read as isize
+        }
+        FdType::PtySlave(pty_num) => {
+            // Read from PTY slave (reads from master output)
+            let bytes_read = crate::dev::pty::read_slave(pty_num, buffer);
+            bytes_read as isize
+        }
+        FdType::Invalid => {
+            serial_println!("[SYSCALL] sys_read: invalid FD type");
+            -1 // EBADF
+        }
+    }
+}
+
+/// sys_close handler - Close a file descriptor
+///
+/// # Arguments
+/// * `fd` - File descriptor to close
+///
+/// # Returns
+/// 0 on success, or -1 on error
+fn sys_close(fd: usize) -> isize {
+    let mut fd_table = FD_TABLE.lock();
+    
+    match fd_table.close(fd) {
+        Some(fd_entry) => {
+            serial_println!("[SYSCALL] sys_close: closed FD {}", fd);
+            
+            // If this was a PTY master, deallocate the PTY pair
+            // (In a full implementation, we'd track open counts)
+            match fd_entry.fd_type {
+                FdType::PtyMaster(pty_num) => {
+                    crate::dev::pty::deallocate_pty(pty_num);
+                }
+                FdType::PtySlave(_) => {
+                    // Slave close doesn't deallocate
+                }
+                FdType::Invalid => {
+                    // Should never happen
+                }
+            }
+            
+            0
+        }
+        None => {
+            serial_println!("[SYSCALL] sys_close: invalid FD {}", fd);
+            -1 // EBADF
+        }
+    }
+}
+
+/// ioctl command numbers
+const TIOCGPTN: usize = 0x80045430;  // Get PTY number
+const TCGETS: usize = 0x5401;        // Get termios structure
+const TCSETS: usize = 0x5402;        // Set termios structure
+const TIOCGWINSZ: usize = 0x5413;    // Get window size
+const TIOCSWINSZ: usize = 0x5414;    // Set window size
+
+/// sys_ioctl handler - Device-specific control operations
+///
+/// # Arguments
+/// * `fd` - File descriptor
+/// * `cmd` - ioctl command
+/// * `arg` - Command-specific argument
+///
+/// # Returns
+/// 0 on success, or -1 on error
+fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> isize {
+    // Look up file descriptor
+    let fd_table = FD_TABLE.lock();
+    let fd_entry = match fd_table.get(fd) {
+        Some(entry) => entry,
+        None => {
+            serial_println!("[SYSCALL] sys_ioctl: invalid FD {}", fd);
+            return -1; // EBADF
+        }
+    };
+    drop(fd_table);
+
+    serial_println!("[SYSCALL] sys_ioctl: FD={}, cmd={:#x}, arg={:#x}", fd, cmd, arg);
+
+    // Handle based on command
+    match cmd {
+        TIOCGPTN => {
+            // Get PTY number (only valid for PTY master)
+            match fd_entry.fd_type {
+                FdType::PtyMaster(pty_num) => {
+                    // Validate output pointer
+                    if !validate_user_buffer(arg, core::mem::size_of::<u32>()) {
+                        return -1;
+                    }
+
+                    // Write PTY number to user buffer
+                    unsafe {
+                        *(arg as *mut u32) = pty_num;
+                    }
+
+                    serial_println!("[SYSCALL] sys_ioctl: TIOCGPTN returned {}", pty_num);
+                    0
+                }
+                _ => {
+                    serial_println!("[SYSCALL] sys_ioctl: TIOCGPTN on non-master FD");
+                    -1 // ENOTTY
+                }
+            }
+        }
+        TCGETS => {
+            // Get termios settings
+            let pty_num = match fd_entry.fd_type {
+                FdType::PtyMaster(n) | FdType::PtySlave(n) => n,
+                _ => {
+                    serial_println!("[SYSCALL] sys_ioctl: TCGETS on non-PTY FD");
+                    return -1; // ENOTTY
+                }
+            };
+
+            // Validate output pointer
+            if !validate_user_buffer(arg, core::mem::size_of::<crate::dev::pty::Termios>()) {
+                return -1;
+            }
+
+            // Get termios from PTY
+            match crate::dev::pty::get_termios(pty_num) {
+                Some(termios) => {
+                    // Write termios to user buffer
+                    unsafe {
+                        *(arg as *mut crate::dev::pty::Termios) = termios;
+                    }
+                    serial_println!("[SYSCALL] sys_ioctl: TCGETS for PTY {}", pty_num);
+                    0
+                }
+                None => {
+                    serial_println!("[SYSCALL] sys_ioctl: TCGETS on invalid PTY");
+                    -1 // EBADF
+                }
+            }
+        }
+        TCSETS => {
+            // Set termios settings
+            let pty_num = match fd_entry.fd_type {
+                FdType::PtyMaster(n) | FdType::PtySlave(n) => n,
+                _ => {
+                    serial_println!("[SYSCALL] sys_ioctl: TCSETS on non-PTY FD");
+                    return -1; // ENOTTY
+                }
+            };
+
+            // Validate input pointer
+            if !validate_user_buffer(arg, core::mem::size_of::<crate::dev::pty::Termios>()) {
+                return -1;
+            }
+
+            // Read termios from user buffer
+            let termios = unsafe { *(arg as *const crate::dev::pty::Termios) };
+
+            // Set termios in PTY
+            if crate::dev::pty::set_termios(pty_num, termios) {
+                serial_println!("[SYSCALL] sys_ioctl: TCSETS for PTY {}", pty_num);
+                0
+            } else {
+                serial_println!("[SYSCALL] sys_ioctl: TCSETS on invalid PTY");
+                -1 // EBADF
+            }
+        }
+        TIOCGWINSZ => {
+            // Get window size
+            let pty_num = match fd_entry.fd_type {
+                FdType::PtyMaster(n) | FdType::PtySlave(n) => n,
+                _ => {
+                    serial_println!("[SYSCALL] sys_ioctl: TIOCGWINSZ on non-PTY FD");
+                    return -1; // ENOTTY
+                }
+            };
+
+            // Validate output pointer
+            if !validate_user_buffer(arg, core::mem::size_of::<crate::dev::pty::Winsize>()) {
+                return -1;
+            }
+
+            // Get winsize from PTY
+            match crate::dev::pty::get_winsize(pty_num) {
+                Some(winsize) => {
+                    // Write winsize to user buffer
+                    unsafe {
+                        *(arg as *mut crate::dev::pty::Winsize) = winsize;
+                    }
+                    serial_println!("[SYSCALL] sys_ioctl: TIOCGWINSZ for PTY {}: {}x{}", 
+                                  pty_num, winsize.ws_row, winsize.ws_col);
+                    0
+                }
+                None => {
+                    serial_println!("[SYSCALL] sys_ioctl: TIOCGWINSZ on invalid PTY");
+                    -1 // EBADF
+                }
+            }
+        }
+        TIOCSWINSZ => {
+            // Set window size
+            let pty_num = match fd_entry.fd_type {
+                FdType::PtyMaster(n) | FdType::PtySlave(n) => n,
+                _ => {
+                    serial_println!("[SYSCALL] sys_ioctl: TIOCSWINSZ on non-PTY FD");
+                    return -1; // ENOTTY
+                }
+            };
+
+            // Validate input pointer
+            if !validate_user_buffer(arg, core::mem::size_of::<crate::dev::pty::Winsize>()) {
+                return -1;
+            }
+
+            // Read winsize from user buffer
+            let winsize = unsafe { *(arg as *const crate::dev::pty::Winsize) };
+
+            // Set winsize in PTY
+            if crate::dev::pty::set_winsize(pty_num, winsize) {
+                serial_println!("[SYSCALL] sys_ioctl: TIOCSWINSZ for PTY {}: {}x{}", 
+                              pty_num, winsize.ws_row, winsize.ws_col);
+                0
+            } else {
+                serial_println!("[SYSCALL] sys_ioctl: TIOCSWINSZ on invalid PTY");
+                -1 // EBADF
+            }
+        }
+        _ => {
+            serial_println!("[SYSCALL] sys_ioctl: unsupported command {:#x}", cmd);
+            -1 // EINVAL
+        }
+    }
 }

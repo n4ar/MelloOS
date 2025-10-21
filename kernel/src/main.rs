@@ -845,6 +845,10 @@ pub extern "C" fn _start() -> ! {
     // Initialize IPC ports
     sys::port::init_ipc();
 
+    serial_println!("[KERNEL] Initializing PTY subsystem...");
+    // Initialize PTY (pseudo-terminal) subsystem
+    dev::pty::init();
+
     serial_println!("[KERNEL] Initializing scheduler...");
     // Initialize the task scheduler
     init_scheduler();
