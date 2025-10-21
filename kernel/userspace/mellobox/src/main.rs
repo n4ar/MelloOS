@@ -12,6 +12,20 @@ mod allocator;
 mod syscalls;
 mod error;
 mod args;
+mod ls;
+mod cp;
+mod mv;
+mod rm;
+mod cat;
+mod grep;
+mod ps;
+mod kill;
+mod mkdir;
+mod touch;
+mod echo;
+mod pwd;
+mod true_cmd;
+mod false_cmd;
 
 use error::{Error, Result};
 
@@ -25,22 +39,21 @@ struct Applet {
 }
 
 /// List of available applets
-/// These will be implemented in later tasks
 const APPLETS: &[Applet] = &[
-    // Applet { name: "ls", func: ls::main },
-    // Applet { name: "cp", func: cp::main },
-    // Applet { name: "mv", func: mv::main },
-    // Applet { name: "rm", func: rm::main },
-    // Applet { name: "cat", func: cat::main },
-    // Applet { name: "grep", func: grep::main },
-    // Applet { name: "ps", func: ps::main },
-    // Applet { name: "kill", func: kill::main },
-    // Applet { name: "mkdir", func: mkdir::main },
-    // Applet { name: "touch", func: touch::main },
-    // Applet { name: "echo", func: echo::main },
-    // Applet { name: "pwd", func: pwd::main },
-    // Applet { name: "true", func: true_cmd::main },
-    // Applet { name: "false", func: false_cmd::main },
+    Applet { name: "ls", func: ls::main },
+    Applet { name: "cp", func: cp::main },
+    Applet { name: "mv", func: mv::main },
+    Applet { name: "rm", func: rm::main },
+    Applet { name: "cat", func: cat::main },
+    Applet { name: "grep", func: grep::main },
+    Applet { name: "ps", func: ps::main },
+    Applet { name: "kill", func: kill::main },
+    Applet { name: "mkdir", func: mkdir::main },
+    Applet { name: "touch", func: touch::main },
+    Applet { name: "echo", func: echo::main },
+    Applet { name: "pwd", func: pwd::main },
+    Applet { name: "true", func: true_cmd::main },
+    Applet { name: "false", func: false_cmd::main },
 ];
 
 /// Extract program name from argv[0]
