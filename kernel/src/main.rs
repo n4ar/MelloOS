@@ -4,12 +4,15 @@
 
 mod arch;
 mod config;
+mod dev;
 mod framebuffer;
+mod fs;
 mod init_loader;
 mod mm;
 mod panic;
 mod sched;
 mod serial;
+mod signal;
 mod sync;
 mod sys;
 mod user;
