@@ -147,6 +147,9 @@ pub const SYS_SETSID: usize = 18;
 pub const SYS_GETSID: usize = 19;
 pub const SYS_TCSETPGRP: usize = 20;
 pub const SYS_TCGETPGRP: usize = 21;
+pub const SYS_FCNTL: usize = 22;
+pub const SYS_PIPE2: usize = 23;
+pub const SYS_DUP2: usize = 24;
 
 static NEXT_FAKE_PID: AtomicUsize = AtomicUsize::new(2000);
 
@@ -201,6 +204,9 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_GETSID => "SYS_GETSID",
         SYS_TCSETPGRP => "SYS_TCSETPGRP",
         SYS_TCGETPGRP => "SYS_TCGETPGRP",
+        SYS_FCNTL => "SYS_FCNTL",
+        SYS_PIPE2 => "SYS_PIPE2",
+        SYS_DUP2 => "SYS_DUP2",
         _ => "INVALID",
     };
 
@@ -246,6 +252,9 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_GETSID => sys_getsid(arg1),
         SYS_TCSETPGRP => sys_tcsetpgrp(arg1, arg2),
         SYS_TCGETPGRP => sys_tcgetpgrp(arg1),
+        SYS_FCNTL => sys_fcntl(arg1, arg2, arg3),
+        SYS_PIPE2 => sys_pipe2(arg1, arg2),
+        SYS_DUP2 => sys_dup2(arg1, arg2),
         _ => {
             serial_println!("[SYSCALL] ERROR: Invalid syscall ID: {}", syscall_id);
             -1 // Invalid syscall
@@ -353,6 +362,30 @@ fn sys_write(fd: usize, buf_ptr: usize, len: usize) -> isize {
             // Write to PTY slave (writes to master output)
             let bytes_written = crate::dev::pty::write_slave(pty_num, buffer);
             bytes_written as isize
+        }
+        FdType::PipeWrite(pipe_id) => {
+            // Write to pipe
+            let mut pipe_table = PIPE_TABLE.lock();
+            match pipe_table.get_mut(pipe_id) {
+                Some(pipe) => {
+                    // Check if there are any readers
+                    if pipe.readers == 0 {
+                        serial_println!("[SYSCALL] sys_write: pipe has no readers (SIGPIPE)");
+                        // TODO: Send SIGPIPE to current process
+                        return -1; // EPIPE
+                    }
+                    let bytes_written = pipe.write(buffer);
+                    bytes_written as isize
+                }
+                None => {
+                    serial_println!("[SYSCALL] sys_write: invalid pipe");
+                    -1 // EBADF
+                }
+            }
+        }
+        FdType::PipeRead(_) => {
+            serial_println!("[SYSCALL] sys_write: cannot write to pipe read end");
+            -1 // EBADF
         }
         FdType::Invalid => {
             serial_println!("[SYSCALL] sys_write: invalid FD type");
@@ -554,28 +587,229 @@ enum FdType {
     PtyMaster(u32),
     /// PTY slave device
     PtySlave(u32),
+    /// Pipe read end
+    PipeRead(u32),
+    /// Pipe write end
+    PipeWrite(u32),
 }
+
+/// File descriptor flags (FD_CLOEXEC)
+const FD_CLOEXEC: u32 = 1;
+
+/// File status flags
+const O_NONBLOCK: u32 = 0x800;
+const O_APPEND: u32 = 0x400;
 
 /// File descriptor table entry
 #[derive(Debug, Clone, Copy)]
 struct FileDescriptor {
     /// Type of file descriptor
     fd_type: FdType,
-    /// Flags (FD_CLOEXEC, etc.)
-    flags: u32,
+    /// FD flags (FD_CLOEXEC, etc.)
+    fd_flags: u32,
+    /// File status flags (O_NONBLOCK, O_APPEND, etc.)
+    status_flags: u32,
 }
 
 impl FileDescriptor {
     const fn new() -> Self {
         Self {
             fd_type: FdType::Invalid,
-            flags: 0,
+            fd_flags: 0,
+            status_flags: 0,
+        }
+    }
+
+    fn with_type(fd_type: FdType) -> Self {
+        Self {
+            fd_type,
+            fd_flags: 0,
+            status_flags: 0,
+        }
+    }
+
+    fn with_flags(fd_type: FdType, fd_flags: u32, status_flags: u32) -> Self {
+        Self {
+            fd_type,
+            fd_flags,
+            status_flags,
         }
     }
 }
 
 /// Maximum number of file descriptors per process
 const MAX_FDS: usize = 256;
+
+/// Maximum number of pipes
+const MAX_PIPES: usize = 64;
+
+/// Pipe buffer size (4KB)
+const PIPE_BUF_SIZE: usize = 4096;
+
+/// Pipe structure
+struct Pipe {
+    /// Ring buffer for data
+    buffer: [u8; PIPE_BUF_SIZE],
+    /// Read position
+    read_pos: usize,
+    /// Write position
+    write_pos: usize,
+    /// Number of bytes in buffer
+    count: usize,
+    /// Number of read ends open
+    readers: usize,
+    /// Number of write ends open
+    writers: usize,
+}
+
+impl Pipe {
+    const fn new() -> Self {
+        Self {
+            buffer: [0; PIPE_BUF_SIZE],
+            read_pos: 0,
+            write_pos: 0,
+            count: 0,
+            readers: 0,
+            writers: 0,
+        }
+    }
+
+    fn is_allocated(&self) -> bool {
+        self.readers > 0 || self.writers > 0
+    }
+
+    fn read(&mut self, buf: &mut [u8]) -> usize {
+        let to_read = core::cmp::min(buf.len(), self.count);
+        for i in 0..to_read {
+            buf[i] = self.buffer[self.read_pos];
+            self.read_pos = (self.read_pos + 1) % PIPE_BUF_SIZE;
+        }
+        self.count -= to_read;
+        to_read
+    }
+
+    fn write(&mut self, buf: &[u8]) -> usize {
+        let space = PIPE_BUF_SIZE - self.count;
+        let to_write = core::cmp::min(buf.len(), space);
+        for i in 0..to_write {
+            self.buffer[self.write_pos] = buf[i];
+            self.write_pos = (self.write_pos + 1) % PIPE_BUF_SIZE;
+        }
+        self.count += to_write;
+        to_write
+    }
+
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    fn is_full(&self) -> bool {
+        self.count == PIPE_BUF_SIZE
+    }
+}
+
+/// Global pipe table
+struct PipeTable {
+    pipes: [Pipe; MAX_PIPES],
+}
+
+impl PipeTable {
+    const fn new() -> Self {
+        Self {
+            pipes: [const { Pipe::new() }; MAX_PIPES],
+        }
+    }
+
+    fn allocate(&mut self) -> Option<u32> {
+        for (i, pipe) in self.pipes.iter_mut().enumerate() {
+            if !pipe.is_allocated() {
+                pipe.readers = 1;
+                pipe.writers = 1;
+                pipe.read_pos = 0;
+                pipe.write_pos = 0;
+                pipe.count = 0;
+                return Some(i as u32);
+            }
+        }
+        None
+    }
+
+    fn get(&self, pipe_id: u32) -> Option<&Pipe> {
+        let idx = pipe_id as usize;
+        if idx < MAX_PIPES && self.pipes[idx].is_allocated() {
+            Some(&self.pipes[idx])
+        } else {
+            None
+        }
+    }
+
+    fn get_mut(&mut self, pipe_id: u32) -> Option<&mut Pipe> {
+        let idx = pipe_id as usize;
+        if idx < MAX_PIPES && self.pipes[idx].is_allocated() {
+            Some(&mut self.pipes[idx])
+        } else {
+            None
+        }
+    }
+
+    fn close_reader(&mut self, pipe_id: u32) {
+        if let Some(pipe) = self.get_mut(pipe_id) {
+            if pipe.readers > 0 {
+                pipe.readers -= 1;
+            }
+        }
+    }
+
+    fn close_writer(&mut self, pipe_id: u32) {
+        if let Some(pipe) = self.get_mut(pipe_id) {
+            if pipe.writers > 0 {
+                pipe.writers -= 1;
+            }
+        }
+    }
+}
+
+static PIPE_TABLE: SpinLock<PipeTable> = SpinLock::new(PipeTable::new());
+
+/// Close all file descriptors with FD_CLOEXEC flag set
+///
+/// This is called during exec to close file descriptors that should not
+/// be inherited by the new program.
+pub fn close_fds_with_cloexec() {
+    let mut fd_table = FD_TABLE.lock();
+    
+    // Scan all file descriptors
+    for fd in 0..MAX_FDS {
+        if let Some(fd_entry) = fd_table.get(fd) {
+            // Check if FD_CLOEXEC flag is set
+            if (fd_entry.fd_flags & FD_CLOEXEC) != 0 {
+                serial_println!("[SYSCALL] Closing FD {} (FD_CLOEXEC set)", fd);
+                
+                // Get the FD type before closing
+                let fd_type = fd_entry.fd_type;
+                
+                // Close the FD
+                fd_table.close(fd);
+                
+                // Handle cleanup based on FD type
+                match fd_type {
+                    FdType::PtyMaster(pty_num) => {
+                        crate::dev::pty::deallocate_pty(pty_num);
+                    }
+                    FdType::PipeRead(pipe_id) => {
+                        let mut pipe_table = PIPE_TABLE.lock();
+                        pipe_table.close_reader(pipe_id);
+                    }
+                    FdType::PipeWrite(pipe_id) => {
+                        let mut pipe_table = PIPE_TABLE.lock();
+                        pipe_table.close_writer(pipe_id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
 
 /// Per-task file descriptor table
 ///
@@ -596,11 +830,42 @@ impl FdTable {
         // Start from FD 3 (after stdin/stdout/stderr)
         for i in 3..MAX_FDS {
             if matches!(self.fds[i].fd_type, FdType::Invalid) {
-                self.fds[i] = FileDescriptor { fd_type, flags: 0 };
+                self.fds[i] = FileDescriptor::with_type(fd_type);
                 return Some(i);
             }
         }
         None
+    }
+
+    fn allocate_with_flags(&mut self, fd_type: FdType, fd_flags: u32, status_flags: u32) -> Option<usize> {
+        // Start from FD 3 (after stdin/stdout/stderr)
+        for i in 3..MAX_FDS {
+            if matches!(self.fds[i].fd_type, FdType::Invalid) {
+                self.fds[i] = FileDescriptor::with_flags(fd_type, fd_flags, status_flags);
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    fn allocate_at(&mut self, fd: usize, fd_type: FdType, fd_flags: u32, status_flags: u32) -> bool {
+        if fd >= MAX_FDS {
+            return false;
+        }
+        // Close existing FD if open
+        if !matches!(self.fds[fd].fd_type, FdType::Invalid) {
+            self.close(fd);
+        }
+        self.fds[fd] = FileDescriptor::with_flags(fd_type, fd_flags, status_flags);
+        true
+    }
+
+    fn get_mut(&mut self, fd: usize) -> Option<&mut FileDescriptor> {
+        if fd < MAX_FDS && !matches!(self.fds[fd].fd_type, FdType::Invalid) {
+            Some(&mut self.fds[fd])
+        } else {
+            None
+        }
     }
 
     fn get(&self, fd: usize) -> Option<FileDescriptor> {
@@ -754,6 +1019,28 @@ fn sys_read(fd: usize, buf_ptr: usize, len: usize) -> isize {
             let bytes_read = crate::dev::pty::read_slave(pty_num, buffer);
             bytes_read as isize
         }
+        FdType::PipeRead(pipe_id) => {
+            // Read from pipe
+            let mut pipe_table = PIPE_TABLE.lock();
+            match pipe_table.get_mut(pipe_id) {
+                Some(pipe) => {
+                    // If pipe is empty and there are no writers, return EOF
+                    if pipe.is_empty() && pipe.writers == 0 {
+                        return 0; // EOF
+                    }
+                    let bytes_read = pipe.read(buffer);
+                    bytes_read as isize
+                }
+                None => {
+                    serial_println!("[SYSCALL] sys_read: invalid pipe");
+                    -1 // EBADF
+                }
+            }
+        }
+        FdType::PipeWrite(_) => {
+            serial_println!("[SYSCALL] sys_read: cannot read from pipe write end");
+            -1 // EBADF
+        }
         FdType::Invalid => {
             serial_println!("[SYSCALL] sys_read: invalid FD type");
             -1 // EBADF
@@ -775,14 +1062,25 @@ fn sys_close(fd: usize) -> isize {
         Some(fd_entry) => {
             serial_println!("[SYSCALL] sys_close: closed FD {}", fd);
             
-            // If this was a PTY master, deallocate the PTY pair
-            // (In a full implementation, we'd track open counts)
+            // Handle cleanup based on FD type
             match fd_entry.fd_type {
                 FdType::PtyMaster(pty_num) => {
+                    // If this was a PTY master, deallocate the PTY pair
+                    // (In a full implementation, we'd track open counts)
                     crate::dev::pty::deallocate_pty(pty_num);
                 }
                 FdType::PtySlave(_) => {
                     // Slave close doesn't deallocate
+                }
+                FdType::PipeRead(pipe_id) => {
+                    // Close pipe read end
+                    let mut pipe_table = PIPE_TABLE.lock();
+                    pipe_table.close_reader(pipe_id);
+                }
+                FdType::PipeWrite(pipe_id) => {
+                    // Close pipe write end
+                    let mut pipe_table = PIPE_TABLE.lock();
+                    pipe_table.close_writer(pipe_id);
                 }
                 FdType::Invalid => {
                     // Should never happen
@@ -1526,5 +1824,214 @@ fn sys_tcgetpgrp(fd: usize) -> isize {
             serial_println!("[SYSCALL] sys_tcgetpgrp: no foreground PGID set");
             -1 // No foreground process group
         }
+    }
+}
+
+/// fcntl command numbers
+const F_GETFD: usize = 1;  // Get file descriptor flags
+const F_SETFD: usize = 2;  // Set file descriptor flags
+const F_GETFL: usize = 3;  // Get file status flags
+const F_SETFL: usize = 4;  // Set file status flags
+
+/// sys_fcntl handler - File descriptor control operations
+///
+/// # Arguments
+/// * `fd` - File descriptor
+/// * `cmd` - fcntl command
+/// * `arg` - Command-specific argument
+///
+/// # Returns
+/// Command-specific return value, or -1 on error
+fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> isize {
+    serial_println!("[SYSCALL] sys_fcntl: FD={}, cmd={}, arg={}", fd, cmd, arg);
+
+    let mut fd_table = FD_TABLE.lock();
+    let fd_entry = match fd_table.get_mut(fd) {
+        Some(entry) => entry,
+        None => {
+            serial_println!("[SYSCALL] sys_fcntl: invalid FD {}", fd);
+            return -1; // EBADF
+        }
+    };
+
+    match cmd {
+        F_GETFD => {
+            // Get file descriptor flags
+            let flags = fd_entry.fd_flags;
+            serial_println!("[SYSCALL] sys_fcntl: F_GETFD returned {:#x}", flags);
+            flags as isize
+        }
+        F_SETFD => {
+            // Set file descriptor flags (only FD_CLOEXEC is valid)
+            let flags = arg as u32 & FD_CLOEXEC;
+            fd_entry.fd_flags = flags;
+            serial_println!("[SYSCALL] sys_fcntl: F_SETFD set flags to {:#x}", flags);
+            0
+        }
+        F_GETFL => {
+            // Get file status flags
+            let flags = fd_entry.status_flags;
+            serial_println!("[SYSCALL] sys_fcntl: F_GETFL returned {:#x}", flags);
+            flags as isize
+        }
+        F_SETFL => {
+            // Set file status flags (only O_NONBLOCK and O_APPEND can be changed)
+            let flags = arg as u32 & (O_NONBLOCK | O_APPEND);
+            fd_entry.status_flags = (fd_entry.status_flags & !(O_NONBLOCK | O_APPEND)) | flags;
+            serial_println!("[SYSCALL] sys_fcntl: F_SETFL set flags to {:#x}", fd_entry.status_flags);
+            0
+        }
+        _ => {
+            serial_println!("[SYSCALL] sys_fcntl: unsupported command {}", cmd);
+            -1 // EINVAL
+        }
+    }
+}
+
+/// sys_pipe2 handler - Create a pipe with flags
+///
+/// # Arguments
+/// * `pipefd_ptr` - Pointer to array of 2 integers for read/write FDs
+/// * `flags` - Pipe flags (O_CLOEXEC, O_NONBLOCK)
+///
+/// # Returns
+/// 0 on success, or -1 on error
+fn sys_pipe2(pipefd_ptr: usize, flags: usize) -> isize {
+    serial_println!("[SYSCALL] sys_pipe2: pipefd_ptr={:#x}, flags={:#x}", pipefd_ptr, flags);
+
+    // Validate pointer
+    if !validate_user_buffer(pipefd_ptr, core::mem::size_of::<[i32; 2]>()) {
+        serial_println!("[SYSCALL] sys_pipe2: invalid pipefd pointer");
+        return -1;
+    }
+
+    // Parse flags
+    let fd_flags = if (flags & 0x80000) != 0 { FD_CLOEXEC } else { 0 }; // O_CLOEXEC = 0x80000
+    let status_flags = (flags as u32) & O_NONBLOCK;
+
+    // Allocate a pipe
+    let mut pipe_table = PIPE_TABLE.lock();
+    let pipe_id = match pipe_table.allocate() {
+        Some(id) => id,
+        None => {
+            serial_println!("[SYSCALL] sys_pipe2: no pipes available");
+            return -1; // EMFILE - too many open files
+        }
+    };
+    drop(pipe_table);
+
+    // Allocate file descriptors
+    let mut fd_table = FD_TABLE.lock();
+    
+    // Allocate read end
+    let read_fd = match fd_table.allocate_with_flags(FdType::PipeRead(pipe_id), fd_flags, status_flags) {
+        Some(fd) => fd,
+        None => {
+            // Failed to allocate read FD, deallocate pipe
+            let mut pipe_table = PIPE_TABLE.lock();
+            pipe_table.close_reader(pipe_id);
+            pipe_table.close_writer(pipe_id);
+            serial_println!("[SYSCALL] sys_pipe2: no FDs available for read end");
+            return -1; // EMFILE
+        }
+    };
+
+    // Allocate write end
+    let write_fd = match fd_table.allocate_with_flags(FdType::PipeWrite(pipe_id), fd_flags, status_flags) {
+        Some(fd) => fd,
+        None => {
+            // Failed to allocate write FD, clean up
+            fd_table.close(read_fd);
+            let mut pipe_table = PIPE_TABLE.lock();
+            pipe_table.close_reader(pipe_id);
+            pipe_table.close_writer(pipe_id);
+            serial_println!("[SYSCALL] sys_pipe2: no FDs available for write end");
+            return -1; // EMFILE
+        }
+    };
+
+    drop(fd_table);
+
+    // Write FDs to user buffer
+    unsafe {
+        let pipefd = pipefd_ptr as *mut i32;
+        *pipefd.offset(0) = read_fd as i32;
+        *pipefd.offset(1) = write_fd as i32;
+    }
+
+    serial_println!("[SYSCALL] sys_pipe2: created pipe {} with FDs [{}, {}]", pipe_id, read_fd, write_fd);
+    0
+}
+
+/// sys_dup2 handler - Duplicate file descriptor to specific FD number
+///
+/// # Arguments
+/// * `oldfd` - Source file descriptor
+/// * `newfd` - Target file descriptor number
+///
+/// # Returns
+/// New file descriptor on success, or -1 on error
+fn sys_dup2(oldfd: usize, newfd: usize) -> isize {
+    serial_println!("[SYSCALL] sys_dup2: oldfd={}, newfd={}", oldfd, newfd);
+
+    // Validate FD numbers
+    if oldfd >= MAX_FDS || newfd >= MAX_FDS {
+        serial_println!("[SYSCALL] sys_dup2: FD out of range");
+        return -1; // EBADF
+    }
+
+    // If oldfd == newfd, just validate oldfd and return it
+    if oldfd == newfd {
+        let fd_table = FD_TABLE.lock();
+        if fd_table.get(oldfd).is_some() {
+            serial_println!("[SYSCALL] sys_dup2: oldfd == newfd, returning {}", newfd);
+            return newfd as isize;
+        } else {
+            serial_println!("[SYSCALL] sys_dup2: oldfd {} is invalid", oldfd);
+            return -1; // EBADF
+        }
+    }
+
+    // Get old FD entry
+    let mut fd_table = FD_TABLE.lock();
+    let old_entry = match fd_table.get(oldfd) {
+        Some(entry) => entry,
+        None => {
+            serial_println!("[SYSCALL] sys_dup2: oldfd {} is invalid", oldfd);
+            return -1; // EBADF
+        }
+    };
+
+    // Copy the FD entry (but clear FD_CLOEXEC flag as per POSIX)
+    let new_entry = FileDescriptor {
+        fd_type: old_entry.fd_type,
+        fd_flags: 0, // FD_CLOEXEC is not inherited by dup2
+        status_flags: old_entry.status_flags,
+    };
+
+    // Increment reference count for pipes
+    match new_entry.fd_type {
+        FdType::PipeRead(pipe_id) => {
+            let mut pipe_table = PIPE_TABLE.lock();
+            if let Some(pipe) = pipe_table.get_mut(pipe_id) {
+                pipe.readers += 1;
+            }
+        }
+        FdType::PipeWrite(pipe_id) => {
+            let mut pipe_table = PIPE_TABLE.lock();
+            if let Some(pipe) = pipe_table.get_mut(pipe_id) {
+                pipe.writers += 1;
+            }
+        }
+        _ => {}
+    }
+
+    // Close newfd if it's open, then allocate at that position
+    if fd_table.allocate_at(newfd, new_entry.fd_type, new_entry.fd_flags, new_entry.status_flags) {
+        serial_println!("[SYSCALL] sys_dup2: duplicated FD {} to FD {}", oldfd, newfd);
+        newfd as isize
+    } else {
+        serial_println!("[SYSCALL] sys_dup2: failed to allocate at FD {}", newfd);
+        -1
     }
 }

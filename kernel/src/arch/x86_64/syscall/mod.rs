@@ -797,6 +797,17 @@ fn sys_fork_stub() -> isize {
     child_pid as isize
 }
 
+/// Close all file descriptors with FD_CLOEXEC flag set
+///
+/// This is called during exec to close file descriptors that should not
+/// be inherited by the new program.
+fn close_cloexec_fds() {
+    use crate::sys::syscall::close_fds_with_cloexec;
+    
+    serial_println!("[SYSCALL] Closing FDs with FD_CLOEXEC flag");
+    close_fds_with_cloexec();
+}
+
 /// sys_exec implementation - Replace current process with new ELF binary
 ///
 /// Clears the current process memory space and loads a new ELF binary.
@@ -901,6 +912,9 @@ fn sys_exec_stub(path_ptr: usize, _argv_ptr: usize) -> isize {
 
     // Clear current memory space
     process.clear_memory_regions();
+
+    // Close file descriptors with FD_CLOEXEC flag set
+    close_cloexec_fds();
 
     // TODO: In a full implementation, we would:
     // 1. Load the ELF binary from the file system
