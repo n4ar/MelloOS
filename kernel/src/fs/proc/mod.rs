@@ -435,3 +435,381 @@ impl Uptime {
         writer.pos
     }
 }
+
+/// /proc filesystem path types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcPath {
+    /// /proc root directory
+    Root,
+    /// /proc/<pid> directory
+    PidDir(usize),
+    /// /proc/<pid>/stat file
+    PidStat(usize),
+    /// /proc/<pid>/status file
+    PidStatus(usize),
+    /// /proc/<pid>/cmdline file
+    PidCmdline(usize),
+    /// /proc/self symlink
+    Self_,
+    /// /proc/meminfo file
+    MemInfo,
+    /// /proc/cpuinfo file
+    CpuInfo,
+    /// /proc/uptime file
+    Uptime,
+    /// /proc/debug directory
+    DebugDir,
+    /// /proc/debug/pty file
+    DebugPty,
+    /// /proc/debug/sessions file
+    DebugSessions,
+    /// /proc/debug/locks file
+    DebugLocks,
+    /// Unknown/invalid path
+    Invalid,
+}
+
+/// Parse a /proc path string into a ProcPath enum
+///
+/// # Arguments
+/// * `path` - Path string to parse (e.g., "/proc/1/stat")
+///
+/// # Returns
+/// The corresponding ProcPath variant
+pub fn parse_proc_path(path: &str) -> ProcPath {
+    // Remove leading/trailing slashes
+    let path = path.trim_matches('/');
+    
+    // Must start with "proc"
+    if !path.starts_with("proc") {
+        return ProcPath::Invalid;
+    }
+    
+    // Remove "proc/" prefix
+    let rest = if path.len() > 4 && path.as_bytes()[4] == b'/' {
+        &path[5..]
+    } else if path == "proc" {
+        return ProcPath::Root;
+    } else {
+        return ProcPath::Invalid;
+    };
+    
+    // Find first slash to split into parts
+    if let Some(slash_pos) = rest.find('/') {
+        let first = &rest[..slash_pos];
+        let second = &rest[slash_pos + 1..];
+        
+        // /proc/<first>/<second>
+        if first == "debug" {
+            match second {
+                "pty" => ProcPath::DebugPty,
+                "sessions" => ProcPath::DebugSessions,
+                "locks" => ProcPath::DebugLocks,
+                _ => ProcPath::Invalid,
+            }
+        } else if let Ok(pid) = first.parse::<usize>() {
+            match second {
+                "stat" => ProcPath::PidStat(pid),
+                "status" => ProcPath::PidStatus(pid),
+                "cmdline" => ProcPath::PidCmdline(pid),
+                _ => ProcPath::Invalid,
+            }
+        } else {
+            ProcPath::Invalid
+        }
+    } else {
+        // /proc/<first> (no second part)
+        match rest {
+            "self" => ProcPath::Self_,
+            "meminfo" => ProcPath::MemInfo,
+            "cpuinfo" => ProcPath::CpuInfo,
+            "uptime" => ProcPath::Uptime,
+            "debug" => ProcPath::DebugDir,
+            pid_str => {
+                // Try to parse as PID
+                if let Ok(pid) = pid_str.parse::<usize>() {
+                    ProcPath::PidDir(pid)
+                } else {
+                    ProcPath::Invalid
+                }
+            }
+        }
+    }
+}
+
+/// Read data from a /proc file
+///
+/// This is the main entry point for reading /proc files. It generates
+/// the content dynamically based on the current system state.
+///
+/// # Arguments
+/// * `path` - The /proc path to read
+/// * `buf` - Buffer to write the content into
+/// * `offset` - Offset within the file to start reading from
+///
+/// # Returns
+/// The number of bytes written to the buffer, or an error code
+pub fn proc_read(path: &str, buf: &mut [u8], offset: usize) -> Result<usize, i32> {
+    let proc_path = parse_proc_path(path);
+
+    match proc_path {
+        ProcPath::PidStat(pid) => read_pid_stat(pid, buf, offset),
+        ProcPath::PidStatus(pid) => read_pid_status(pid, buf, offset),
+        ProcPath::PidCmdline(pid) => read_pid_cmdline(pid, buf, offset),
+        ProcPath::MemInfo => read_meminfo(buf, offset),
+        ProcPath::CpuInfo => read_cpuinfo(buf, offset),
+        ProcPath::Uptime => read_uptime(buf, offset),
+        ProcPath::Self_ => {
+            // /proc/self should be handled as a symlink by the caller
+            Err(-22) // EINVAL
+        }
+        ProcPath::DebugPty => read_debug_pty(buf, offset),
+        ProcPath::DebugSessions => read_debug_sessions(buf, offset),
+        ProcPath::DebugLocks => read_debug_locks(buf, offset),
+        _ => Err(-2), // ENOENT
+    }
+}
+
+/// Read /proc/<pid>/stat file
+fn read_pid_stat(pid: usize, buf: &mut [u8], offset: usize) -> Result<usize, i32> {
+    // Get process info from scheduler
+    let proc_info = get_proc_info(pid).ok_or(-3)?; // ESRCH - no such process
+
+    // Generate stat content
+    let mut temp_buf = [0u8; 1024];
+    let len = proc_info.format_stat(&mut temp_buf);
+
+    // Copy to output buffer with offset
+    copy_with_offset(&temp_buf[..len], buf, offset)
+}
+
+/// Read /proc/<pid>/status file
+fn read_pid_status(pid: usize, buf: &mut [u8], offset: usize) -> Result<usize, i32> {
+    let proc_info = get_proc_info(pid).ok_or(-3)?; // ESRCH
+
+    let mut temp_buf = [0u8; 1024];
+    let len = proc_info.format_status(&mut temp_buf);
+
+    copy_with_offset(&temp_buf[..len], buf, offset)
+}
+
+/// Read /proc/<pid>/cmdline file
+fn read_pid_cmdline(pid: usize, buf: &mut [u8], offset: usize) -> Result<usize, i32> {
+    let proc_info = get_proc_info(pid).ok_or(-3)?; // ESRCH
+
+    let mut temp_buf = [0u8; 4096];
+    let len = proc_info.format_cmdline(&mut temp_buf);
+
+    copy_with_offset(&temp_buf[..len], buf, offset)
+}
+
+/// Read /proc/meminfo file
+fn read_meminfo(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
+    let mem_info = get_meminfo();
+
+    let mut temp_buf = [0u8; 512];
+    let len = mem_info.format(&mut temp_buf);
+
+    copy_with_offset(&temp_buf[..len], buf, offset)
+}
+
+/// Read /proc/cpuinfo file
+fn read_cpuinfo(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
+    let cpu_count = crate::arch::x86_64::smp::get_cpu_count();
+    let mut temp_buf = [0u8; 4096];
+    let mut pos = 0;
+
+    // Generate cpuinfo for each CPU
+    for cpu_id in 0..cpu_count {
+        let cpu_info = get_cpuinfo(cpu_id);
+        let written = cpu_info.format(&mut temp_buf[pos..]);
+        pos += written;
+    }
+
+    copy_with_offset(&temp_buf[..pos], buf, offset)
+}
+
+/// Read /proc/uptime file
+fn read_uptime(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
+    let uptime = get_uptime();
+
+    let mut temp_buf = [0u8; 128];
+    let len = uptime.format(&mut temp_buf);
+
+    copy_with_offset(&temp_buf[..len], buf, offset)
+}
+
+/// Read /proc/debug/pty file
+fn read_debug_pty(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
+    // TODO: Implement PTY debug info when PTY subsystem is ready
+    let content = b"PTY debug info not yet implemented\n";
+    copy_with_offset(content, buf, offset)
+}
+
+/// Read /proc/debug/sessions file
+fn read_debug_sessions(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
+    // TODO: Implement session debug info when session management is ready
+    let content = b"Session debug info not yet implemented\n";
+    copy_with_offset(content, buf, offset)
+}
+
+/// Read /proc/debug/locks file
+fn read_debug_locks(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
+    // TODO: Implement lock debug info when lock tracking is ready
+    let content = b"Lock debug info not yet implemented\n";
+    copy_with_offset(content, buf, offset)
+}
+
+/// Helper function to copy data with offset
+///
+/// # Arguments
+/// * `src` - Source data
+/// * `dst` - Destination buffer
+/// * `offset` - Offset within source to start copying from
+///
+/// # Returns
+/// Number of bytes copied
+fn copy_with_offset(src: &[u8], dst: &mut [u8], offset: usize) -> Result<usize, i32> {
+    if offset >= src.len() {
+        return Ok(0); // EOF
+    }
+
+    let remaining = &src[offset..];
+    let to_copy = remaining.len().min(dst.len());
+    dst[..to_copy].copy_from_slice(&remaining[..to_copy]);
+
+    Ok(to_copy)
+}
+
+/// Get process information for a given PID
+///
+/// This function queries the scheduler for task information and
+/// converts it to ProcInfo format.
+fn get_proc_info(pid: usize) -> Option<ProcInfo> {
+    use crate::sched;
+
+    // Get task from scheduler
+    let task = sched::get_task_by_id(pid)?;
+
+    let mut proc_info = ProcInfo::new(pid);
+    proc_info.ppid = task.ppid;
+    proc_info.pgid = task.pgid;
+    proc_info.sid = task.sid;
+    proc_info.tty_nr = task.tty.unwrap_or(0);
+    proc_info.tpgid = None; // TODO: Get from TTY when available
+
+    // Set state based on task state
+    proc_info.state = match task.state {
+        crate::sched::task::TaskState::Running => ProcState::Running,
+        crate::sched::task::TaskState::Ready => ProcState::Running,
+        crate::sched::task::TaskState::Sleeping => ProcState::Sleeping,
+        crate::sched::task::TaskState::Blocked => ProcState::Sleeping,
+    };
+
+    // Set command name
+    proc_info.set_comm(task.name);
+
+    // TODO: Set cmdline from task when available
+    // For now, just use the task name
+    proc_info.add_cmdline_arg(task.name);
+
+    // TODO: Get actual timing and memory info
+    proc_info.utime = 0;
+    proc_info.stime = 0;
+    proc_info.vsize = task.total_memory_usage();
+    proc_info.rss = task.total_memory_usage() / 4096; // Convert to pages
+
+    Some(proc_info)
+}
+
+/// Get system memory information
+fn get_meminfo() -> MemInfo {
+    // Get memory statistics from memory manager
+    let result = crate::mm::with_memory_managers(|pmm, _mapper| {
+        let mem_total = pmm.total_memory_mb() * 1024; // Convert MB to kB
+        let mem_free = pmm.free_memory_mb() * 1024;   // Convert MB to kB
+        
+        Ok(MemInfo {
+            mem_total,
+            mem_free,
+            mem_available: mem_free, // Simplified for now
+            buffers: 0,  // TODO: Track buffer cache
+            cached: 0,   // TODO: Track page cache
+        })
+    });
+
+    // If memory manager not initialized, return zeros
+    result.unwrap_or(MemInfo {
+        mem_total: 0,
+        mem_free: 0,
+        mem_available: 0,
+        buffers: 0,
+        cached: 0,
+    })
+}
+
+/// Get CPU information for a specific CPU
+fn get_cpuinfo(cpu_id: usize) -> CpuInfo {
+    let mut cpu_info = CpuInfo::new(cpu_id);
+
+    // Get CPU vendor ID from CPUID
+    let cpuid = unsafe { core::arch::x86_64::__cpuid(0) };
+    let mut vendor = [0u8; 12];
+    vendor[0..4].copy_from_slice(&cpuid.ebx.to_le_bytes());
+    vendor[4..8].copy_from_slice(&cpuid.edx.to_le_bytes());
+    vendor[8..12].copy_from_slice(&cpuid.ecx.to_le_bytes());
+
+    if let Ok(vendor_str) = core::str::from_utf8(&vendor) {
+        cpu_info.set_vendor_id(vendor_str);
+    }
+
+    // Get CPU family and model
+    let cpuid1 = unsafe { core::arch::x86_64::__cpuid(1) };
+    cpu_info.cpu_family = ((cpuid1.eax >> 8) & 0xF) as usize;
+    cpu_info.model = ((cpuid1.eax >> 4) & 0xF) as usize;
+
+    // Get brand string if available
+    let cpuid_ext = unsafe { core::arch::x86_64::__cpuid(0x80000000) };
+    if cpuid_ext.eax >= 0x80000004 {
+        let mut brand = [0u8; 48];
+        for i in 0..3 {
+            let cpuid = unsafe { core::arch::x86_64::__cpuid(0x80000002 + i) };
+            let offset = i as usize * 16;
+            brand[offset..offset + 4].copy_from_slice(&cpuid.eax.to_le_bytes());
+            brand[offset + 4..offset + 8].copy_from_slice(&cpuid.ebx.to_le_bytes());
+            brand[offset + 8..offset + 12].copy_from_slice(&cpuid.ecx.to_le_bytes());
+            brand[offset + 12..offset + 16].copy_from_slice(&cpuid.edx.to_le_bytes());
+        }
+
+        // Trim null bytes and whitespace
+        if let Some(end) = brand.iter().position(|&b| b == 0) {
+            if let Ok(brand_str) = core::str::from_utf8(&brand[..end]) {
+                cpu_info.set_model_name(brand_str.trim());
+            }
+        }
+    }
+
+    // TODO: Get actual CPU MHz (requires TSC calibration)
+    cpu_info.cpu_mhz = 2400; // Placeholder
+
+    cpu_info
+}
+
+/// Get system uptime
+fn get_uptime() -> Uptime {
+    use crate::sched::timer;
+
+    // Get current tick count
+    let ticks = timer::get_tick_count();
+
+    // Convert ticks to seconds (assuming 100 Hz timer)
+    let uptime_secs = (ticks / 100) as u64;
+
+    // TODO: Calculate actual idle time
+    let idle_secs = 0;
+
+    Uptime {
+        uptime_secs,
+        idle_secs,
+    }
+}

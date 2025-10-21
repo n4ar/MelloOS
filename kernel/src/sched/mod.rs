@@ -574,6 +574,13 @@ pub fn get_task_mut(task_id: TaskId) -> Option<&'static mut Task> {
     get_task(task_id)
 }
 
+/// Get a task by ID (public version for /proc filesystem)
+///
+/// Returns a reference to the task, or None if task doesn't exist
+pub fn get_task_by_id(task_id: TaskId) -> Option<&'static Task> {
+    get_task(task_id).map(|t| &*t)
+}
+
 /// Enqueue a task to a CPU runqueue
 ///
 /// Assigns the task to the CPU with the smallest runqueue, or to a specific CPU if specified.
