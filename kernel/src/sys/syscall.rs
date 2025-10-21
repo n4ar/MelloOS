@@ -141,6 +141,12 @@ pub const SYS_CLOSE: usize = 12;
 pub const SYS_IOCTL: usize = 13;
 pub const SYS_SIGACTION: usize = 14;
 pub const SYS_KILL: usize = 15;
+pub const SYS_SETPGID: usize = 16;
+pub const SYS_GETPGRP: usize = 17;
+pub const SYS_SETSID: usize = 18;
+pub const SYS_GETSID: usize = 19;
+pub const SYS_TCSETPGRP: usize = 20;
+pub const SYS_TCGETPGRP: usize = 21;
 
 static NEXT_FAKE_PID: AtomicUsize = AtomicUsize::new(2000);
 
@@ -189,6 +195,12 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_IOCTL => "SYS_IOCTL",
         SYS_SIGACTION => "SYS_SIGACTION",
         SYS_KILL => "SYS_KILL",
+        SYS_SETPGID => "SYS_SETPGID",
+        SYS_GETPGRP => "SYS_GETPGRP",
+        SYS_SETSID => "SYS_SETSID",
+        SYS_GETSID => "SYS_GETSID",
+        SYS_TCSETPGRP => "SYS_TCSETPGRP",
+        SYS_TCGETPGRP => "SYS_TCGETPGRP",
         _ => "INVALID",
     };
 
@@ -228,6 +240,12 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_IOCTL => sys_ioctl(arg1, arg2, arg3),
         SYS_SIGACTION => sys_sigaction(arg1, arg2, arg3),
         SYS_KILL => sys_kill(arg1, arg2),
+        SYS_SETPGID => sys_setpgid(arg1, arg2),
+        SYS_GETPGRP => sys_getpgrp(),
+        SYS_SETSID => sys_setsid(),
+        SYS_GETSID => sys_getsid(arg1),
+        SYS_TCSETPGRP => sys_tcsetpgrp(arg1, arg2),
+        SYS_TCGETPGRP => sys_tcgetpgrp(arg1),
         _ => {
             serial_println!("[SYSCALL] ERROR: Invalid syscall ID: {}", syscall_id);
             -1 // Invalid syscall
@@ -786,6 +804,9 @@ const TCGETS: usize = 0x5401;        // Get termios structure
 const TCSETS: usize = 0x5402;        // Set termios structure
 const TIOCGWINSZ: usize = 0x5413;    // Get window size
 const TIOCSWINSZ: usize = 0x5414;    // Set window size
+const TIOCSPGRP: usize = 0x5410;     // Set foreground process group
+const TIOCGPGRP: usize = 0x540F;     // Get foreground process group
+const TIOCSCTTY: usize = 0x540E;     // Make this TTY the controlling terminal
 
 /// sys_ioctl handler - Device-specific control operations
 ///
@@ -953,6 +974,100 @@ fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> isize {
                 -1 // EBADF
             }
         }
+        TIOCSPGRP => {
+            // Set foreground process group (alias for tcsetpgrp)
+            // Validate input pointer
+            if !validate_user_buffer(arg, core::mem::size_of::<usize>()) {
+                return -1;
+            }
+
+            // Read PGID from user buffer
+            let pgid = unsafe { *(arg as *const usize) };
+
+            // Call tcsetpgrp implementation
+            sys_tcsetpgrp(fd, pgid)
+        }
+        TIOCGPGRP => {
+            // Get foreground process group (alias for tcgetpgrp)
+            // Validate output pointer
+            if !validate_user_buffer(arg, core::mem::size_of::<usize>()) {
+                return -1;
+            }
+
+            // Call tcgetpgrp implementation
+            let result = sys_tcgetpgrp(fd);
+            if result >= 0 {
+                // Write PGID to user buffer
+                unsafe {
+                    *(arg as *mut usize) = result as usize;
+                }
+                0
+            } else {
+                result
+            }
+        }
+        TIOCSCTTY => {
+            // Make this TTY the controlling terminal
+            // arg is typically 0 (force flag, not implemented)
+            
+            // Get current task
+            let current_id = match crate::sched::get_current_task_info() {
+                Some((id, _)) => id,
+                None => {
+                    serial_println!("[SYSCALL] sys_ioctl: TIOCSCTTY: no current task");
+                    return -1;
+                }
+            };
+
+            let task = match crate::sched::get_task_mut(current_id) {
+                Some(t) => t,
+                None => {
+                    serial_println!("[SYSCALL] sys_ioctl: TIOCSCTTY: task not found");
+                    return -1;
+                }
+            };
+
+            // Check if caller is a session leader
+            if task.sid != task.pid {
+                serial_println!("[SYSCALL] sys_ioctl: TIOCSCTTY: not a session leader");
+                return -1; // EPERM
+            }
+
+            // Check if already has a controlling terminal
+            if task.tty.is_some() {
+                serial_println!("[SYSCALL] sys_ioctl: TIOCSCTTY: already has controlling terminal");
+                return -1; // EPERM
+            }
+
+            // Get PTY number from FD
+            let pty_num = match fd_entry.fd_type {
+                FdType::PtyMaster(n) | FdType::PtySlave(n) => n,
+                _ => {
+                    serial_println!("[SYSCALL] sys_ioctl: TIOCSCTTY: FD is not a TTY");
+                    return -1; // ENOTTY
+                }
+            };
+
+            // Set this TTY as the controlling terminal
+            // Use PTY number as device ID
+            let device_id = pty_num as usize;
+            task.tty = Some(device_id);
+
+            // Also set the session in the PTY slave
+            let sid = task.sid;
+            // Task reference will be dropped automatically here
+            
+            if crate::dev::pty::set_session(pty_num, sid) {
+                serial_println!(
+                    "[SYSCALL] sys_ioctl: TIOCSCTTY: set PTY {} as controlling terminal for session {}",
+                    pty_num, sid
+                );
+                0
+            } else {
+                serial_println!("[SYSCALL] sys_ioctl: TIOCSCTTY: failed to set session in PTY");
+                -1
+            }
+        }
         _ => {
             serial_println!("[SYSCALL] sys_ioctl: unsupported command {:#x}", cmd);
             -1 // EINVAL
@@ -1112,5 +1227,304 @@ fn sys_kill(pid: usize, signal: usize) -> isize {
         // TODO: Implement special PID values (0, -1, < -1)
         serial_println!("[SYSCALL] sys_kill: special PID values not implemented");
         -1 // EINVAL
+    }
+}
+
+/// sys_setpgid handler - Set process group ID
+///
+/// # Arguments
+/// * `pid` - Process ID to modify (0 = current process)
+/// * `pgid` - New process group ID (0 = use pid)
+///
+/// # Returns
+/// 0 on success, or -1 on error
+///
+/// # Validation
+/// - Can only set pgid for self or children
+/// - Must be in same session
+/// - Cannot move process to different session
+fn sys_setpgid(pid: usize, pgid: usize) -> isize {
+    use crate::sched::process_group::{Pid, Pgid};
+
+    // Get current task
+    let current_id = match crate::sched::get_current_task_info() {
+        Some((id, _)) => id,
+        None => {
+            serial_println!("[SYSCALL] sys_setpgid: no current task");
+            return -1;
+        }
+    };
+
+    // Determine target PID (0 means current process)
+    let target_pid: Pid = if pid == 0 { current_id } else { pid };
+
+    // Determine target PGID (0 means use target's PID)
+    let target_pgid: Pgid = if pgid == 0 { target_pid } else { pgid };
+
+    // Get current task info
+    let current_task = match crate::sched::get_task_mut(current_id) {
+        Some(t) => t,
+        None => {
+            serial_println!("[SYSCALL] sys_setpgid: current task not found");
+            return -1;
+        }
+    };
+
+    let current_sid = current_task.sid;
+
+    // Get target task
+    let target_task = match crate::sched::get_task_mut(target_pid) {
+        Some(t) => t,
+        None => {
+            serial_println!("[SYSCALL] sys_setpgid: target process {} not found", target_pid);
+            return -1; // ESRCH - no such process
+        }
+    };
+
+    // Validation: can only set pgid for self or children
+    if target_pid != current_id && target_task.ppid != current_id {
+        serial_println!("[SYSCALL] sys_setpgid: not self or child");
+        return -1; // EPERM
+    }
+
+    // Validation: must be in same session
+    if target_task.sid != current_sid {
+        serial_println!("[SYSCALL] sys_setpgid: not in same session");
+        return -1; // EPERM
+    }
+
+    // Set the process group
+    let old_pgid = target_task.pgid;
+    target_task.pgid = target_pgid;
+
+    serial_println!(
+        "[SYSCALL] sys_setpgid: set PID {} PGID from {} to {}",
+        target_pid, old_pgid, target_pgid
+    );
+
+    0
+}
+
+/// sys_getpgrp handler - Get current process group ID
+///
+/// # Returns
+/// Process group ID of current process
+fn sys_getpgrp() -> isize {
+    // Get current task
+    let current_id = match crate::sched::get_current_task_info() {
+        Some((id, _)) => id,
+        None => {
+            serial_println!("[SYSCALL] sys_getpgrp: no current task");
+            return -1;
+        }
+    };
+
+    let task = match crate::sched::get_task_mut(current_id) {
+        Some(t) => t,
+        None => {
+            serial_println!("[SYSCALL] sys_getpgrp: task not found");
+            return -1;
+        }
+    };
+
+    let pgid = task.pgid;
+    serial_println!("[SYSCALL] sys_getpgrp: returning PGID {}", pgid);
+    pgid as isize
+}
+
+/// sys_setsid handler - Create a new session
+///
+/// # Returns
+/// New session ID on success, or -1 on error
+///
+/// # Behavior
+/// - Creates new session with sid = pid
+/// - Creates new process group with pgid = pid
+/// - Detaches from controlling terminal
+/// - Fails if caller is already a process group leader
+fn sys_setsid() -> isize {
+    // Get current task
+    let current_id = match crate::sched::get_current_task_info() {
+        Some((id, _)) => id,
+        None => {
+            serial_println!("[SYSCALL] sys_setsid: no current task");
+            return -1;
+        }
+    };
+
+    let task = match crate::sched::get_task_mut(current_id) {
+        Some(t) => t,
+        None => {
+            serial_println!("[SYSCALL] sys_setsid: task not found");
+            return -1;
+        }
+    };
+
+    // Cannot create session if already a process group leader
+    if task.pgid == task.pid {
+        serial_println!("[SYSCALL] sys_setsid: already a process group leader");
+        return -1; // EPERM
+    }
+
+    // Create new session
+    let new_sid = task.pid;
+    let new_pgid = task.pid;
+
+    task.sid = new_sid;
+    task.pgid = new_pgid;
+    task.tty = None; // Detach from controlling terminal
+
+    serial_println!(
+        "[SYSCALL] sys_setsid: created new session {} for PID {}",
+        new_sid, current_id
+    );
+
+    new_sid as isize
+}
+
+/// sys_getsid handler - Get session ID of a process
+///
+/// # Arguments
+/// * `pid` - Process ID to query (0 = current process)
+///
+/// # Returns
+/// Session ID on success, or -1 on error
+fn sys_getsid(pid: usize) -> isize {
+    use crate::sched::process_group::Pid;
+
+    // Get current task
+    let current_id = match crate::sched::get_current_task_info() {
+        Some((id, _)) => id,
+        None => {
+            serial_println!("[SYSCALL] sys_getsid: no current task");
+            return -1;
+        }
+    };
+
+    // Determine target PID (0 means current process)
+    let target_pid: Pid = if pid == 0 { current_id } else { pid };
+
+    // Get target task
+    let task = match crate::sched::get_task_mut(target_pid) {
+        Some(t) => t,
+        None => {
+            serial_println!("[SYSCALL] sys_getsid: process {} not found", target_pid);
+            return -1; // ESRCH - no such process
+        }
+    };
+
+    let sid = task.sid;
+    serial_println!("[SYSCALL] sys_getsid: PID {} has SID {}", target_pid, sid);
+    sid as isize
+}
+
+/// sys_tcsetpgrp handler - Set foreground process group of terminal
+///
+/// # Arguments
+/// * `fd` - File descriptor of terminal
+/// * `pgid` - Process group ID to set as foreground
+///
+/// # Returns
+/// 0 on success, or -1 on error
+fn sys_tcsetpgrp(fd: usize, pgid: usize) -> isize {
+    use crate::sched::process_group::Pgid;
+
+    // Get current task
+    let current_id = match crate::sched::get_current_task_info() {
+        Some((id, _)) => id,
+        None => {
+            serial_println!("[SYSCALL] sys_tcsetpgrp: no current task");
+            return -1;
+        }
+    };
+
+    let current_task = match crate::sched::get_task_mut(current_id) {
+        Some(t) => t,
+        None => {
+            serial_println!("[SYSCALL] sys_tcsetpgrp: current task not found");
+            return -1;
+        }
+    };
+
+    let current_sid = current_task.sid;
+
+    // Look up file descriptor
+    let fd_table = FD_TABLE.lock();
+    let fd_entry = match fd_table.get(fd) {
+        Some(entry) => entry,
+        None => {
+            serial_println!("[SYSCALL] sys_tcsetpgrp: invalid FD {}", fd);
+            return -1; // EBADF
+        }
+    };
+    drop(fd_table);
+
+    // Get PTY number from FD
+    let pty_num = match fd_entry.fd_type {
+        FdType::PtyMaster(n) | FdType::PtySlave(n) => n,
+        _ => {
+            serial_println!("[SYSCALL] sys_tcsetpgrp: FD is not a TTY");
+            return -1; // ENOTTY
+        }
+    };
+
+    // Validate that the target PGID exists and is in the same session
+    // For now, we'll skip this validation and just set it
+    // TODO: Add proper validation
+
+    // Set foreground process group in PTY
+    if crate::dev::pty::set_foreground_pgid(pty_num, pgid as Pgid) {
+        serial_println!(
+            "[SYSCALL] sys_tcsetpgrp: set foreground PGID to {} for PTY {}",
+            pgid, pty_num
+        );
+        0
+    } else {
+        serial_println!("[SYSCALL] sys_tcsetpgrp: failed to set foreground PGID");
+        -1
+    }
+}
+
+/// sys_tcgetpgrp handler - Get foreground process group of terminal
+///
+/// # Arguments
+/// * `fd` - File descriptor of terminal
+///
+/// # Returns
+/// Foreground process group ID on success, or -1 on error
+fn sys_tcgetpgrp(fd: usize) -> isize {
+    // Look up file descriptor
+    let fd_table = FD_TABLE.lock();
+    let fd_entry = match fd_table.get(fd) {
+        Some(entry) => entry,
+        None => {
+            serial_println!("[SYSCALL] sys_tcgetpgrp: invalid FD {}", fd);
+            return -1; // EBADF
+        }
+    };
+    drop(fd_table);
+
+    // Get PTY number from FD
+    let pty_num = match fd_entry.fd_type {
+        FdType::PtyMaster(n) | FdType::PtySlave(n) => n,
+        _ => {
+            serial_println!("[SYSCALL] sys_tcgetpgrp: FD is not a TTY");
+            return -1; // ENOTTY
+        }
+    };
+
+    // Get foreground process group from PTY
+    match crate::dev::pty::get_foreground_pgid(pty_num) {
+        Some(pgid) => {
+            serial_println!(
+                "[SYSCALL] sys_tcgetpgrp: foreground PGID is {} for PTY {}",
+                pgid, pty_num
+            );
+            pgid as isize
+        }
+        None => {
+            serial_println!("[SYSCALL] sys_tcgetpgrp: no foreground PGID set");
+            -1 // No foreground process group
+        }
     }
 }

@@ -832,3 +832,57 @@ pub fn write_slave(number: PtyNumber, data: &[u8]) -> usize {
         0
     }
 }
+
+/// Set the foreground process group for a PTY
+///
+/// # Arguments
+/// * `number` - PTY number
+/// * `pgid` - Process group ID to set as foreground
+///
+/// # Returns
+/// true if successful, false if PTY not found
+pub fn set_foreground_pgid(number: PtyNumber, pgid: usize) -> bool {
+    let mut table = PTY_TABLE.lock();
+    if let Some(pair) = table.get_pty_mut(number) {
+        pair.slave.foreground_pgid = Some(pgid);
+        crate::serial_println!("[PTY] Set foreground PGID to {} for PTY {}", pgid, number);
+        true
+    } else {
+        false
+    }
+}
+
+/// Get the foreground process group for a PTY
+///
+/// # Arguments
+/// * `number` - PTY number
+///
+/// # Returns
+/// Some(pgid) if set, None if not set or PTY not found
+pub fn get_foreground_pgid(number: PtyNumber) -> Option<usize> {
+    let table = PTY_TABLE.lock();
+    if let Some(pair) = table.get_pty(number) {
+        pair.slave.foreground_pgid
+    } else {
+        None
+    }
+}
+
+/// Set the session for a PTY
+///
+/// # Arguments
+/// * `number` - PTY number
+/// * `sid` - Session ID
+///
+/// # Returns
+/// true if successful, false if PTY not found
+pub fn set_session(number: PtyNumber, sid: usize) -> bool {
+    let mut table = PTY_TABLE.lock();
+    if let Some(pair) = table.get_pty_mut(number) {
+        pair.slave.session = Some(sid);
+        crate::serial_println!("[PTY] Set session to {} for PTY {}", sid, number);
+        true
+    } else {
+        false
+    }
+}

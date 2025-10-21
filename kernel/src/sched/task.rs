@@ -5,6 +5,7 @@
 
 use super::context::CpuContext;
 use super::priority::TaskPriority;
+use super::process_group::{Pid, Pgid, Sid, DeviceId};
 use crate::mm::paging::PageTableFlags;
 use crate::signal::{SigAction, signals};
 
@@ -172,6 +173,21 @@ pub struct Task {
 
     /// Signal mask (bit N = signal N is blocked)
     pub signal_mask: u64,
+
+    /// Process ID (same as task ID for now)
+    pub pid: Pid,
+
+    /// Parent process ID
+    pub ppid: Pid,
+
+    /// Process group ID
+    pub pgid: Pgid,
+
+    /// Session ID
+    pub sid: Sid,
+
+    /// Controlling terminal device (if any)
+    pub tty: Option<DeviceId>,
 }
 
 impl Task {
@@ -270,6 +286,11 @@ impl Task {
             signal_handlers,
             pending_signals: 0,
             signal_mask: 0,
+            pid: id,        // PID = task ID
+            ppid: 0,        // Will be set by parent
+            pgid: id,       // Initially, pgid = pid
+            sid: id,        // Initially, sid = pid (for init process)
+            tty: None,      // No controlling terminal initially
         })
     }
 
