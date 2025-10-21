@@ -192,8 +192,10 @@ impl SchedState {
 /// Global scheduler state protected by a mutex
 static SCHED: spin::Once<Mutex<SchedState>> = spin::Once::new();
 
-/// Number of online CPUs (set during SMP initialization)
-static CPU_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1);
+/// Get the number of online CPUs from SMP module
+fn get_cpu_count() -> usize {
+    crate::arch::x86_64::smp::get_cpu_count()
+}
 
 /// Task table storing all Task objects
 /// Uses TaskPtr wrapper for heap-allocated tasks
@@ -581,9 +583,7 @@ pub fn get_task_mut(task_id: TaskId) -> Option<&'static mut Task> {
 /// * `task_id` - The task to enqueue
 /// * `target_cpu` - Optional specific CPU to enqueue to. If None, selects CPU with smallest runqueue.
 pub fn enqueue_task(task_id: TaskId, target_cpu: Option<usize>) {
-    use core::sync::atomic::Ordering;
-
-    let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+    let cpu_count = get_cpu_count();
 
     // Determine which CPU to enqueue to
     let cpu_id = if let Some(cpu) = target_cpu {
@@ -701,8 +701,7 @@ pub fn migrate_task(task_id: TaskId, from_cpu: usize, to_cpu: usize) -> bool {
         return false; // No migration needed
     }
 
-    use core::sync::atomic::Ordering;
-    let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+    let cpu_count = get_cpu_count();
 
     if from_cpu >= cpu_count || to_cpu >= cpu_count {
         return false; // Invalid CPU IDs
@@ -791,8 +790,7 @@ pub fn migrate_task(task_id: TaskId, from_cpu: usize, to_cpu: usize) -> bool {
 /// # Returns
 /// The number of tasks migrated
 pub fn balance_load() -> usize {
-    use core::sync::atomic::Ordering;
-    let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+    let cpu_count = get_cpu_count();
 
     if cpu_count <= 1 {
         return 0; // No balancing needed for single CPU
@@ -868,27 +866,9 @@ pub fn yield_now() {
     tick();
 }
 
-/// Set the number of online CPUs
-///
-/// This should be called after SMP initialization to inform the scheduler
-/// how many CPUs are available.
-///
-/// # Arguments
-/// * `count` - Number of online CPUs
-pub fn set_cpu_count(count: usize) {
-    use core::sync::atomic::Ordering;
-    CPU_COUNT.store(count, Ordering::Relaxed);
-    sched_info!("Scheduler configured for {} CPUs", count);
-}
 
-/// Get the number of online CPUs
-///
-/// # Returns
-/// The number of online CPUs
-pub fn get_cpu_count() -> usize {
-    use core::sync::atomic::Ordering;
-    CPU_COUNT.load(Ordering::Relaxed)
-}
+
+
 
 /// Initialize the scheduler
 ///
@@ -944,8 +924,7 @@ pub fn init_scheduler() {
     drop(task_table);
 
     // Set idle task for all CPUs
-    use core::sync::atomic::Ordering;
-    let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+    let cpu_count = get_cpu_count();
     for cpu_id in 0..cpu_count {
         unsafe {
             let percpu = crate::arch::x86_64::smp::percpu::percpu_for_mut(cpu_id);
@@ -1339,8 +1318,7 @@ pub mod manual_tests {
         serial_println!("[TEST] Spawned task with id: {}", task_id);
 
         // Check per-CPU runqueue has the task
-        use core::sync::atomic::Ordering;
-        let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+        let cpu_count = get_cpu_count();
         let mut total_tasks = 0;
 
         for i in 0..cpu_count {
@@ -1400,8 +1378,7 @@ pub mod manual_tests {
         serial_println!("[TEST] Spawned tasks: {}, {}, {}", id_a, id_b, id_c);
 
         // Check per-CPU runqueues have tasks
-        use core::sync::atomic::Ordering;
-        let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+        let cpu_count = get_cpu_count();
         let mut total_tasks = 0;
 
         for i in 0..cpu_count {
@@ -1450,8 +1427,7 @@ pub mod manual_tests {
         spawn_task("task_2", task_2, TaskPriority::Normal).expect("Failed to spawn task_2");
 
         // Verify scheduler state
-        use core::sync::atomic::Ordering;
-        let cpu_count = CPU_COUNT.load(Ordering::Relaxed);
+        let cpu_count = get_cpu_count();
         let mut has_tasks = false;
 
         for i in 0..cpu_count {

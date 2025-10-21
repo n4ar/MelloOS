@@ -15,8 +15,8 @@ static CPU_ONLINE: [AtomicBool; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
-/// Counter for the number of CPUs that have come online
-static CPU_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// Counter for the number of CPUs that have come online (starts with 1 for BSP)
+static CPU_COUNT: AtomicUsize = AtomicUsize::new(1);
 
 /// 64-bit entry point for Application Processors
 ///
@@ -224,9 +224,12 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
         );
     }
 
-    // Skip APIC timer initialization for APs to avoid hanging
-    // APs will use timer interrupts from BSP for now
-    serial_println!("[APIC] core{} timer @{}Hz (skipped for AP)", cpu_id, crate::config::SCHED_HZ);
+    // Initialize APIC timer for this AP
+    // Each CPU needs its own timer for preemptive multitasking
+    unsafe {
+        lapic.init_timer(lapic_frequency, crate::config::SCHED_HZ);
+    }
+    serial_println!("[APIC] core{} timer @{}Hz", cpu_id, crate::config::SCHED_HZ);
 
     // Debug: 'Z' after timer init
     unsafe {
@@ -237,7 +240,6 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
             options(nostack, nomem)
         );
     }
-    serial_println!("[APIC] core{} timer @{}Hz", cpu_id, crate::config::SCHED_HZ);
 
     // Debug: 'B' before signaling online
     unsafe {
@@ -271,10 +273,15 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
         core::arch::asm!("sti", options(nostack, nomem));
     }
 
-    // Enter idle loop - for now just halt
-    // TODO: Call scheduler when scheduler is SMP-ready
+    // Enter scheduler idle loop - this AP is now ready to run tasks
+    serial_println!("[SMP] AP#{} entering idle loop", cpu_id);
+    
+    // Idle loop: wait for timer interrupts to trigger scheduler
+    // The scheduler will be invoked by timer interrupts (APIC timer)
     loop {
         unsafe {
+            // Use hlt to save power while waiting for interrupts
+            // Timer interrupts will wake us up and trigger the scheduler
             core::arch::asm!("hlt", options(nostack, nomem));
         }
     }
