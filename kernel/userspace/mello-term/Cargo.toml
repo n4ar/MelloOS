@@ -10,3 +10,10 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[profile.dev]
+panic = "abort"
+
+[[bin]]
+name = "mello-term"
+path = "src/main.rs"
