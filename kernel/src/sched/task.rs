@@ -6,6 +6,7 @@
 use super::context::CpuContext;
 use super::priority::TaskPriority;
 use crate::mm::paging::PageTableFlags;
+use crate::signal::{SigAction, signals};
 
 /// Task identifier type
 pub type TaskId = usize;
@@ -118,6 +119,9 @@ pub enum TaskState {
 /// Maximum number of memory regions per task
 const MAX_MEMORY_REGIONS: usize = 16;
 
+/// Maximum number of signals (64 signals, 0-63)
+const MAX_SIGNALS: usize = 64;
+
 /// User space address limit (512GB)
 pub const USER_LIMIT: usize = 0x0000_8000_0000_0000;
 
@@ -159,6 +163,15 @@ pub struct Task {
 
     /// Number of active memory regions
     pub region_count: usize,
+
+    /// Signal handlers for each signal (indexed by signal number)
+    pub signal_handlers: [SigAction; MAX_SIGNALS],
+
+    /// Pending signals bitset (bit N = signal N is pending)
+    pub pending_signals: u64,
+
+    /// Signal mask (bit N = signal N is blocked)
+    pub signal_mask: u64,
 }
 
 impl Task {
@@ -239,6 +252,9 @@ impl Task {
             r15: 0,
         };
 
+        // Initialize signal handlers with defaults
+        let signal_handlers = Self::init_default_signal_handlers();
+
         Ok(Self {
             id,
             name,
@@ -251,6 +267,9 @@ impl Task {
             blocked_on_port: None,
             memory_regions: [const { None }; MAX_MEMORY_REGIONS],
             region_count: 0,
+            signal_handlers,
+            pending_signals: 0,
+            signal_mask: 0,
         })
     }
 
@@ -404,6 +423,101 @@ impl Task {
             *region = None;
         }
         self.region_count = 0;
+    }
+
+    /// Initialize default signal handlers for a new task
+    ///
+    /// Sets up the default signal actions according to POSIX semantics:
+    /// - Most signals terminate the process
+    /// - Some signals are ignored by default (SIGCHLD, SIGURG, SIGWINCH)
+    /// - Some signals stop the process (SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU)
+    /// - SIGCONT continues a stopped process
+    ///
+    /// # Returns
+    /// Array of SigAction structures with default handlers
+    fn init_default_signal_handlers() -> [SigAction; MAX_SIGNALS] {
+        let mut handlers = [SigAction::default(); MAX_SIGNALS];
+
+        // Set ignored signals
+        handlers[signals::SIGCHLD as usize] = SigAction::ignore();
+        handlers[signals::SIGURG as usize] = SigAction::ignore();
+        handlers[signals::SIGWINCH as usize] = SigAction::ignore();
+
+        // All other signals use default action (handled by kernel)
+        // SIGKILL and SIGSTOP cannot be caught or ignored (enforced elsewhere)
+
+        handlers
+    }
+
+    /// Reset signal handlers to default (used during exec)
+    ///
+    /// After exec, all signal handlers are reset to their default actions,
+    /// except for signals that were set to SIG_IGN which remain ignored.
+    pub fn reset_signal_handlers(&mut self) {
+        for (sig_num, handler) in self.signal_handlers.iter_mut().enumerate() {
+            // Keep ignored signals ignored, reset everything else to default
+            if !matches!(handler.handler, crate::signal::SigHandler::Ignore) {
+                *handler = SigAction::default();
+            }
+        }
+        // Clear pending signals
+        self.pending_signals = 0;
+        // Keep signal mask (inherited across exec)
+    }
+
+    /// Check if a signal is pending and not blocked
+    ///
+    /// # Arguments
+    /// * `signal` - Signal number to check
+    ///
+    /// # Returns
+    /// true if the signal is pending and not blocked
+    pub fn has_pending_signal(&self, signal: u32) -> bool {
+        if signal >= MAX_SIGNALS as u32 {
+            return false;
+        }
+        let mask = 1u64 << signal;
+        (self.pending_signals & mask) != 0 && (self.signal_mask & mask) == 0
+    }
+
+    /// Get the next pending unblocked signal
+    ///
+    /// # Returns
+    /// Some(signal_number) if there's a pending unblocked signal, None otherwise
+    pub fn next_pending_signal(&self) -> Option<u32> {
+        let unblocked_pending = self.pending_signals & !self.signal_mask;
+        if unblocked_pending == 0 {
+            return None;
+        }
+        // Find the lowest set bit (lowest signal number)
+        Some(unblocked_pending.trailing_zeros())
+    }
+
+    /// Clear a pending signal
+    ///
+    /// # Arguments
+    /// * `signal` - Signal number to clear
+    pub fn clear_pending_signal(&mut self, signal: u32) {
+        if signal < MAX_SIGNALS as u32 {
+            let mask = 1u64 << signal;
+            self.pending_signals &= !mask;
+        }
+    }
+
+    /// Add a signal to the pending set (atomically)
+    ///
+    /// # Arguments
+    /// * `signal` - Signal number to add
+    ///
+    /// # Returns
+    /// true if the signal was added, false if invalid signal number
+    pub fn add_pending_signal(&mut self, signal: u32) -> bool {
+        if signal >= MAX_SIGNALS as u32 {
+            return false;
+        }
+        let mask = 1u64 << signal;
+        self.pending_signals |= mask;
+        true
     }
 }
 

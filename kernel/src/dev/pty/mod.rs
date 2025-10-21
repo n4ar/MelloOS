@@ -433,6 +433,91 @@ impl PtyTable {
 /// Global PTY table instance
 static PTY_TABLE: SpinLock<PtyTable> = SpinLock::new(PtyTable::new());
 
+/// Send a signal to the foreground process group of a PTY
+///
+/// This is called when special characters (Ctrl-C, Ctrl-Z, Ctrl-\) are detected
+/// in the input stream and ISIG is enabled.
+///
+/// # Arguments
+/// * `pair` - The PTY pair
+/// * `signal` - The signal to send
+fn send_signal_to_foreground_group(pair: &PtyPair, signal: u32) {
+    use crate::signal::send_signal;
+
+    // Get the foreground process group ID
+    if let Some(pgid) = pair.slave.foreground_pgid {
+        crate::serial_println!("[PTY] Sending signal {} to foreground PGID {}", signal, pgid);
+        
+        // TODO: Send signal to all processes in the process group
+        // For now, just send to the process with ID == PGID (the group leader)
+        if let Some(task) = crate::sched::get_task_mut(pgid) {
+            match send_signal(task, signal) {
+                Ok(()) => {
+                    crate::serial_println!("[PTY] Signal {} sent to process {}", signal, pgid);
+                }
+                Err(()) => {
+                    crate::serial_println!("[PTY] ERROR: Failed to send signal {} to process {}", 
+                                          signal, pgid);
+                }
+            }
+        } else {
+            crate::serial_println!("[PTY] WARNING: Foreground process {} not found", pgid);
+        }
+    } else {
+        crate::serial_println!("[PTY] WARNING: No foreground process group set");
+    }
+}
+
+/// Send a signal to a specific process group
+///
+/// # Arguments
+/// * `pgid` - Process group ID
+/// * `signal` - Signal to send
+fn send_signal_to_process_group(pgid: usize, signal: u32) {
+    use crate::signal::send_signal;
+
+    crate::serial_println!("[PTY] Sending signal {} to PGID {}", signal, pgid);
+    
+    // TODO: Send signal to all processes in the process group
+    // For now, just send to the process with ID == PGID (the group leader)
+    if let Some(task) = crate::sched::get_task_mut(pgid) {
+        match send_signal(task, signal) {
+            Ok(()) => {
+                crate::serial_println!("[PTY] Signal {} sent to process {}", signal, pgid);
+            }
+            Err(()) => {
+                crate::serial_println!("[PTY] ERROR: Failed to send signal {} to process {}", 
+                                      signal, pgid);
+            }
+        }
+    } else {
+        crate::serial_println!("[PTY] WARNING: Process {} not found", pgid);
+    }
+}
+
+/// Check if the current process is in the foreground process group
+///
+/// # Arguments
+/// * `pair` - The PTY pair
+///
+/// # Returns
+/// true if current process is in foreground group, false otherwise
+fn is_foreground_process(pair: &PtyPair) -> bool {
+    // Get current task's process group ID
+    if let Some((task_id, _)) = crate::sched::get_current_task_info() {
+        // TODO: Get actual PGID from task
+        // For now, assume task_id == pgid
+        let current_pgid = task_id;
+        
+        if let Some(fg_pgid) = pair.slave.foreground_pgid {
+            return current_pgid == fg_pgid;
+        }
+    }
+    
+    // If no foreground group is set, allow access
+    true
+}
+
 /// Initialize the PTY subsystem
 ///
 /// Must be called once during kernel initialization.
@@ -460,8 +545,18 @@ pub fn allocate_pty() -> Option<PtyNumber> {
 /// Deallocate a PTY pair
 ///
 /// This is called when both master and slave sides are closed.
+/// Sends SIGHUP to the foreground process group before deallocating.
 pub fn deallocate_pty(number: PtyNumber) -> bool {
     let mut table = PTY_TABLE.lock();
+    
+    // Send SIGHUP to foreground process group before closing
+    if let Some(pair) = table.get_pty_mut(number) {
+        if pair.allocated {
+            crate::serial_println!("[PTY] Sending SIGHUP to foreground group before closing PTY {}", number);
+            send_signal_to_foreground_group(pair, crate::signal::signals::SIGHUP);
+        }
+    }
+    
     let result = table.deallocate_pty(number);
     if result {
         crate::serial_println!("[PTY] Deallocated PTY pair {}", number);
@@ -509,14 +604,16 @@ pub fn get_winsize(number: PtyNumber) -> Option<Winsize> {
 /// Set window size for a PTY
 ///
 /// Returns true if successful, false if PTY not allocated.
-/// TODO: Generate SIGWINCH signal to foreground process group.
+/// Generates SIGWINCH signal to foreground process group.
 pub fn set_winsize(number: PtyNumber, winsize: Winsize) -> bool {
     let mut table = PTY_TABLE.lock();
     if let Some(pair) = table.get_pty_mut(number) {
         pair.master.winsize = winsize;
-        // TODO: Send SIGWINCH to foreground process group
         crate::serial_println!("[PTY] Window size changed for PTY {}: {}x{}", 
                               number, winsize.ws_row, winsize.ws_col);
+        
+        // Send SIGWINCH to foreground process group
+        send_signal_to_foreground_group(pair, crate::signal::signals::SIGWINCH);
         true
     } else {
         false
@@ -565,17 +662,17 @@ pub fn write_master(number: PtyNumber, data: &[u8]) -> usize {
                 if byte == termios.c_cc[cc::VINTR] {
                     // Ctrl-C - generate SIGINT
                     crate::serial_println!("[PTY] SIGINT triggered on PTY {}", number);
-                    // TODO: Send SIGINT to foreground process group
+                    send_signal_to_foreground_group(pair, crate::signal::signals::SIGINT);
                     continue;
                 } else if byte == termios.c_cc[cc::VSUSP] {
                     // Ctrl-Z - generate SIGTSTP
                     crate::serial_println!("[PTY] SIGTSTP triggered on PTY {}", number);
-                    // TODO: Send SIGTSTP to foreground process group
+                    send_signal_to_foreground_group(pair, crate::signal::signals::SIGTSTP);
                     continue;
                 } else if byte == termios.c_cc[cc::VQUIT] {
                     // Ctrl-\ - generate SIGQUIT
                     crate::serial_println!("[PTY] SIGQUIT triggered on PTY {}", number);
-                    // TODO: Send SIGQUIT to foreground process group
+                    send_signal_to_foreground_group(pair, crate::signal::signals::SIGQUIT);
                     continue;
                 }
             }
@@ -618,9 +715,24 @@ pub fn write_master(number: PtyNumber, data: &[u8]) -> usize {
 ///
 /// Returns the number of bytes read.
 /// In canonical mode, blocks until a newline is available.
+/// Sends SIGTTIN if a background process tries to read.
 pub fn read_slave(number: PtyNumber, buf: &mut [u8]) -> usize {
     let mut table = PTY_TABLE.lock();
     if let Some(pair) = table.get_pty_mut(number) {
+        // Check if this is a background process trying to read
+        if !is_foreground_process(pair) {
+            crate::serial_println!("[PTY] Background process attempting to read from PTY {}", number);
+            
+            // Get current process group ID and send SIGTTIN
+            if let Some((task_id, _)) = crate::sched::get_current_task_info() {
+                // TODO: Get actual PGID from task
+                let current_pgid = task_id;
+                drop(table); // Release lock before sending signal
+                send_signal_to_process_group(current_pgid, crate::signal::signals::SIGTTIN);
+                return 0; // Return 0 bytes read (process will be stopped)
+            }
+        }
+        
         let termios = pair.master.termios;
         
         // In canonical mode, read until newline
@@ -669,9 +781,24 @@ pub fn read_slave(number: PtyNumber, buf: &mut [u8]) -> usize {
 ///
 /// Returns the number of bytes written.
 /// Processes output according to termios settings.
+/// Sends SIGTTOU if a background process tries to write.
 pub fn write_slave(number: PtyNumber, data: &[u8]) -> usize {
     let mut table = PTY_TABLE.lock();
     if let Some(pair) = table.get_pty_mut(number) {
+        // Check if this is a background process trying to write
+        if !is_foreground_process(pair) {
+            crate::serial_println!("[PTY] Background process attempting to write to PTY {}", number);
+            
+            // Get current process group ID and send SIGTTOU
+            if let Some((task_id, _)) = crate::sched::get_current_task_info() {
+                // TODO: Get actual PGID from task
+                let current_pgid = task_id;
+                drop(table); // Release lock before sending signal
+                send_signal_to_process_group(current_pgid, crate::signal::signals::SIGTTOU);
+                return 0; // Return 0 bytes written (process will be stopped)
+            }
+        }
+        
         let termios = pair.master.termios;
         let mut bytes_written = 0;
         

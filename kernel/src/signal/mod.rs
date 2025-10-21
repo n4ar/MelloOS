@@ -190,3 +190,155 @@ pub mod sigmask {
     /// Set signal mask
     pub const SIG_SETMASK: i32 = 2;
 }
+
+/// Send a signal to a task
+///
+/// Adds the signal to the task's pending signal set atomically.
+/// The signal will be delivered when the task returns to userspace.
+///
+/// # Arguments
+/// * `task` - The task to send the signal to
+/// * `signal` - The signal number to send
+///
+/// # Returns
+/// Ok(()) if the signal was queued, Err if invalid signal number
+pub fn send_signal(task: &mut crate::sched::task::Task, signal: Signal) -> Result<(), ()> {
+    use signals::*;
+
+    // Validate signal number
+    if signal == 0 || signal >= MAX_SIGNAL {
+        return Err(());
+    }
+
+    // SIGKILL and SIGSTOP cannot be blocked or ignored
+    if signal == SIGKILL || signal == SIGSTOP {
+        // These signals are always delivered immediately
+        task.add_pending_signal(signal);
+        return Ok(());
+    }
+
+    // Check if signal is ignored
+    if signal < 64 {
+        let handler = &task.signal_handlers[signal as usize];
+        if matches!(handler.handler, SigHandler::Ignore) {
+            // Signal is ignored, don't queue it
+            return Ok(());
+        }
+    }
+
+    // Add signal to pending set
+    if task.add_pending_signal(signal) {
+        Ok(())
+    } else {
+        Err(())
+    }
+}
+
+/// Deliver pending signals to the current task
+///
+/// This function is called when returning to userspace from a syscall or interrupt.
+/// It checks for pending unblocked signals and delivers them according to their
+/// configured actions.
+///
+/// # Arguments
+/// * `task` - The task to deliver signals to
+///
+/// # Returns
+/// Some(signal_number) if a signal was delivered and needs special handling,
+/// None if no signals were delivered or they were handled normally
+pub fn deliver_pending_signals(task: &mut crate::sched::task::Task) -> Option<Signal> {
+    use signals::*;
+
+    // Get the next pending unblocked signal
+    let signal = task.next_pending_signal()?;
+
+    // Clear the signal from pending set
+    task.clear_pending_signal(signal);
+
+    // SIGKILL and SIGSTOP have special handling
+    if signal == SIGKILL {
+        // SIGKILL always terminates (handled by caller)
+        return Some(SIGKILL);
+    }
+
+    if signal == SIGSTOP || signal == SIGTSTP || signal == SIGTTIN || signal == SIGTTOU {
+        // Stop signals (handled by caller)
+        return Some(signal);
+    }
+
+    if signal == SIGCONT {
+        // Continue signal (handled by caller)
+        return Some(SIGCONT);
+    }
+
+    // Get the signal handler
+    if signal >= 64 {
+        return None;
+    }
+
+    let handler = task.signal_handlers[signal as usize];
+
+    match handler.handler {
+        SigHandler::Default => {
+            // Use default action
+            match default_action(signal) {
+                DefaultAction::Terminate | DefaultAction::Core => {
+                    // Terminate the process (handled by caller)
+                    return Some(signal);
+                }
+                DefaultAction::Ignore => {
+                    // Ignore the signal
+                    return None;
+                }
+                DefaultAction::Stop => {
+                    // Stop the process (handled by caller)
+                    return Some(signal);
+                }
+                DefaultAction::Continue => {
+                    // Continue the process (handled by caller)
+                    return Some(signal);
+                }
+            }
+        }
+        SigHandler::Ignore => {
+            // Signal is ignored
+            return None;
+        }
+        SigHandler::Custom(handler_addr) => {
+            // Custom handler - needs to be invoked in userspace
+            // This requires setting up a signal frame on the user stack
+            // For now, return the signal so the caller can handle it
+            return Some(signal);
+        }
+    }
+}
+
+/// Setup signal handler frame on user stack
+///
+/// This function prepares the user stack to invoke a signal handler.
+/// It saves the current context and sets up the stack so that when
+/// the task returns to userspace, it will execute the signal handler.
+///
+/// # Arguments
+/// * `task` - The task to setup the signal frame for
+/// * `signal` - The signal number being delivered
+/// * `handler_addr` - Address of the signal handler in userspace
+///
+/// # Returns
+/// Ok(()) if the frame was setup successfully, Err if stack setup failed
+pub fn setup_signal_frame(
+    task: &mut crate::sched::task::Task,
+    signal: Signal,
+    handler_addr: usize,
+) -> Result<(), ()> {
+    // TODO: Implement signal frame setup
+    // This requires:
+    // 1. Save current context (RIP, RSP, registers) on user stack
+    // 2. Setup stack to call signal handler
+    // 3. Setup return trampoline (sigreturn)
+    // 4. Modify task context to jump to handler
+    
+    // For now, just return Ok - this will be implemented when we have
+    // proper user stack management
+    Ok(())
+}

@@ -139,6 +139,8 @@ pub const SYS_OPEN: usize = 10;
 pub const SYS_READ: usize = 11;
 pub const SYS_CLOSE: usize = 12;
 pub const SYS_IOCTL: usize = 13;
+pub const SYS_SIGACTION: usize = 14;
+pub const SYS_KILL: usize = 15;
 
 static NEXT_FAKE_PID: AtomicUsize = AtomicUsize::new(2000);
 
@@ -185,6 +187,8 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_READ => "SYS_READ",
         SYS_CLOSE => "SYS_CLOSE",
         SYS_IOCTL => "SYS_IOCTL",
+        SYS_SIGACTION => "SYS_SIGACTION",
+        SYS_KILL => "SYS_KILL",
         _ => "INVALID",
     };
 
@@ -222,6 +226,8 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_READ => sys_read(arg1, arg2, arg3),
         SYS_CLOSE => sys_close(arg1),
         SYS_IOCTL => sys_ioctl(arg1, arg2, arg3),
+        SYS_SIGACTION => sys_sigaction(arg1, arg2, arg3),
+        SYS_KILL => sys_kill(arg1, arg2),
         _ => {
             serial_println!("[SYSCALL] ERROR: Invalid syscall ID: {}", syscall_id);
             -1 // Invalid syscall
@@ -951,5 +957,160 @@ fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> isize {
             serial_println!("[SYSCALL] sys_ioctl: unsupported command {:#x}", cmd);
             -1 // EINVAL
         }
+    }
+}
+
+/// sys_sigaction handler - Register a signal handler
+///
+/// # Arguments
+/// * `signal` - Signal number
+/// * `act_ptr` - Pointer to new sigaction structure (or 0 for query)
+/// * `oldact_ptr` - Pointer to store old sigaction (or 0 to ignore)
+///
+/// # Returns
+/// 0 on success, or -1 on error
+fn sys_sigaction(signal: usize, act_ptr: usize, oldact_ptr: usize) -> isize {
+    use crate::signal::{SigAction, signals, is_catchable};
+
+    // Validate signal number
+    if signal == 0 || signal >= signals::MAX_SIGNAL as usize {
+        serial_println!("[SYSCALL] sys_sigaction: invalid signal {}", signal);
+        return -1; // EINVAL
+    }
+
+    // SIGKILL and SIGSTOP cannot be caught or ignored
+    if !is_catchable(signal as u32) {
+        serial_println!("[SYSCALL] sys_sigaction: cannot catch signal {}", signal);
+        return -1; // EINVAL
+    }
+
+    // Get current task
+    let task_id = match crate::sched::get_current_task_info() {
+        Some((id, _)) => id,
+        None => {
+            serial_println!("[SYSCALL] sys_sigaction: no current task");
+            return -1;
+        }
+    };
+
+    let task = match crate::sched::get_task_mut(task_id) {
+        Some(t) => t,
+        None => {
+            serial_println!("[SYSCALL] sys_sigaction: task not found");
+            return -1;
+        }
+    };
+
+    // Get old action if requested
+    if oldact_ptr != 0 {
+        if !validate_user_buffer(oldact_ptr, core::mem::size_of::<SigAction>()) {
+            serial_println!("[SYSCALL] sys_sigaction: invalid oldact pointer");
+            return -1;
+        }
+
+        let old_action = task.signal_handlers[signal];
+        unsafe {
+            *(oldact_ptr as *mut SigAction) = old_action;
+        }
+    }
+
+    // Set new action if provided
+    if act_ptr != 0 {
+        if !validate_user_buffer(act_ptr, core::mem::size_of::<SigAction>()) {
+            serial_println!("[SYSCALL] sys_sigaction: invalid act pointer");
+            return -1;
+        }
+
+        let new_action = unsafe { *(act_ptr as *const SigAction) };
+
+        // Validate handler address if it's a custom handler
+        if let crate::signal::SigHandler::Custom(handler_addr) = new_action.handler {
+            if handler_addr >= USER_LIMIT {
+                serial_println!("[SYSCALL] sys_sigaction: handler address not in user space");
+                return -1; // EFAULT
+            }
+        }
+
+        task.signal_handlers[signal] = new_action;
+        serial_println!("[SYSCALL] sys_sigaction: set handler for signal {}", signal);
+    }
+
+    0
+}
+
+/// sys_kill handler - Send a signal to a process
+///
+/// # Arguments
+/// * `pid` - Target process ID (or special values)
+/// * `signal` - Signal number to send
+///
+/// # Returns
+/// 0 on success, or -1 on error
+///
+/// # Special PID values
+/// * pid > 0: Send to specific process
+/// * pid == 0: Send to all processes in current process group
+/// * pid == -1: Send to all processes (except init)
+/// * pid < -1: Send to all processes in process group |pid|
+fn sys_kill(pid: usize, signal: usize) -> isize {
+    use crate::signal::{signals, send_signal};
+
+    // Validate signal number
+    if signal >= signals::MAX_SIGNAL as usize {
+        serial_println!("[SYSCALL] sys_kill: invalid signal {}", signal);
+        return -1; // EINVAL
+    }
+
+    // Signal 0 is used to check if process exists (no signal sent)
+    if signal == 0 {
+        // TODO: Check if process exists
+        serial_println!("[SYSCALL] sys_kill: signal 0 (existence check) not implemented");
+        return 0;
+    }
+
+    // Get current task for permission checks
+    let sender_id = match crate::sched::get_current_task_info() {
+        Some((id, _)) => id,
+        None => {
+            serial_println!("[SYSCALL] sys_kill: no current task");
+            return -1;
+        }
+    };
+
+    // For now, implement simple case: pid > 0 (send to specific process)
+    if pid > 0 && pid < 0x8000_0000 {
+        // Prevent sending SIGKILL/SIGSTOP to PID 1 (init)
+        if pid == 1 && (signal == signals::SIGKILL as usize || signal == signals::SIGSTOP as usize) {
+            serial_println!("[SYSCALL] sys_kill: cannot send SIGKILL/SIGSTOP to init");
+            return -1; // EPERM
+        }
+
+        // Get target task
+        let target = match crate::sched::get_task_mut(pid) {
+            Some(t) => t,
+            None => {
+                serial_println!("[SYSCALL] sys_kill: target process {} not found", pid);
+                return -1; // ESRCH - no such process
+            }
+        };
+
+        // TODO: Add permission checks (same UID or root, same session)
+        // For now, allow all signals
+
+        // Send the signal
+        match send_signal(target, signal as u32) {
+            Ok(()) => {
+                serial_println!("[SYSCALL] sys_kill: sent signal {} to process {}", signal, pid);
+                0
+            }
+            Err(()) => {
+                serial_println!("[SYSCALL] sys_kill: failed to send signal");
+                -1
+            }
+        }
+    } else {
+        // TODO: Implement special PID values (0, -1, < -1)
+        serial_println!("[SYSCALL] sys_kill: special PID values not implemented");
+        -1 // EINVAL
     }
 }
