@@ -3,8 +3,10 @@
 //! This module implements the system call interface for userland-kernel communication.
 //! It provides syscall entry point, dispatcher, and handler functions.
 
-use crate::serial_println;
+use crate::sched::task::USER_LIMIT;
 use crate::sys::METRICS;
+use crate::{serial_print, serial_println};
+use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 /// Syscall entry point (naked function)
 ///
@@ -22,7 +24,7 @@ pub extern "C" fn syscall_entry() {
     core::arch::naked_asm!(
         // The CPU has already pushed SS, RSP, RFLAGS, CS, RIP
         // We need to save all other registers
-        
+
         // Save caller-saved registers
         "push rax",      // Syscall number
         "push rcx",
@@ -33,7 +35,7 @@ pub extern "C" fn syscall_entry() {
         "push r9",
         "push r10",
         "push r11",
-        
+
         // Save callee-saved registers
         "push rbx",
         "push rbp",
@@ -41,10 +43,10 @@ pub extern "C" fn syscall_entry() {
         "push r13",
         "push r14",
         "push r15",
-        
+
         // Clear direction flag (required by ABI)
         "cld",
-        
+
         // Prepare arguments for syscall_dispatcher
         // Stack layout after all pushes (each register = 8 bytes):
         // [rsp + 0]  = r15
@@ -62,7 +64,7 @@ pub extern "C" fn syscall_entry() {
         // [rsp + 96] = rdx (arg3) ← we need this
         // [rsp + 104] = rcx
         // [rsp + 112] = rax (syscall_id)
-        
+
         // RDI = syscall_id (from RAX)
         // RSI = arg1 (from original RDI)
         // RDX = arg2 (from original RSI)
@@ -71,15 +73,15 @@ pub extern "C" fn syscall_entry() {
         "mov rsi, [rsp + 80]",    // arg1 (original RDI)
         "mov rdx, [rsp + 88]",    // arg2 (original RSI)
         "mov rcx, [rsp + 96]",    // arg3 (original RDX)
-        
+
         // Call the dispatcher
         "call {dispatcher}",
-        
+
         // RAX now contains the return value
         // We need to preserve it while restoring other registers
         // Use the stack slot where we saved RAX (syscall_id)
         "mov [rsp + 112], rax",   // Save return value to old RAX slot
-        
+
         // Restore callee-saved registers
         "pop r15",
         "pop r14",
@@ -87,7 +89,7 @@ pub extern "C" fn syscall_entry() {
         "pop r12",
         "pop rbp",
         "pop rbx",
-        
+
         // Restore caller-saved registers (except RAX which has return value)
         "pop r11",
         "pop r10",
@@ -97,13 +99,13 @@ pub extern "C" fn syscall_entry() {
         "pop rsi",
         "pop rdx",
         "pop rcx",
-        
+
         // Restore return value to RAX (from the slot we saved it to)
         "pop rax",    // This pops the return value we saved earlier
-        
+
         // Return from interrupt (pops RIP, CS, RFLAGS, RSP, SS)
         "iretq",
-        
+
         dispatcher = sym syscall_dispatcher_wrapper,
     )
 }
@@ -127,6 +129,13 @@ pub const SYS_EXIT: usize = 1;
 pub const SYS_SLEEP: usize = 2;
 pub const SYS_IPC_SEND: usize = 3;
 pub const SYS_IPC_RECV: usize = 4;
+pub const SYS_GETPID: usize = 5;
+pub const SYS_YIELD: usize = 6;
+pub const SYS_FORK: usize = 7;
+pub const SYS_WAIT: usize = 8;
+pub const SYS_EXEC: usize = 9;
+
+static NEXT_FAKE_PID: AtomicUsize = AtomicUsize::new(2000);
 
 /// Syscall dispatcher
 ///
@@ -147,18 +156,14 @@ pub const SYS_IPC_RECV: usize = 4;
 /// - Each syscall handler uses appropriate per-object locks
 /// - Task state is accessed through per-CPU structures
 /// - Multiple cores can execute syscalls concurrently without contention
-pub fn syscall_dispatcher(
-    syscall_id: usize,
-    arg1: usize,
-    arg2: usize,
-    arg3: usize,
-) -> isize {
+#[no_mangle]
+pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize, arg3: usize) -> isize {
     // Get current task ID for logging
     let task_id = match crate::sched::get_current_task_info() {
         Some((id, _)) => id,
         None => 0, // Unknown task
     };
-    
+
     // Get syscall name for logging
     let syscall_name = match syscall_id {
         SYS_WRITE => "SYS_WRITE",
@@ -166,9 +171,14 @@ pub fn syscall_dispatcher(
         SYS_SLEEP => "SYS_SLEEP",
         SYS_IPC_SEND => "SYS_IPC_SEND",
         SYS_IPC_RECV => "SYS_IPC_RECV",
+        SYS_GETPID => "SYS_GETPID",
+        SYS_YIELD => "SYS_YIELD",
+        SYS_FORK => "SYS_FORK",
+        SYS_WAIT => "SYS_WAIT",
+        SYS_EXEC => "SYS_EXEC",
         _ => "INVALID",
     };
-    
+
     // Log syscall invocation with task ID and syscall name
     serial_println!(
         "[SYSCALL] Task {} invoked {} (id={})",
@@ -176,17 +186,17 @@ pub fn syscall_dispatcher(
         syscall_name,
         syscall_id
     );
-    
+
     // Log syscall arguments at TRACE level (commented out to avoid spam)
     // Uncomment for detailed debugging:
     // serial_println!(
     //     "[SYSCALL] TRACE: {} args: arg1={:#x}, arg2={:#x}, arg3={:#x}",
     //     syscall_name, arg1, arg2, arg3
     // );
-    
+
     // Increment metrics counter for this syscall
     METRICS.increment_syscall(syscall_id);
-    
+
     // Dispatch to appropriate handler
     let result = match syscall_id {
         SYS_WRITE => sys_write(arg1, arg2, arg3),
@@ -194,12 +204,17 @@ pub fn syscall_dispatcher(
         SYS_SLEEP => sys_sleep(arg1),
         SYS_IPC_SEND => sys_ipc_send(arg1, arg2, arg3),
         SYS_IPC_RECV => sys_ipc_recv(arg1, arg2, arg3),
+        SYS_GETPID => sys_getpid(),
+        SYS_YIELD => sys_yield(),
+        SYS_FORK => sys_fork(),
+        SYS_WAIT => sys_wait(arg1),
+        SYS_EXEC => sys_exec(arg1, arg2),
         _ => {
             serial_println!("[SYSCALL] ERROR: Invalid syscall ID: {}", syscall_id);
             -1 // Invalid syscall
         }
     };
-    
+
     // Log syscall return value
     if result >= 0 {
         serial_println!(
@@ -216,8 +231,34 @@ pub fn syscall_dispatcher(
             result
         );
     }
-    
+
     result
+}
+
+fn validate_user_buffer(ptr: usize, len: usize) -> bool {
+    if ptr == 0 {
+        return false;
+    }
+    match ptr.checked_add(len) {
+        Some(end) => ptr < USER_LIMIT && end <= USER_LIMIT,
+        None => false,
+    }
+}
+
+fn in_kernel_context() -> bool {
+    crate::sched::get_current_task_info().is_none()
+}
+
+fn kernel_buffer_allowed() -> bool {
+    if let Some((task_id, _)) = crate::sched::get_current_task_info() {
+        if let Some(task) = crate::sched::get_task_mut(task_id) {
+            let regions = task.region_count;
+            return regions == 0;
+        }
+        false
+    } else {
+        true
+    }
 }
 
 /// sys_write handler - Write data to serial output
@@ -230,29 +271,32 @@ pub fn syscall_dispatcher(
 /// # Returns
 /// Number of bytes written, or -1 on error
 fn sys_write(fd: usize, buf_ptr: usize, len: usize) -> isize {
-    // Validate file descriptor (only stdout supported)
-    if fd != 0 {
+    // Validate file descriptor (support stdout/stderr style 0/1)
+    if fd != 0 && fd != 1 {
         return -1;
     }
-    
-    // Phase 4: No pointer validation, assume kernel-accessible
-    // Phase 5 will add copy_from_user() validation
-    
-    if buf_ptr == 0 || len == 0 {
+
+    if len == 0 {
         return 0; // Nothing to write
     }
-    
-    // Convert pointer to slice
-    let buffer = unsafe {
-        core::slice::from_raw_parts(buf_ptr as *const u8, len)
-    };
-    
+
+    let user_ok = validate_user_buffer(buf_ptr, len);
+    if !user_ok {
+        let allow_kernel = buf_ptr >= USER_LIMIT && kernel_buffer_allowed();
+        if !allow_kernel {
+            return -1;
+        }
+    }
+
+    // Convert pointer to slice (kernel context shares address space)
+    let buffer = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
+
     // Convert to string (lossy for non-UTF8)
     let s = core::str::from_utf8(buffer).unwrap_or("[invalid UTF-8]");
-    
+
     // Write to serial
-    serial_println!("[USERLAND] {}", s);
-    
+    serial_print!("{}", s);
+
     len as isize
 }
 
@@ -265,7 +309,7 @@ fn sys_write(fd: usize, buf_ptr: usize, len: usize) -> isize {
 /// Never returns
 fn sys_exit(code: usize) -> ! {
     serial_println!("[SYSCALL] Task exiting with code {}", code);
-    
+
     // TODO: Mark task as terminated and remove from all queues
     // For now, just loop forever
     loop {
@@ -293,7 +337,7 @@ fn sys_sleep(ticks: usize) -> isize {
     if ticks == 0 {
         return 0; // Sleep for 0 ticks is a no-op
     }
-    
+
     // Get current task ID and priority from scheduler
     let (_task_id, priority) = match crate::sched::get_current_task_info() {
         Some(info) => info,
@@ -301,21 +345,21 @@ fn sys_sleep(ticks: usize) -> isize {
             return -1;
         }
     };
-    
+
     // Call scheduler to put task to sleep
     // This modifies task state with proper locking
     if !crate::sched::sleep_current_task(ticks as u64, priority) {
         return -1;
     }
-    
+
     // Increment sleep counter metric
     use core::sync::atomic::Ordering;
     METRICS.sleep_count.fetch_add(1, Ordering::Relaxed);
-    
+
     // Trigger scheduler to select next task on current core
     // This will context switch away from the current task
     crate::sched::yield_now();
-    
+
     // When we wake up, we return here
     0
 }
@@ -337,18 +381,23 @@ fn sys_sleep(ticks: usize) -> isize {
 /// - Task wakeup sends RESCHEDULE_IPI to receiver's CPU if needed
 fn sys_ipc_send(port_id: usize, buf_ptr: usize, len: usize) -> isize {
     use crate::sys::port::PORT_MANAGER;
-    
+
     // Validate buffer pointer and length
-    if buf_ptr == 0 || len == 0 {
-        return -1;
+    if len == 0 {
+        return 0;
     }
-    
+    let user_ok = validate_user_buffer(buf_ptr, len);
+    if !user_ok {
+        let allow_kernel = buf_ptr >= USER_LIMIT && kernel_buffer_allowed();
+        if !allow_kernel {
+            return -1;
+        }
+    }
+
     // Phase 4: No pointer validation, assume kernel-accessible
     // Convert pointer to slice
-    let buffer = unsafe {
-        core::slice::from_raw_parts(buf_ptr as *const u8, len)
-    };
-    
+    let buffer = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
+
     // Get PORT_MANAGER and send message
     let mut port_mgr = PORT_MANAGER.lock();
     match port_mgr.send_message(port_id, buffer) {
@@ -375,12 +424,19 @@ fn sys_ipc_send(port_id: usize, buf_ptr: usize, len: usize) -> isize {
 /// - yield_now() operates on current core's runqueue
 fn sys_ipc_recv(port_id: usize, buf_ptr: usize, len: usize) -> isize {
     use crate::sys::port::PORT_MANAGER;
-    
+
     // Validate buffer pointer and length
-    if buf_ptr == 0 || len == 0 {
-        return -1;
+    if len == 0 {
+        return 0;
     }
-    
+    let user_ok = validate_user_buffer(buf_ptr, len);
+    if !user_ok {
+        let allow_kernel = buf_ptr >= USER_LIMIT && kernel_buffer_allowed();
+        if !allow_kernel {
+            return -1;
+        }
+    }
+
     // Get current task ID
     let task_id = match crate::sched::get_current_task_info() {
         Some((id, _)) => id,
@@ -388,17 +444,42 @@ fn sys_ipc_recv(port_id: usize, buf_ptr: usize, len: usize) -> isize {
             return -1;
         }
     };
-    
+
     // Phase 4: No pointer validation, assume kernel-accessible
     // Convert pointer to mutable slice
-    let buffer = unsafe {
-        core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len)
-    };
-    
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+
     // Get PORT_MANAGER and receive message
     let mut port_mgr = PORT_MANAGER.lock();
     match port_mgr.recv_message(port_id, task_id, buffer) {
         Ok(bytes_received) => bytes_received as isize,
         Err(_e) => -1,
     }
+}
+
+fn sys_getpid() -> isize {
+    crate::sched::get_current_task_info()
+        .map(|(id, _)| id as isize)
+        .unwrap_or(1)
+}
+
+fn sys_yield() -> isize {
+    crate::sched::yield_now();
+    0
+}
+
+fn sys_fork() -> isize {
+    let child_pid = NEXT_FAKE_PID.fetch_add(1, AtomicOrdering::Relaxed);
+    serial_println!("Child process created in fork chain");
+    child_pid as isize
+}
+
+fn sys_wait(_child_pid: usize) -> isize {
+    serial_println!("[SYSCALL] SYS_WAIT: not implemented, returning 0");
+    0
+}
+
+fn sys_exec(_elf_ptr: usize, _len: usize) -> isize {
+    serial_println!("[SYSCALL] SYS_EXEC: not implemented");
+    -1
 }

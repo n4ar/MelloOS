@@ -68,9 +68,9 @@
 //! syscall(2, 100, 0, 0);
 //! ```
 
-pub mod syscall;
 pub mod ipc;
 pub mod port;
+pub mod syscall;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 

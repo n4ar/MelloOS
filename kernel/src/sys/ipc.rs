@@ -22,7 +22,7 @@ pub enum IpcError {
 }
 
 /// Message structure for IPC
-/// 
+///
 /// Contains the raw bytes of a message. Maximum size is 4096 bytes.
 /// Uses a fixed-size array to avoid heap allocation.
 #[derive(Debug, Clone, Copy)]
@@ -41,12 +41,12 @@ impl Message {
             len: 0,
         }
     }
-    
+
     /// Create a message from a byte slice
-    /// 
+    ///
     /// # Arguments
     /// * `data` - Byte slice to copy into the message
-    /// 
+    ///
     /// # Returns
     /// A new Message containing a copy of the data
     pub fn from_slice(data: &[u8]) -> Self {
@@ -56,17 +56,17 @@ impl Message {
         msg.len = len;
         msg
     }
-    
+
     /// Get the size of the message in bytes
     pub fn len(&self) -> usize {
         self.len
     }
-    
+
     /// Check if the message is empty
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
-    
+
     /// Get a slice of the message data
     pub fn as_slice(&self) -> &[u8] {
         &self.data[..self.len]

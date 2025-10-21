@@ -5,9 +5,75 @@
 
 use super::context::CpuContext;
 use super::priority::TaskPriority;
+use crate::mm::paging::PageTableFlags;
 
 /// Task identifier type
 pub type TaskId = usize;
+
+/// Memory region types for process memory tracking
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryRegionType {
+    /// Code segment (.text)
+    Code,
+    /// Data segment (.data)
+    Data,
+    /// BSS segment (uninitialized data)
+    Bss,
+    /// Stack segment
+    Stack,
+    /// Heap segment (future use)
+    Heap,
+}
+
+/// Memory region descriptor for process memory tracking
+#[derive(Debug, Clone)]
+pub struct MemoryRegion {
+    /// Start virtual address (inclusive)
+    pub start: usize,
+    /// End virtual address (exclusive)
+    pub end: usize,
+    /// Page table flags for this region
+    pub flags: PageTableFlags,
+    /// Type of memory region
+    pub region_type: MemoryRegionType,
+}
+
+impl MemoryRegion {
+    /// Create a new memory region
+    pub fn new(
+        start: usize,
+        end: usize,
+        flags: PageTableFlags,
+        region_type: MemoryRegionType,
+    ) -> Self {
+        Self {
+            start,
+            end,
+            flags,
+            region_type,
+        }
+    }
+
+    /// Check if this region contains the given address
+    pub fn contains(&self, addr: usize) -> bool {
+        addr >= self.start && addr < self.end
+    }
+
+    /// Check if this region overlaps with another region
+    pub fn overlaps_with(&self, other: &MemoryRegion) -> bool {
+        !(self.end <= other.start || other.end <= self.start)
+    }
+
+    /// Get the size of this region in bytes
+    pub fn size(&self) -> usize {
+        self.end - self.start
+    }
+
+    /// Check if the region is page-aligned
+    pub fn is_page_aligned(&self) -> bool {
+        (self.start % 4096 == 0) && (self.end % 4096 == 0)
+    }
+}
 
 /// Scheduler error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +86,14 @@ pub enum SchedulerError {
     InvalidTaskId,
     /// Runqueue is full
     RunqueueFull,
+    /// Memory region overlap detected
+    RegionOverlap,
+    /// Invalid memory region (start >= end)
+    InvalidRegion,
+    /// Address not in user space
+    InvalidUserAddress,
+    /// Too many memory regions
+    TooManyRegions,
 }
 
 /// Result type for scheduler operations
@@ -30,108 +104,130 @@ pub type SchedulerResult<T> = Result<T, SchedulerError>;
 pub enum TaskState {
     /// Task is ready to run and waiting in the runqueue
     Ready,
-    
+
     /// Task is currently running on the CPU
     Running,
-    
+
     /// Task is sleeping (waiting for wake_tick)
     Sleeping,
-    
+
     /// Task is blocked on IPC
     Blocked,
 }
 
+/// Maximum number of memory regions per task
+const MAX_MEMORY_REGIONS: usize = 16;
+
+/// User space address limit (512GB)
+pub const USER_LIMIT: usize = 0x0000_8000_0000_0000;
+
 /// Task Control Block (TCB)
-/// 
+///
 /// Contains all information needed to manage a task, including its
 /// execution context, stack, and state.
 #[derive(Debug)]
 pub struct Task {
     /// Unique task identifier
     pub id: TaskId,
-    
+
     /// Human-readable task name
     pub name: &'static str,
-    
+
     /// Pointer to the task's stack (base address)
     pub stack: *mut u8,
-    
+
     /// Size of the task's stack in bytes
     pub stack_size: usize,
-    
+
     /// Current state of the task
     pub state: TaskState,
-    
+
     /// CPU context (saved registers)
     pub context: CpuContext,
-    
+
     /// Task priority level
     pub priority: TaskPriority,
-    
+
     /// Tick at which to wake the task (if sleeping)
     pub wake_tick: Option<u64>,
-    
+
     /// Port ID the task is blocked on (if blocked on IPC)
     pub blocked_on_port: Option<usize>,
-}
 
+    /// Memory regions for this task (Code, Data, BSS, Stack)
+    pub memory_regions: [Option<MemoryRegion>; MAX_MEMORY_REGIONS],
+
+    /// Number of active memory regions
+    pub region_count: usize,
+}
 
 impl Task {
     /// Create a new task with the given entry point
-    /// 
+    ///
     /// This function:
     /// 1. Allocates an 8KB stack from the kernel heap
     /// 2. Prepares the initial stack frame with entry_trampoline as return address
     /// 3. Sets up callee-saved registers (R12 holds the entry_point)
     /// 4. Initializes the CPU context with the prepared stack pointer
-    /// 
+    ///
     /// # Arguments
     /// * `id` - Unique task identifier
     /// * `name` - Human-readable task name
     /// * `entry_point` - Function pointer to the task's entry point
     /// * `priority` - Task priority level
-    /// 
+    ///
     /// # Returns
     /// A Result containing the new Task with Ready state, or an error if stack allocation fails
-    pub fn new(id: TaskId, name: &'static str, entry_point: fn() -> !, priority: TaskPriority) -> SchedulerResult<Self> {
+    pub fn new(
+        id: TaskId,
+        name: &'static str,
+        entry_point: fn() -> !,
+        priority: TaskPriority,
+    ) -> SchedulerResult<Self> {
         use crate::mm::allocator::kmalloc;
-        
+
         // 1. Allocate 8KB stack
         const STACK_SIZE: usize = 8192;
         let stack = kmalloc(STACK_SIZE);
-        
+
         if stack.is_null() {
             return Err(SchedulerError::OutOfMemory);
         }
-        
+
         // 2. Calculate stack top (stack grows downward)
         let stack_top = (stack as usize) + STACK_SIZE;
-        
+
         // 3. Prepare initial stack frame
         // The stack will be set up so that when context_switch does 'ret',
         // it will jump to entry_trampoline
         let mut rsp = stack_top as *mut u64;
-        
+
         unsafe {
             // Push entry_point as an argument (will be below the registers)
             // This will be accessible from entry_trampoline
             rsp = rsp.offset(-1);
             *rsp = entry_point as u64;
-            
+
             // Push entry_trampoline as return address
             rsp = rsp.offset(-1);
             *rsp = entry_trampoline as u64;
-            
+
             // Push callee-saved registers (will be popped by context_switch)
             // These are pushed in reverse order of how they'll be popped
-            rsp = rsp.offset(-1); *rsp = 0; // R15
-            rsp = rsp.offset(-1); *rsp = 0; // R14
-            rsp = rsp.offset(-1); *rsp = 0; // R13
-            rsp = rsp.offset(-1); *rsp = 0; // R12
-            rsp = rsp.offset(-1); *rsp = 0; // RBP
-            rsp = rsp.offset(-1); *rsp = 0; // RBX
+            rsp = rsp.offset(-1);
+            *rsp = 0; // R15
+            rsp = rsp.offset(-1);
+            *rsp = 0; // R14
+            rsp = rsp.offset(-1);
+            *rsp = 0; // R13
+            rsp = rsp.offset(-1);
+            *rsp = 0; // R12
+            rsp = rsp.offset(-1);
+            *rsp = 0; // RBP
+            rsp = rsp.offset(-1);
+            *rsp = 0; // RBX
         }
-        
+
         // 4. Create CPU context
         let context = CpuContext {
             rsp: rsp as u64,
@@ -142,7 +238,7 @@ impl Task {
             r14: 0,
             r15: 0,
         };
-        
+
         Ok(Self {
             id,
             name,
@@ -153,17 +249,170 @@ impl Task {
             priority,
             wake_tick: None,
             blocked_on_port: None,
+            memory_regions: [const { None }; MAX_MEMORY_REGIONS],
+            region_count: 0,
         })
+    }
+
+    /// Add a memory region to this task
+    ///
+    /// Validates the region and ensures no overlaps with existing regions.
+    /// All regions must be within user space limits.
+    ///
+    /// # Arguments
+    /// * `region` - The memory region to add
+    ///
+    /// # Returns
+    /// Ok(()) if the region was added successfully, or an error if validation fails
+    pub fn add_memory_region(&mut self, region: MemoryRegion) -> SchedulerResult<()> {
+        // Validate region bounds
+        if region.start >= region.end {
+            return Err(SchedulerError::InvalidRegion);
+        }
+
+        // Ensure region is in user space
+        if region.start >= USER_LIMIT || region.end > USER_LIMIT {
+            return Err(SchedulerError::InvalidUserAddress);
+        }
+
+        // Check for overlaps with existing regions
+        for existing_region in &self.memory_regions[..self.region_count] {
+            if let Some(existing) = existing_region {
+                if region.overlaps_with(existing) {
+                    return Err(SchedulerError::RegionOverlap);
+                }
+            }
+        }
+
+        // Check if we have space for another region
+        if self.region_count >= MAX_MEMORY_REGIONS {
+            return Err(SchedulerError::TooManyRegions);
+        }
+
+        // Add the region
+        self.memory_regions[self.region_count] = Some(region);
+        self.region_count += 1;
+
+        Ok(())
+    }
+
+    /// Find the memory region containing the given address
+    ///
+    /// # Arguments
+    /// * `addr` - Virtual address to look up
+    ///
+    /// # Returns
+    /// Some(region) if found, None if the address is not in any region
+    pub fn find_memory_region(&self, addr: usize) -> Option<&MemoryRegion> {
+        for region_opt in &self.memory_regions[..self.region_count] {
+            if let Some(region) = region_opt {
+                if region.contains(addr) {
+                    return Some(region);
+                }
+            }
+        }
+        None
+    }
+
+    /// Get all memory regions of a specific type
+    ///
+    /// # Arguments
+    /// * `region_type` - The type of regions to find
+    ///
+    /// # Returns
+    /// Iterator over regions of the specified type
+    pub fn get_regions_by_type(
+        &self,
+        region_type: MemoryRegionType,
+    ) -> impl Iterator<Item = &MemoryRegion> {
+        self.memory_regions[..self.region_count]
+            .iter()
+            .filter_map(|region_opt| region_opt.as_ref())
+            .filter(move |region| region.region_type == region_type)
+    }
+
+    /// Remove a memory region by address range
+    ///
+    /// # Arguments
+    /// * `start` - Start address of the region to remove
+    /// * `end` - End address of the region to remove
+    ///
+    /// # Returns
+    /// Ok(()) if the region was removed, or an error if not found
+    pub fn remove_memory_region(&mut self, start: usize, end: usize) -> SchedulerResult<()> {
+        for i in 0..self.region_count {
+            if let Some(region) = &self.memory_regions[i] {
+                if region.start == start && region.end == end {
+                    // Remove this region by shifting others down
+                    for j in i..self.region_count - 1 {
+                        self.memory_regions[j] = self.memory_regions[j + 1].take();
+                    }
+                    self.memory_regions[self.region_count - 1] = None;
+                    self.region_count -= 1;
+                    return Ok(());
+                }
+            }
+        }
+        Err(SchedulerError::InvalidRegion)
+    }
+
+    /// Validate that an address range is within a valid memory region
+    ///
+    /// Used for page fault handling and memory access validation.
+    ///
+    /// # Arguments
+    /// * `addr` - Start address
+    /// * `size` - Size of the access
+    ///
+    /// # Returns
+    /// Ok(region) if the entire range is within a valid region, or an error
+    pub fn validate_memory_access(
+        &self,
+        addr: usize,
+        size: usize,
+    ) -> SchedulerResult<&MemoryRegion> {
+        let end_addr = addr.saturating_add(size);
+
+        // Find region containing the start address
+        let region = self
+            .find_memory_region(addr)
+            .ok_or(SchedulerError::InvalidUserAddress)?;
+
+        // Ensure the entire range is within this region
+        if end_addr > region.end {
+            return Err(SchedulerError::InvalidUserAddress);
+        }
+
+        Ok(region)
+    }
+
+    /// Get total memory usage for this task
+    ///
+    /// # Returns
+    /// Total size in bytes of all memory regions
+    pub fn total_memory_usage(&self) -> usize {
+        self.memory_regions[..self.region_count]
+            .iter()
+            .filter_map(|region_opt| region_opt.as_ref())
+            .map(|region| region.size())
+            .sum()
+    }
+
+    /// Clear all memory regions (used during exec)
+    pub fn clear_memory_regions(&mut self) {
+        for region in &mut self.memory_regions {
+            *region = None;
+        }
+        self.region_count = 0;
     }
 }
 
-
 /// Entry trampoline for new tasks
-/// 
+///
 /// This function is called when a new task is first scheduled.
 /// The entry_point function pointer is on the stack (pushed by Task::new).
 /// If the entry_point ever returns (which it shouldn't), we panic.
-/// 
+///
 /// # Safety
 /// This function uses inline assembly to extract the entry point from the stack.
 /// It must only be called through the context switch mechanism.
@@ -173,38 +422,38 @@ pub extern "C" fn entry_trampoline() -> ! {
     core::arch::naked_asm!(
         // Pop the entry_point from the stack (it was pushed by Task::new)
         "pop rax",
-        
+
         // Save entry_point in a callee-saved register
         "mov r12, rax",
-        
+
         // Enable interrupts before calling the task
         // (they were disabled during the interrupt handler)
         "sti",
-        
+
         // Align stack to 16 bytes (required by System V ABI)
         // The stack should be 16-byte aligned before a call instruction
         "and rsp, -16",
-        
+
         // R12 contains the entry_point function pointer
         // Call the entry point
         "call r12",
-        
+
         // If we reach here, the task returned (which shouldn't happen)
         // We need to panic, but we can't call panic directly from naked functions
         // So we'll call a helper function
         "call {task_returned_panic}",
-        
+
         // Infinite loop as fallback (should never reach here)
         "2:",
         "hlt",
         "jmp 2b",
-        
+
         task_returned_panic = sym task_returned_panic,
     )
 }
 
 /// Helper function called when a task returns unexpectedly
-/// 
+///
 /// This is called from entry_trampoline if the task's entry point returns.
 /// Tasks should never return, so this is a critical error.
 #[inline(never)]

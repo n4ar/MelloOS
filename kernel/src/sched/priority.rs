@@ -114,33 +114,33 @@ impl TaskQueue {
             count: 0,
         }
     }
-    
+
     fn push_back(&mut self, task_id: TaskId) -> bool {
         if self.count >= MAX_TASKS {
             return false;
         }
-        
+
         self.tasks[self.tail] = task_id;
         self.tail = (self.tail + 1) % MAX_TASKS;
         self.count += 1;
         true
     }
-    
+
     fn pop_front(&mut self) -> Option<TaskId> {
         if self.count == 0 {
             return None;
         }
-        
+
         let task_id = self.tasks[self.head];
         self.head = (self.head + 1) % MAX_TASKS;
         self.count -= 1;
         Some(task_id)
     }
-    
+
     fn len(&self) -> usize {
         self.count
     }
-    
+
     fn is_empty(&self) -> bool {
         self.count == 0
     }
@@ -193,17 +193,17 @@ impl SleepingTask {
 pub struct PriorityScheduler {
     /// Ready queues for each priority level [Low, Normal, High]
     ready_queues: [TaskQueue; 3],
-    
+
     /// Bitmap tracking non-empty queues for O(1) selection
     /// Bits 0-2 correspond to Low/Normal/High priorities
     non_empty_queues: u8,
-    
+
     /// Array of sleeping tasks (fixed size for no_std)
     sleeping_tasks: [SleepingTask; MAX_TASKS],
-    
+
     /// Current tick count
     current_tick: u64,
-    
+
     /// Preemption disable counter (0 = preemption enabled)
     preempt_disable_count: usize,
 }
@@ -219,7 +219,7 @@ impl PriorityScheduler {
             preempt_disable_count: 0,
         }
     }
-    
+
     /// Add task to appropriate priority queue
     ///
     /// # Arguments
@@ -231,15 +231,15 @@ impl PriorityScheduler {
     pub fn enqueue_task(&mut self, task_id: TaskId, priority: TaskPriority) -> bool {
         let index = priority.as_index();
         let success = self.ready_queues[index].push_back(task_id);
-        
+
         if success {
             // Set the bit for this priority level
             self.non_empty_queues |= 1 << index;
         }
-        
+
         success
     }
-    
+
     /// Select next task to run (highest priority first)
     ///
     /// Checks queues from highest to lowest priority and returns the first
@@ -265,20 +265,20 @@ impl PriorityScheduler {
                 }
             }
         }
-        
+
         None
     }
-    
+
     /// Check if all queues are empty
     pub fn is_empty(&self) -> bool {
         self.non_empty_queues == 0
     }
-    
+
     /// Get total number of tasks across all queues
     pub fn len(&self) -> usize {
         self.ready_queues[0].len() + self.ready_queues[1].len() + self.ready_queues[2].len()
     }
-    
+
     /// Put task to sleep for specified ticks
     ///
     /// Task will be removed from ready queue and added to sleeping list.
@@ -293,9 +293,9 @@ impl PriorityScheduler {
     /// `true` if task was put to sleep successfully, `false` if no slots available
     pub fn sleep_task(&mut self, task_id: TaskId, ticks: u64, priority: TaskPriority) -> bool {
         use crate::serial_println;
-        
+
         let wake_tick = self.current_tick + ticks;
-        
+
         // Find an empty slot in sleeping_tasks array
         for slot in &mut self.sleeping_tasks {
             if !slot.valid {
@@ -305,7 +305,7 @@ impl PriorityScheduler {
                     priority,
                     valid: true,
                 };
-                
+
                 // Log sleep operation
                 serial_println!(
                     "[SCHED] Task {} sleeping for {} ticks (wake at tick {})",
@@ -313,15 +313,15 @@ impl PriorityScheduler {
                     ticks,
                     wake_tick
                 );
-                
+
                 return true;
             }
         }
-        
+
         // No empty slots available
         false
     }
-    
+
     /// Wake tasks whose sleep time has elapsed
     ///
     /// Scans the sleeping tasks array and wakes any tasks whose wake_tick
@@ -332,14 +332,14 @@ impl PriorityScheduler {
     /// Number of tasks woken
     pub fn wake_sleeping_tasks(&mut self) -> usize {
         use crate::serial_println;
-        
+
         let mut woken_count = 0;
         let current_tick = self.current_tick;
-        
+
         // First pass: collect tasks to wake
         let mut tasks_to_wake = [(0usize, TaskPriority::Normal); MAX_TASKS];
         let mut wake_index = 0;
-        
+
         for slot in &mut self.sleeping_tasks {
             if slot.valid && slot.wake_tick <= current_tick {
                 if wake_index < MAX_TASKS {
@@ -350,12 +350,12 @@ impl PriorityScheduler {
                 woken_count += 1;
             }
         }
-        
+
         // Second pass: re-enqueue woken tasks and log
         for i in 0..wake_index {
             let (task_id, priority) = tasks_to_wake[i];
             self.enqueue_task(task_id, priority);
-            
+
             // Log wake operation
             serial_println!(
                 "[SCHED] Task {} woke up at tick {} (priority: {:?})",
@@ -364,32 +364,32 @@ impl PriorityScheduler {
                 priority
             );
         }
-        
+
         woken_count
     }
-    
+
     /// Update tick counter and wake tasks
     pub fn tick(&mut self) {
         self.current_tick += 1;
     }
-    
+
     /// Get current tick count
     pub fn current_tick(&self) -> u64 {
         self.current_tick
     }
-    
+
     /// Disable preemption (for critical sections)
     pub fn preempt_disable(&mut self) {
         self.preempt_disable_count += 1;
     }
-    
+
     /// Enable preemption
     pub fn preempt_enable(&mut self) {
         if self.preempt_disable_count > 0 {
             self.preempt_disable_count -= 1;
         }
     }
-    
+
     /// Check if preemption is allowed
     pub fn can_preempt(&self) -> bool {
         self.preempt_disable_count == 0
@@ -400,21 +400,21 @@ impl PriorityScheduler {
 static PREEMPT_OP_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// Global preemption disable function
-/// 
+///
 /// Disables preemption by disabling interrupts.
 /// Must be called before acquiring spinlocks in IPC operations.
-/// 
+///
 /// Note: In SMP mode, preemption control is handled by interrupt disable/enable
 /// rather than a counter, since each CPU manages its own scheduling independently.
 pub fn preempt_disable() {
     use crate::serial_println;
     use core::sync::atomic::Ordering;
-    
+
     // Disable interrupts to prevent preemption
     unsafe {
         core::arch::asm!("cli", options(nomem, nostack));
     }
-    
+
     // Log preemption disable with throttling (every 100th operation)
     let count = PREEMPT_OP_COUNT.fetch_add(1, Ordering::Relaxed);
     if count % 100 == 0 {
@@ -423,21 +423,21 @@ pub fn preempt_disable() {
 }
 
 /// Global preemption enable function
-/// 
+///
 /// Enables preemption by enabling interrupts.
 /// Must be called after releasing spinlocks in IPC operations.
-/// 
+///
 /// Note: In SMP mode, preemption control is handled by interrupt disable/enable
 /// rather than a counter, since each CPU manages its own scheduling independently.
 pub fn preempt_enable() {
     use crate::serial_println;
     use core::sync::atomic::Ordering;
-    
+
     // Enable interrupts to allow preemption
     unsafe {
         core::arch::asm!("sti", options(nomem, nostack));
     }
-    
+
     // Log preemption enable with throttling (every 100th operation)
     let count = PREEMPT_OP_COUNT.load(Ordering::Relaxed);
     if count % 100 == 0 {

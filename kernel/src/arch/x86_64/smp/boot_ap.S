@@ -126,9 +126,11 @@ long_mode_entry:
     
     /* Debug: Write 'R' to serial (about to jump) */
     pushq   %rax
+    pushq   %rdx
     movb    $'R', %al
     movw    $0x3F8, %dx
     outb    %al, %dx
+    popq    %rdx
     popq    %rax
     
     /* Double-check address is in higher-half */
@@ -139,9 +141,11 @@ long_mode_entry:
     
     /* Debug: 'J' before jump */
     pushq   %rax
+    pushq   %rdx
     movb    $'J', %al
     movw    $0x3F8, %dx
     outb    %al, %dx
+    popq    %rdx
     popq    %rax
     
     /* Save entry point and jump to lower-half wrapper */
@@ -150,9 +154,11 @@ long_mode_entry:
     jmp     *%rax
     
 .Lbad_address:
+    pushq   %rdx
     movb    $'Z', %al
     movw    $0x3F8, %dx
     outb    %al, %dx
+    popq    %rdx
     jmp     .Lhalt_error
     
 .Lhalt_error:
@@ -163,18 +169,22 @@ long_mode_entry:
 /* Lower-half wrapper that calls higher-half Rust */
 rust_entry_wrapper:
     /* Debug: 'W' = entered wrapper */
+    pushq   %rdx
     movb    $'W', %al
     movw    $0x3F8, %dx
     outb    %al, %dx
+    popq    %rdx
     
     /* Arguments are already in rdi, rsi, rdx from earlier */
     /* Entry point is in r15 */
     callq   *%r15
     
     /* Should never return */
+    pushq   %rdx
     movb    $'N', %al
     movw    $0x3F8, %dx
     outb    %al, %dx
+    popq    %rdx
     cli
     hlt
 

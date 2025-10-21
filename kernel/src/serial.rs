@@ -1,6 +1,5 @@
 /// Serial port driver for debugging output
 /// Provides simple serial communication for kernel debugging
-
 use core::fmt;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
@@ -47,7 +46,7 @@ impl SerialPort {
             // Wait for transmit buffer to be empty
             let mut line_status = Port::<u8>::new(self.base + 5);
             while line_status.read() & 0x20 == 0 {}
-            
+
             Port::new(self.base).write(byte);
         }
     }
