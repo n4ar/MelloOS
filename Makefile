@@ -9,6 +9,7 @@ INIT_BINARY := $(USERSPACE_DIR)/init/target/x86_64-unknown-none/release/init
 MELLO_TERM_BINARY := $(USERSPACE_DIR)/mello-term/target/x86_64-unknown-none/release/mello-term
 MELLO_SH_BINARY := $(USERSPACE_DIR)/mello-sh/target/x86_64-unknown-none/release/mello-sh
 MELLOBOX_BINARY := $(USERSPACE_DIR)/mellobox/target/x86_64-unknown-none/release/mellobox
+KBD_TEST_BINARY := $(USERSPACE_DIR)/kbd_test/target/x86_64-unknown-none/release/kbd_test
 BUILD_MODE := release
 ISO_ROOT := iso_root
 ISO_NAME := mellos.iso
@@ -44,6 +45,8 @@ userspace:
 	@cd $(USERSPACE_DIR)/mello-sh && $(CARGO) build $(CARGO_BUILD_FLAGS)
 	@echo "$(COLOR_YELLOW)Building mellobox...$(COLOR_RESET)"
 	@cd $(USERSPACE_DIR)/mellobox && $(CARGO) build $(CARGO_BUILD_FLAGS)
+	@echo "$(COLOR_YELLOW)Building kbd_test...$(COLOR_RESET)"
+	@cd $(USERSPACE_DIR)/kbd_test && $(CARGO) build $(CARGO_BUILD_FLAGS)
 	@echo "$(COLOR_GREEN)✓ All userspace programs built successfully!$(COLOR_RESET)"
 
 # Create symlinks for mellobox utilities
@@ -117,6 +120,7 @@ iso: build limine symlinks
 			ln -sf mellobox $(ISO_ROOT)/bin/$$util 2>/dev/null || true; \
 		done; \
 	fi
+	@if [ -f "$(KBD_TEST_BINARY)" ]; then cp $(KBD_TEST_BINARY) $(ISO_ROOT)/bin/kbd_test; fi
 	
 	# Copy Limine bootloader files
 	@echo "$(COLOR_YELLOW)Copying Limine bootloader files...$(COLOR_RESET)"
@@ -162,6 +166,7 @@ clean:
 	@cd $(USERSPACE_DIR)/mello-term && $(CARGO) clean
 	@cd $(USERSPACE_DIR)/mello-sh && $(CARGO) clean
 	@cd $(USERSPACE_DIR)/mellobox && $(CARGO) clean
+	@cd $(USERSPACE_DIR)/kbd_test && $(CARGO) clean
 	@rm -rf $(ISO_ROOT)
 	@rm -f $(ISO_NAME)
 	@rm -rf $(LIMINE_DIR)
