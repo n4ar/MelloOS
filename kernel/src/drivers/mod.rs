@@ -9,6 +9,7 @@ use crate::sync::SpinLock;
 // Driver modules
 pub mod input;
 pub mod serial;
+pub mod block;
 
 /// Represents a device driver
 #[derive(Copy, Clone)]
@@ -286,9 +287,8 @@ fn register_builtin_drivers() {
     // Register serial driver
     driver_register(crate::drivers::serial::SERIAL_DRIVER);
     
-    // Note: Additional drivers will be registered here once they are implemented
-    // in task 8:
-    // - driver_register(crate::drivers::block::virtio_blk::VIRTIO_BLK_DRIVER);
+    // Register virtio-blk driver
+    driver_register(crate::drivers::block::virtio_blk::VIRTIO_BLK_DRIVER);
     
     let count = driver_count();
     crate::serial_println!("[DRIVER] Built-in driver registration complete ({} drivers registered)", count);
