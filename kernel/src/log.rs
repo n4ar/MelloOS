@@ -4,6 +4,7 @@
 
 use crate::arch::x86_64::smp::percpu::percpu_current;
 use core::fmt;
+use spin::Mutex;
 
 /// Log levels for kernel logging
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -68,6 +69,74 @@ pub fn should_log(level: LogLevel) -> bool {
     level <= get_log_level()
 }
 
+/// Kernel log buffer for dmesg
+/// Uses a fixed-size circular buffer to store log messages
+const LOG_BUFFER_SIZE: usize = 65536; // 64KB buffer
+const MAX_LOG_ENTRIES: usize = 1000;
+
+struct LogBuffer {
+    buffer: [u8; LOG_BUFFER_SIZE],
+    write_pos: usize,
+    entries: usize,
+}
+
+impl LogBuffer {
+    const fn new() -> Self {
+        Self {
+            buffer: [0; LOG_BUFFER_SIZE],
+            write_pos: 0,
+            entries: 0,
+        }
+    }
+
+    fn add_message(&mut self, message: &str) {
+        let bytes = message.as_bytes();
+        let len = bytes.len();
+        
+        // If message is too long, truncate it
+        if len >= LOG_BUFFER_SIZE {
+            return;
+        }
+
+        // If we would overflow, wrap around
+        if self.write_pos + len + 1 > LOG_BUFFER_SIZE {
+            self.write_pos = 0;
+            self.entries = 0; // Reset on wrap
+        }
+
+        // Copy message to buffer
+        self.buffer[self.write_pos..self.write_pos + len].copy_from_slice(bytes);
+        self.buffer[self.write_pos + len] = b'\n';
+        self.write_pos += len + 1;
+        
+        if self.entries < MAX_LOG_ENTRIES {
+            self.entries += 1;
+        }
+    }
+
+    fn read_all(&self) -> &[u8] {
+        &self.buffer[..self.write_pos]
+    }
+}
+
+static LOG_BUFFER: Mutex<LogBuffer> = Mutex::new(LogBuffer::new());
+
+/// Add a log entry to the kernel log buffer
+fn add_to_log_buffer(message: &str) {
+    let mut buffer = LOG_BUFFER.lock();
+    buffer.add_message(message);
+}
+
+/// Read the kernel log buffer into a provided buffer
+/// Returns the number of bytes copied
+pub fn read_log_buffer(dest: &mut [u8]) -> usize {
+    let buffer = LOG_BUFFER.lock();
+    let data = buffer.read_all();
+    let to_copy = core::cmp::min(data.len(), dest.len());
+    dest[..to_copy].copy_from_slice(&data[..to_copy]);
+    to_copy
+}
+
 /// Internal logging function
 /// Format: [cpuN][pid=X][subsys] message
 #[doc(hidden)]
@@ -87,7 +156,7 @@ pub fn _log(level: LogLevel, subsys: &str, args: fmt::Arguments) {
         (cpu, task_id)
     };
 
-    // Print with structured format
+    // Print to serial with structured format
     use crate::serial_println;
     serial_println!(
         "[cpu{}][pid={}][{}][{}] {}",
@@ -97,6 +166,55 @@ pub fn _log(level: LogLevel, subsys: &str, args: fmt::Arguments) {
         level.as_str(),
         args
     );
+
+    // Format message for log buffer
+    // We need to format it into a temporary buffer
+    use core::fmt::Write;
+    struct LogWriter {
+        buffer: [u8; 512],
+        pos: usize,
+    }
+    
+    impl LogWriter {
+        fn new() -> Self {
+            Self {
+                buffer: [0u8; 512],
+                pos: 0,
+            }
+        }
+        
+        fn as_str(&self) -> Result<&str, core::str::Utf8Error> {
+            core::str::from_utf8(&self.buffer[..self.pos])
+        }
+    }
+    
+    impl Write for LogWriter {
+        fn write_str(&mut self, s: &str) -> fmt::Result {
+            let bytes = s.as_bytes();
+            let remaining = self.buffer.len() - self.pos;
+            let to_write = core::cmp::min(bytes.len(), remaining);
+            self.buffer[self.pos..self.pos + to_write].copy_from_slice(&bytes[..to_write]);
+            self.pos += to_write;
+            Ok(())
+        }
+    }
+    
+    let mut writer = LogWriter::new();
+    
+    let _ = write!(
+        writer,
+        "[cpu{}][pid={}][{}][{}] {}",
+        cpu_id,
+        pid,
+        subsys,
+        level.as_str(),
+        args
+    );
+    
+    // Add to log buffer
+    if let Ok(message) = writer.as_str() {
+        add_to_log_buffer(message);
+    }
 }
 
 /// Log an error message

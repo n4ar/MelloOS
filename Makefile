@@ -10,6 +10,9 @@ MELLO_TERM_BINARY := $(USERSPACE_DIR)/mello-term/target/x86_64-unknown-none/rele
 MELLO_SH_BINARY := $(USERSPACE_DIR)/mello-sh/target/x86_64-unknown-none/release/mello-sh
 MELLOBOX_BINARY := $(USERSPACE_DIR)/mellobox/target/x86_64-unknown-none/release/mellobox
 KBD_TEST_BINARY := $(USERSPACE_DIR)/kbd_test/target/x86_64-unknown-none/release/kbd_test
+SERIAL_TEST_BINARY := $(USERSPACE_DIR)/serial_test/target/x86_64-unknown-none/release/serial_test
+DISK_BENCH_BINARY := $(USERSPACE_DIR)/disk_bench/target/x86_64-unknown-none/release/disk_bench
+DMESG_BINARY := $(USERSPACE_DIR)/dmesg/target/x86_64-unknown-none/release/dmesg
 BUILD_MODE := release
 ISO_ROOT := iso_root
 ISO_NAME := mellos.iso
@@ -47,6 +50,12 @@ userspace:
 	@cd $(USERSPACE_DIR)/mellobox && $(CARGO) build $(CARGO_BUILD_FLAGS)
 	@echo "$(COLOR_YELLOW)Building kbd_test...$(COLOR_RESET)"
 	@cd $(USERSPACE_DIR)/kbd_test && $(CARGO) build $(CARGO_BUILD_FLAGS)
+	@echo "$(COLOR_YELLOW)Building serial_test...$(COLOR_RESET)"
+	@cd $(USERSPACE_DIR)/serial_test && $(CARGO) build $(CARGO_BUILD_FLAGS)
+	@echo "$(COLOR_YELLOW)Building disk_bench...$(COLOR_RESET)"
+	@cd $(USERSPACE_DIR)/disk_bench && $(CARGO) build $(CARGO_BUILD_FLAGS)
+	@echo "$(COLOR_YELLOW)Building dmesg...$(COLOR_RESET)"
+	@cd $(USERSPACE_DIR)/dmesg && $(CARGO) build $(CARGO_BUILD_FLAGS)
 	@echo "$(COLOR_GREEN)✓ All userspace programs built successfully!$(COLOR_RESET)"
 
 # Create symlinks for mellobox utilities
@@ -121,6 +130,9 @@ iso: build limine symlinks
 		done; \
 	fi
 	@if [ -f "$(KBD_TEST_BINARY)" ]; then cp $(KBD_TEST_BINARY) $(ISO_ROOT)/bin/kbd_test; fi
+	@if [ -f "$(SERIAL_TEST_BINARY)" ]; then cp $(SERIAL_TEST_BINARY) $(ISO_ROOT)/bin/serial_test; fi
+	@if [ -f "$(DISK_BENCH_BINARY)" ]; then cp $(DISK_BENCH_BINARY) $(ISO_ROOT)/bin/disk_bench; fi
+	@if [ -f "$(DMESG_BINARY)" ]; then cp $(DMESG_BINARY) $(ISO_ROOT)/bin/dmesg; fi
 	
 	# Copy Limine bootloader files
 	@echo "$(COLOR_YELLOW)Copying Limine bootloader files...$(COLOR_RESET)"
@@ -167,6 +179,9 @@ clean:
 	@cd $(USERSPACE_DIR)/mello-sh && $(CARGO) clean
 	@cd $(USERSPACE_DIR)/mellobox && $(CARGO) clean
 	@cd $(USERSPACE_DIR)/kbd_test && $(CARGO) clean
+	@cd $(USERSPACE_DIR)/serial_test && $(CARGO) clean
+	@cd $(USERSPACE_DIR)/disk_bench && $(CARGO) clean
+	@cd $(USERSPACE_DIR)/dmesg && $(CARGO) clean
 	@rm -rf $(ISO_ROOT)
 	@rm -f $(ISO_NAME)
 	@rm -rf $(LIMINE_DIR)

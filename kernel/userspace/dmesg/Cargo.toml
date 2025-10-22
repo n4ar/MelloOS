@@ -1,12 +1,9 @@
 [package]
-name = "mellos-kernel"
-version = "0.7.0-development"
+name = "dmesg"
+version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-limine = "0.5"
-spin = "0.10"
-x86_64 = "0.15"
 
 [profile.dev]
 panic = "abort"

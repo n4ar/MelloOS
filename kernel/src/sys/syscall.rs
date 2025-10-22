@@ -157,6 +157,7 @@ pub const SYS_BLOCK_READ: usize = 28;
 pub const SYS_BLOCK_WRITE: usize = 29;
 pub const SYS_GET_DEVICE_LIST: usize = 30;
 pub const SYS_GET_BLOCK_DEVICE_INFO: usize = 31;
+pub const SYS_READ_KERNEL_LOG: usize = 32;
 
 static NEXT_FAKE_PID: AtomicUsize = AtomicUsize::new(2000);
 
@@ -221,6 +222,7 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_BLOCK_WRITE => "SYS_BLOCK_WRITE",
         SYS_GET_DEVICE_LIST => "SYS_GET_DEVICE_LIST",
         SYS_GET_BLOCK_DEVICE_INFO => "SYS_GET_BLOCK_DEVICE_INFO",
+        SYS_READ_KERNEL_LOG => "SYS_READ_KERNEL_LOG",
         _ => "INVALID",
     };
 
@@ -276,6 +278,7 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_BLOCK_WRITE => sys_block_write(arg1, arg2, arg3),
         SYS_GET_DEVICE_LIST => sys_get_device_list(arg1, arg2),
         SYS_GET_BLOCK_DEVICE_INFO => sys_get_block_device_info(arg1),
+        SYS_READ_KERNEL_LOG => sys_read_kernel_log(arg1, arg2),
         _ => {
             serial_println!("[SYSCALL] ERROR: Invalid syscall ID: {}", syscall_id);
             -1 // Invalid syscall
@@ -2176,6 +2179,38 @@ fn sys_serial_read(buf_ptr: usize, len: usize) -> isize {
     }
 
     bytes_read as isize
+}
+
+/// sys_read_kernel_log handler - Read kernel log buffer
+///
+/// # Arguments
+/// * `buf_ptr` - Pointer to buffer
+/// * `len` - Maximum bytes to read
+///
+/// # Returns
+/// Number of bytes written to buffer, or -1 on error
+///
+/// # Description
+/// Reads the kernel log buffer and copies it to userspace.
+/// The log buffer contains formatted log messages from the kernel.
+fn sys_read_kernel_log(buf_ptr: usize, len: usize) -> isize {
+    if len == 0 {
+        return 0;
+    }
+
+    // Validate buffer
+    if !validate_user_buffer(buf_ptr, len) {
+        serial_println!("[SYSCALL] sys_read_kernel_log: invalid buffer");
+        return -1;
+    }
+
+    // Get user buffer
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+
+    // Read the kernel log buffer directly into user buffer
+    let bytes_copied = crate::log::read_log_buffer(buffer);
+
+    bytes_copied as isize
 }
 
 /// sys_block_read handler - Read a block from disk
