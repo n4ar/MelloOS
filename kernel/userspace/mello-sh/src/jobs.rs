@@ -20,6 +20,8 @@ pub struct Job {
     pub pgid: i32,
     pub command: String,
     pub state: JobState,
+    pub background: bool,
+    pub processes: Vec<i32>,
 }
 
 /// Job table
@@ -47,6 +49,25 @@ impl JobTable {
             pgid,
             command,
             state: JobState::Running,
+            background: false,
+            processes: Vec::new(),
+        });
+
+        id
+    }
+
+    /// Add a new job with full details
+    pub fn add_job_full(&mut self, pgid: i32, command: String, background: bool, processes: Vec<i32>) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        self.jobs.push(Job {
+            id,
+            pgid,
+            command,
+            state: JobState::Running,
+            background,
+            processes,
         });
 
         id
@@ -123,5 +144,10 @@ impl JobTable {
     /// Get current job ID
     pub fn current_job_id(&self) -> Option<usize> {
         self.current_job().map(|j| j.id)
+    }
+
+    /// Get all jobs (for debugging)
+    pub fn all_jobs(&self) -> Vec<&Job> {
+        self.jobs.iter().collect()
     }
 }

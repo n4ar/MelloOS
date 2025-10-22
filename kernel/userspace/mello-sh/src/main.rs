@@ -194,6 +194,11 @@ impl Shell {
     pub fn env(&self) -> &BTreeMap<String, String> {
         &self.env
     }
+
+    /// Get all jobs (for debugging)
+    pub fn get_all_jobs(&self) -> alloc::vec::Vec<&jobs::Job> {
+        self.jobs.all_jobs()
+    }
 }
 
 #[no_mangle]

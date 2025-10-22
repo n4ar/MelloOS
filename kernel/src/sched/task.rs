@@ -191,6 +191,9 @@ pub struct Task {
 
     /// Controlling terminal device (if any)
     pub tty: Option<DeviceId>,
+
+    /// Last syscall number executed (for debugging/panic dumps)
+    pub last_syscall: Option<usize>,
 }
 
 impl Task {
@@ -294,6 +297,7 @@ impl Task {
             pgid: id,       // Initially, pgid = pid
             sid: id,        // Initially, sid = pid (for init process)
             tty: None,      // No controlling terminal initially
+            last_syscall: None, // No syscall executed yet
         })
     }
 

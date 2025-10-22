@@ -8,6 +8,8 @@ mod dev;
 mod framebuffer;
 mod fs;
 mod init_loader;
+mod log;
+mod metrics;
 mod mm;
 mod panic;
 mod sched;

@@ -18,6 +18,9 @@ pub fn execute(shell: &mut Shell, cmd: &str, args: &[String]) -> Option<i32> {
         "bg" => Some(builtin_bg(shell, args)),
         "exit" => Some(builtin_exit(shell, args)),
         "which" => Some(builtin_which(shell, args)),
+        "debug-pty" => Some(builtin_debug_pty()),
+        "debug-jobs" => Some(builtin_debug_jobs(shell)),
+        "debug-signals" => Some(builtin_debug_signals()),
         _ => None,
     }
 }
@@ -335,7 +338,7 @@ fn builtin_which(shell: &Shell, args: &[String]) -> i32 {
 
     for cmd in args {
         // Check if it's a built-in
-        if matches!(cmd.as_str(), "cd" | "pwd" | "echo" | "export" | "unset" | "jobs" | "fg" | "bg" | "exit" | "which") {
+        if matches!(cmd.as_str(), "cd" | "pwd" | "echo" | "export" | "unset" | "jobs" | "fg" | "bg" | "exit" | "which" | "debug-pty" | "debug-jobs" | "debug-signals") {
             syscalls::write(1, format!("{}: shell built-in command\n", cmd).as_bytes());
             continue;
         }
@@ -378,4 +381,136 @@ fn builtin_which(shell: &Shell, args: &[String]) -> i32 {
     }
 
     if found_all { 0 } else { 1 }
+}
+
+/// debug-pty - show PTY state from /proc/debug/pty
+fn builtin_debug_pty() -> i32 {
+    syscalls::write(1, b"=== PTY Debug Information ===\n");
+    
+    // Read /proc/debug/pty
+    let path = b"/proc/debug/pty\0";
+    let fd = syscalls::open(path, syscalls::O_RDONLY, 0);
+    
+    if fd < 0 {
+        syscalls::write(2, b"debug-pty: failed to open /proc/debug/pty\n");
+        return 1;
+    }
+    
+    // Read and display content
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = syscalls::read(fd, &mut buf);
+        if n <= 0 {
+            break;
+        }
+        syscalls::write(1, &buf[..n as usize]);
+    }
+    
+    syscalls::close(fd);
+    0
+}
+
+/// debug-jobs - show detailed job table
+fn builtin_debug_jobs(shell: &Shell) -> i32 {
+    syscalls::write(1, b"=== Job Table Debug Information ===\n");
+    
+    // Get all jobs from the job table
+    let all_jobs = shell.get_all_jobs();
+    
+    if all_jobs.is_empty() {
+        syscalls::write(1, b"No jobs\n");
+        return 0;
+    }
+    
+    for job in all_jobs {
+        // Print job header
+        let header = format!(
+            "[{}] PGID={} State={:?} Background={}\n",
+            job.id, job.pgid, job.state, job.background
+        );
+        syscalls::write(1, header.as_bytes());
+        
+        // Print command
+        syscalls::write(1, b"  Command: ");
+        syscalls::write(1, job.command.as_bytes());
+        syscalls::write(1, b"\n");
+        
+        // Print process list
+        syscalls::write(1, b"  Processes: [");
+        for (i, pid) in job.processes.iter().enumerate() {
+            if i > 0 {
+                syscalls::write(1, b", ");
+            }
+            let pid_str = format!("{}", pid);
+            syscalls::write(1, pid_str.as_bytes());
+        }
+        syscalls::write(1, b"]\n");
+        
+        // Read process state from /proc if available
+        for pid in &job.processes {
+            let proc_path = format!("/proc/{}/stat\0", pid);
+            let fd = syscalls::open(proc_path.as_bytes(), syscalls::O_RDONLY, 0);
+            
+            if fd >= 0 {
+                let mut buf = [0u8; 512];
+                let n = syscalls::read(fd, &mut buf);
+                if n > 0 {
+                    syscalls::write(1, b"    PID ");
+                    let pid_str = format!("{}", pid);
+                    syscalls::write(1, pid_str.as_bytes());
+                    syscalls::write(1, b": ");
+                    syscalls::write(1, &buf[..n as usize]);
+                }
+                syscalls::close(fd);
+            }
+        }
+        
+        syscalls::write(1, b"\n");
+    }
+    
+    0
+}
+
+/// debug-signals - show pending signals for current process
+fn builtin_debug_signals() -> i32 {
+    syscalls::write(1, b"=== Signal Debug Information ===\n");
+    
+    // Get current PID
+    let pid = syscalls::getpid();
+    let pid_str = format!("Current PID: {}\n", pid);
+    syscalls::write(1, pid_str.as_bytes());
+    
+    // Read /proc/<pid>/status to get signal information
+    let status_path = format!("/proc/{}/status\0", pid);
+    let fd = syscalls::open(status_path.as_bytes(), syscalls::O_RDONLY, 0);
+    
+    if fd < 0 {
+        syscalls::write(2, b"debug-signals: failed to open /proc status\n");
+        return 1;
+    }
+    
+    // Read and display content
+    let mut buf = [0u8; 2048];
+    let n = syscalls::read(fd, &mut buf);
+    if n > 0 {
+        syscalls::write(1, &buf[..n as usize]);
+    }
+    
+    syscalls::close(fd);
+    
+    // Also read /proc/debug/sessions for session info
+    syscalls::write(1, b"\n=== Session Information ===\n");
+    let sessions_path = b"/proc/debug/sessions\0";
+    let fd = syscalls::open(sessions_path, syscalls::O_RDONLY, 0);
+    
+    if fd >= 0 {
+        let mut buf = [0u8; 4096];
+        let n = syscalls::read(fd, &mut buf);
+        if n > 0 {
+            syscalls::write(1, &buf[..n as usize]);
+        }
+        syscalls::close(fd);
+    }
+    
+    0
 }

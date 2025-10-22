@@ -190,6 +190,11 @@ pub fn chdir(path: &[u8]) -> isize {
     unsafe { syscall1(SYS_CHDIR, path.as_ptr() as usize) }
 }
 
+/// Get process ID
+pub fn getpid() -> isize {
+    unsafe { syscall0(39) } // SYS_GETPID = 39
+}
+
 /// Open file
 pub fn open(path: &[u8], flags: i32, mode: i32) -> isize {
     unsafe { syscall3(SYS_OPEN, path.as_ptr() as usize, flags as usize, mode as usize) }

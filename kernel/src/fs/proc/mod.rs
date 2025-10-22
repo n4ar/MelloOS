@@ -470,6 +470,8 @@ pub enum ProcPath {
     CpuInfo,
     /// /proc/uptime file
     Uptime,
+    /// /proc/stat file (system-wide statistics)
+    Stat,
     /// /proc/debug directory
     DebugDir,
     /// /proc/debug/pty file
@@ -537,6 +539,7 @@ pub fn parse_proc_path(path: &str) -> ProcPath {
             "meminfo" => ProcPath::MemInfo,
             "cpuinfo" => ProcPath::CpuInfo,
             "uptime" => ProcPath::Uptime,
+            "stat" => ProcPath::Stat,
             "debug" => ProcPath::DebugDir,
             pid_str => {
                 // Try to parse as PID
@@ -572,6 +575,7 @@ pub fn proc_read(path: &str, buf: &mut [u8], offset: usize) -> Result<usize, i32
         ProcPath::MemInfo => read_meminfo(buf, offset),
         ProcPath::CpuInfo => read_cpuinfo(buf, offset),
         ProcPath::Uptime => read_uptime(buf, offset),
+        ProcPath::Stat => read_stat(buf, offset),
         ProcPath::Self_ => {
             // /proc/self should be handled as a symlink by the caller
             Err(-22) // EINVAL
@@ -649,6 +653,87 @@ fn read_uptime(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
     let mut temp_buf = [0u8; 128];
     let len = uptime.format(&mut temp_buf);
 
+    copy_with_offset(&temp_buf[..len], buf, offset)
+}
+
+/// Read /proc/stat file (system-wide statistics)
+fn read_stat(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
+    use core::fmt::Write;
+    use crate::metrics;
+
+    struct BufWriter<'a> {
+        buf: &'a mut [u8],
+        pos: usize,
+    }
+
+    impl<'a> Write for BufWriter<'a> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let bytes = s.as_bytes();
+            let remaining = self.buf.len() - self.pos;
+            let to_write = bytes.len().min(remaining);
+            self.buf[self.pos..self.pos + to_write].copy_from_slice(&bytes[..to_write]);
+            self.pos += to_write;
+            Ok(())
+        }
+    }
+
+    let mut temp_buf = [0u8; 4096];
+    let mut writer = BufWriter { buf: &mut temp_buf, pos: 0 };
+
+    let m = metrics::metrics();
+
+    // CPU statistics (simplified - per-CPU stats would go here)
+    let cpu_count = crate::arch::x86_64::smp::get_cpu_count();
+    let _ = write!(writer, "cpu  0 0 0 0 0 0 0 0 0 0\n");
+    for cpu_id in 0..cpu_count {
+        let _ = write!(writer, "cpu{}  0 0 0 0 0 0 0 0 0 0\n", cpu_id);
+    }
+
+    // Context switches
+    let _ = write!(writer, "ctxt {}\n", m.get_context_switches());
+
+    // Boot time (placeholder)
+    let _ = write!(writer, "btime 0\n");
+
+    // Processes (placeholder - would need to count tasks)
+    let _ = write!(writer, "processes 0\n");
+
+    // Running processes (placeholder)
+    let _ = write!(writer, "procs_running 1\n");
+
+    // Blocked processes (placeholder)
+    let _ = write!(writer, "procs_blocked 0\n");
+
+    // Interrupts
+    let _ = write!(writer, "intr {}\n", m.get_interrupts());
+
+    // Page faults
+    let _ = write!(writer, "page_faults {}\n", m.get_page_faults());
+
+    // Signals delivered
+    let _ = write!(writer, "signals_delivered {}\n", m.get_signals_delivered());
+
+    // PTY statistics
+    let _ = write!(writer, "pty_bytes_in {}\n", m.get_pty_bytes_in());
+    let _ = write!(writer, "pty_bytes_out {}\n", m.get_pty_bytes_out());
+
+    // IPC statistics
+    let _ = write!(writer, "ipc_sent {}\n", m.get_ipc_sent());
+    let _ = write!(writer, "ipc_received {}\n", m.get_ipc_received());
+
+    // Total syscalls
+    let _ = write!(writer, "syscalls_total {}\n", m.get_total_syscalls());
+
+    // Top 10 syscalls by count (simplified - just show first 20 syscalls)
+    let _ = write!(writer, "syscalls_top20:\n");
+    for i in 0..20 {
+        let count = m.get_syscall_count(i);
+        if count > 0 {
+            let _ = write!(writer, "  syscall_{}: {}\n", i, count);
+        }
+    }
+
+    let len = writer.pos;
     copy_with_offset(&temp_buf[..len], buf, offset)
 }
 
