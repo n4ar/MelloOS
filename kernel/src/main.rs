@@ -851,6 +851,10 @@ pub extern "C" fn _start() -> ! {
     // Initialize PTY (pseudo-terminal) subsystem
     dev::pty::init();
 
+    serial_println!("[KERNEL] Initializing /proc filesystem...");
+    // Initialize /proc virtual filesystem
+    fs::proc::init();
+
     serial_println!("[KERNEL] Initializing scheduler...");
     // Initialize the task scheduler
     init_scheduler();

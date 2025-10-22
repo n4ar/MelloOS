@@ -25,6 +25,15 @@ const MAX_CMDLINE_ARGS: usize = 32;
 /// Maximum argument length
 const MAX_ARG_LEN: usize = 256;
 
+/// Initialize /proc filesystem
+///
+/// The /proc filesystem is virtual and doesn't require explicit mounting.
+/// This function just logs that /proc is available.
+pub fn init() {
+    crate::serial_println!("[PROC] Virtual filesystem initialized");
+    crate::serial_println!("[PROC] Available at /proc");
+}
+
 /// Process state for /proc/<pid>/stat
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcState {

@@ -198,6 +198,12 @@ fn test_memory_protection() {
 }
 
 /// Entry point for init process
+///
+/// TODO: Future enhancements for Phase 6.6:
+/// - Set up environment variables (LANG=C.UTF-8, PATH=/bin, etc.)
+/// - Create /dev/ptmx and /dev/pts/ if not already created by kernel
+/// - Spawn mello-term as the primary user interface
+/// - Handle process reaping and system shutdown
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     // Required message for automated testing

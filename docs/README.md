@@ -9,8 +9,19 @@ docs/
 ├── architecture/       # System architecture and design documents
 ├── development/        # Development guides and API documentation
 ├── troubleshooting/    # Debugging guides and issue resolution
+├── USER_GUIDE.md       # User guide for shell and utilities
+├── DEVELOPER_GUIDE.md  # Developer guide for extending MelloOS
+├── TROUBLESHOOTING_GUIDE.md  # Comprehensive troubleshooting guide
 └── README.md          # This file
 ```
+
+## 📖 User Documentation
+
+Essential guides for using and developing with MelloOS:
+
+- **[USER_GUIDE.md](USER_GUIDE.md)**: Complete user guide for shell, terminal, and utilities
+- **[DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md)**: Guide for adding syscalls, /proc files, and utilities
+- **[TROUBLESHOOTING_GUIDE.md](TROUBLESHOOTING_GUIDE.md)**: Comprehensive troubleshooting for PTY, signals, and job control
 
 ## 🏗️ Architecture Documentation (`architecture/`)
 
@@ -20,6 +31,10 @@ Core system design and implementation details:
 - **[smp.md](architecture/smp.md)**: SMP (Multi-core) implementation details
 - **[task-scheduler.md](architecture/task-scheduler.md)**: Task scheduler design and algorithms
 - **[memory-management-logging.md](architecture/memory-management-logging.md)**: Memory management subsystem
+- **[pty-subsystem.md](architecture/pty-subsystem.md)**: Pseudo-terminal (PTY) subsystem architecture
+- **[signals-job-control.md](architecture/signals-job-control.md)**: Signal handling and job control implementation
+- **[proc-filesystem.md](architecture/proc-filesystem.md)**: /proc virtual filesystem structure
+- **[performance-optimizations.md](architecture/performance-optimizations.md)**: Performance optimization strategies
 
 ## 🛠️ Development Documentation (`development/`)
 
@@ -40,43 +55,62 @@ Debugging guides and issue resolution:
 
 ## 📖 Quick Start Reading Order
 
-For new developers, we recommend reading in this order:
+### For Users
+1. [User Guide](USER_GUIDE.md) - Learn to use the shell, terminal, and utilities
+2. [Troubleshooting Guide](TROUBLESHOOTING_GUIDE.md) - Solve common issues
 
-### 1. Understanding the System
+### For Developers
 1. [System Architecture](architecture/architecture.md) - Start here for overall understanding
-2. [Task Scheduler](architecture/task-scheduler.md) - Core scheduling concepts
-3. [Memory Management](architecture/memory-management-logging.md) - Memory subsystem
+2. [Developer Guide](DEVELOPER_GUIDE.md) - Learn to extend MelloOS
+3. [Task Scheduler](architecture/task-scheduler.md) - Core scheduling concepts
+4. [Memory Management](architecture/memory-management-logging.md) - Memory subsystem
 
-### 2. Multi-Core Development
-1. [SMP Implementation](architecture/smp.md) - Multi-core architecture
-2. [SMP Safety](troubleshooting/smp-safety.md) - Synchronization best practices
+### For Advanced Topics
+1. [PTY Subsystem](architecture/pty-subsystem.md) - Terminal emulation infrastructure
+2. [Signals & Job Control](architecture/signals-job-control.md) - Process management
+3. [/proc Filesystem](architecture/proc-filesystem.md) - System information interface
+4. [SMP Implementation](architecture/smp.md) - Multi-core architecture
+5. [SMP Safety](troubleshooting/smp-safety.md) - Synchronization best practices
 
-### 3. Development & Testing
-1. [API Guide](development/api-guide.md) - How to use kernel APIs
-2. [Testing Guide](development/testing.md) - Testing procedures
+### For Testing & Debugging
+1. [Testing Guide](development/testing.md) - Testing procedures
+2. [API Guide](development/api-guide.md) - How to use kernel APIs
 3. [Troubleshooting](troubleshooting/troubleshooting.md) - Common issues
 
 ## 🎯 Documentation by Topic
 
+### User Interface & Shell
+- [User Guide](USER_GUIDE.md) - Shell features, commands, and usage
+- [PTY Subsystem](architecture/pty-subsystem.md) - Terminal emulation
+- [Troubleshooting PTY Issues](TROUBLESHOOTING_GUIDE.md#pty-issues)
+
+### Process Management
+- [Signals & Job Control](architecture/signals-job-control.md) - Signal handling and job control
+- [Task Scheduler](architecture/task-scheduler.md) - Process scheduling
+- [Troubleshooting Signals](TROUBLESHOOTING_GUIDE.md#signal-issues)
+- [Troubleshooting Job Control](TROUBLESHOOTING_GUIDE.md#job-control-issues)
+
+### System Information
+- [/proc Filesystem](architecture/proc-filesystem.md) - Virtual filesystem structure
+- [Developer Guide - Adding /proc Files](DEVELOPER_GUIDE.md#adding-new-proc-files)
+
 ### Memory Management
 - [Architecture Overview](architecture/architecture.md#memory-management-architecture)
 - [Detailed Implementation](architecture/memory-management-logging.md)
-
-### Task Scheduling
-- [Architecture Overview](architecture/architecture.md#task-scheduler-architecture)
-- [Detailed Implementation](architecture/task-scheduler.md)
 
 ### Multi-Core (SMP)
 - [SMP Architecture](architecture/architecture.md#smp-symmetric-multi-processing-architecture)
 - [Complete SMP Guide](architecture/smp.md)
 - [SMP Safety Guidelines](troubleshooting/smp-safety.md)
 
-### System Calls & IPC
+### System Calls & Development
+- [Developer Guide](DEVELOPER_GUIDE.md) - Adding syscalls, /proc files, utilities
 - [Architecture Overview](architecture/architecture.md#system-call-interface)
 - [API Usage Guide](development/api-guide.md)
 
 ### Testing & Debugging
 - [Testing Procedures](development/testing.md)
+- [Troubleshooting Guide](TROUBLESHOOTING_GUIDE.md) - Comprehensive troubleshooting
 - [General Troubleshooting](troubleshooting/troubleshooting.md)
 - [SMP-Specific Debugging](troubleshooting/smp-boot-debug.md)
 

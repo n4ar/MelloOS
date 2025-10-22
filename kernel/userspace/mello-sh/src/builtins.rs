@@ -399,14 +399,14 @@ fn builtin_debug_pty() -> i32 {
     // Read and display content
     let mut buf = [0u8; 4096];
     loop {
-        let n = syscalls::read(fd, &mut buf);
+        let n = syscalls::read(fd as i32, &mut buf);
         if n <= 0 {
             break;
         }
         syscalls::write(1, &buf[..n as usize]);
     }
     
-    syscalls::close(fd);
+    syscalls::close(fd as i32);
     0
 }
 
@@ -453,7 +453,7 @@ fn builtin_debug_jobs(shell: &Shell) -> i32 {
             
             if fd >= 0 {
                 let mut buf = [0u8; 512];
-                let n = syscalls::read(fd, &mut buf);
+                let n = syscalls::read(fd as i32, &mut buf);
                 if n > 0 {
                     syscalls::write(1, b"    PID ");
                     let pid_str = format!("{}", pid);
@@ -461,7 +461,7 @@ fn builtin_debug_jobs(shell: &Shell) -> i32 {
                     syscalls::write(1, b": ");
                     syscalls::write(1, &buf[..n as usize]);
                 }
-                syscalls::close(fd);
+                syscalls::close(fd as i32);
             }
         }
         
@@ -491,12 +491,12 @@ fn builtin_debug_signals() -> i32 {
     
     // Read and display content
     let mut buf = [0u8; 2048];
-    let n = syscalls::read(fd, &mut buf);
+    let n = syscalls::read(fd as i32, &mut buf);
     if n > 0 {
         syscalls::write(1, &buf[..n as usize]);
     }
     
-    syscalls::close(fd);
+    syscalls::close(fd as i32);
     
     // Also read /proc/debug/sessions for session info
     syscalls::write(1, b"\n=== Session Information ===\n");
@@ -505,11 +505,11 @@ fn builtin_debug_signals() -> i32 {
     
     if fd >= 0 {
         let mut buf = [0u8; 4096];
-        let n = syscalls::read(fd, &mut buf);
+        let n = syscalls::read(fd as i32, &mut buf);
         if n > 0 {
             syscalls::write(1, &buf[..n as usize]);
         }
-        syscalls::close(fd);
+        syscalls::close(fd as i32);
     }
     
     0

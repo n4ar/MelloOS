@@ -80,12 +80,32 @@ fn grep_fd(
     let mut line_num = 1;
     let mut found_any = false;
     
-    // Convert pattern for case-insensitive matching
-    let pattern_lower = if case_insensitive {
-        pattern.to_lowercase()
-    } else {
-        String::from(pattern)
-    };
+    // Helper function for case-insensitive comparison
+    fn matches_pattern(line: &str, pattern: &str, case_insensitive: bool) -> bool {
+        if case_insensitive {
+            // Simple case-insensitive search by comparing lowercase ASCII
+            let line_bytes = line.as_bytes();
+            let pattern_bytes = pattern.as_bytes();
+            
+            for i in 0..=line_bytes.len().saturating_sub(pattern_bytes.len()) {
+                let mut matches = true;
+                for j in 0..pattern_bytes.len() {
+                    let line_char = line_bytes[i + j].to_ascii_lowercase();
+                    let pattern_char = pattern_bytes[j].to_ascii_lowercase();
+                    if line_char != pattern_char {
+                        matches = false;
+                        break;
+                    }
+                }
+                if matches {
+                    return true;
+                }
+            }
+            false
+        } else {
+            line.contains(pattern)
+        }
+    }
     
     loop {
         let nread = syscalls::read(fd, &mut buf);
@@ -96,7 +116,7 @@ fn grep_fd(
             // Process last line if any
             if !line_buf.is_empty() {
                 if let Ok(line) = core::str::from_utf8(&line_buf) {
-                    if matches_pattern(line, &pattern_lower, case_insensitive) {
+                    if matches_pattern(line, pattern, case_insensitive) {
                         print_match(filename, line_num, line, show_line_numbers);
                         found_any = true;
                     }
@@ -112,7 +132,7 @@ fn grep_fd(
             if byte == b'\n' {
                 // End of line - check if it matches
                 if let Ok(line) = core::str::from_utf8(&line_buf) {
-                    if matches_pattern(line, &pattern_lower, case_insensitive) {
+                    if matches_pattern(line, pattern, case_insensitive) {
                         print_match(filename, line_num, line, show_line_numbers);
                         found_any = true;
                     }

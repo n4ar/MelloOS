@@ -3,9 +3,12 @@
 
 # Configuration variables
 KERNEL_DIR := kernel
-USERSPACE_DIR := $(KERNEL_DIR)/userspace/init
+USERSPACE_DIR := $(KERNEL_DIR)/userspace
 KERNEL_BINARY := $(KERNEL_DIR)/target/x86_64-unknown-none/release/mellos-kernel
-INIT_BINARY := $(USERSPACE_DIR)/target/x86_64-unknown-none/release/init
+INIT_BINARY := $(USERSPACE_DIR)/init/target/x86_64-unknown-none/release/init
+MELLO_TERM_BINARY := $(USERSPACE_DIR)/mello-term/target/x86_64-unknown-none/release/mello-term
+MELLO_SH_BINARY := $(USERSPACE_DIR)/mello-sh/target/x86_64-unknown-none/release/mello-sh
+MELLOBOX_BINARY := $(USERSPACE_DIR)/mellobox/target/x86_64-unknown-none/release/mellobox
 BUILD_MODE := release
 ISO_ROOT := iso_root
 ISO_NAME := mellos.iso
@@ -25,17 +28,37 @@ COLOR_GREEN := \033[32m
 COLOR_BLUE := \033[34m
 COLOR_YELLOW := \033[33m
 
-.PHONY: all build clean help iso limine run userspace
+.PHONY: all build clean help iso limine run userspace symlinks
 
 # Default target
 all: build
 
-# Build userspace init process
+# Build userspace programs
 userspace:
-	@echo "$(COLOR_BLUE)Building userspace init process...$(COLOR_RESET)"
-	@cd $(USERSPACE_DIR) && $(CARGO) build $(CARGO_BUILD_FLAGS)
-	@echo "$(COLOR_GREEN)✓ Userspace init built successfully!$(COLOR_RESET)"
-	@echo "$(COLOR_YELLOW)Binary location: $(INIT_BINARY)$(COLOR_RESET)"
+	@echo "$(COLOR_BLUE)Building userspace programs...$(COLOR_RESET)"
+	@echo "$(COLOR_YELLOW)Building init...$(COLOR_RESET)"
+	@cd $(USERSPACE_DIR)/init && $(CARGO) build $(CARGO_BUILD_FLAGS)
+	@echo "$(COLOR_YELLOW)Building mello-term...$(COLOR_RESET)"
+	@cd $(USERSPACE_DIR)/mello-term && $(CARGO) build $(CARGO_BUILD_FLAGS)
+	@echo "$(COLOR_YELLOW)Building mello-sh...$(COLOR_RESET)"
+	@cd $(USERSPACE_DIR)/mello-sh && $(CARGO) build $(CARGO_BUILD_FLAGS)
+	@echo "$(COLOR_YELLOW)Building mellobox...$(COLOR_RESET)"
+	@cd $(USERSPACE_DIR)/mellobox && $(CARGO) build $(CARGO_BUILD_FLAGS)
+	@echo "$(COLOR_GREEN)✓ All userspace programs built successfully!$(COLOR_RESET)"
+
+# Create symlinks for mellobox utilities
+symlinks:
+	@echo "$(COLOR_BLUE)Creating symlinks for mellobox utilities...$(COLOR_RESET)"
+	@mkdir -p $(ISO_ROOT)/bin
+	@if [ -f "$(MELLOBOX_BINARY)" ]; then \
+		cp $(MELLOBOX_BINARY) $(ISO_ROOT)/bin/mellobox; \
+		for util in ls cp mv rm cat grep ps kill mkdir touch echo pwd true false; do \
+			ln -sf mellobox $(ISO_ROOT)/bin/$$util; \
+		done; \
+		echo "$(COLOR_GREEN)✓ Symlinks created successfully!$(COLOR_RESET)"; \
+	else \
+		echo "$(COLOR_YELLOW)Warning: mellobox binary not found, skipping symlinks$(COLOR_RESET)"; \
+	fi
 
 # Build the kernel
 build: userspace
@@ -62,7 +85,7 @@ limine:
 	fi
 
 # Create bootable ISO image
-iso: build limine
+iso: build limine symlinks
 	@echo "$(COLOR_BLUE)Creating ISO image...$(COLOR_RESET)"
 	
 	# Check if limine config exists
@@ -75,10 +98,25 @@ iso: build limine
 	@mkdir -p $(ISO_ROOT)/boot
 	@mkdir -p $(ISO_ROOT)/boot/limine
 	@mkdir -p $(ISO_ROOT)/EFI/BOOT
+	@mkdir -p $(ISO_ROOT)/bin
+	@mkdir -p $(ISO_ROOT)/dev
+	@mkdir -p $(ISO_ROOT)/proc
 	
 	# Copy kernel binary
 	@echo "$(COLOR_YELLOW)Copying kernel binary...$(COLOR_RESET)"
 	@cp $(KERNEL_BINARY) $(ISO_ROOT)/boot/kernel.elf
+	
+	# Copy userspace binaries
+	@echo "$(COLOR_YELLOW)Copying userspace binaries...$(COLOR_RESET)"
+	@if [ -f "$(INIT_BINARY)" ]; then cp $(INIT_BINARY) $(ISO_ROOT)/bin/init; fi
+	@if [ -f "$(MELLO_TERM_BINARY)" ]; then cp $(MELLO_TERM_BINARY) $(ISO_ROOT)/bin/mello-term; fi
+	@if [ -f "$(MELLO_SH_BINARY)" ]; then cp $(MELLO_SH_BINARY) $(ISO_ROOT)/bin/mello-sh; fi
+	@if [ -f "$(MELLOBOX_BINARY)" ]; then \
+		cp $(MELLOBOX_BINARY) $(ISO_ROOT)/bin/mellobox; \
+		for util in ls cp mv rm cat grep ps kill mkdir touch echo pwd true false; do \
+			ln -sf mellobox $(ISO_ROOT)/bin/$$util 2>/dev/null || true; \
+		done; \
+	fi
 	
 	# Copy Limine bootloader files
 	@echo "$(COLOR_YELLOW)Copying Limine bootloader files...$(COLOR_RESET)"
@@ -120,7 +158,10 @@ run: iso
 clean:
 	@echo "$(COLOR_BLUE)Cleaning build artifacts...$(COLOR_RESET)"
 	@cd $(KERNEL_DIR) && $(CARGO) clean
-	@cd $(USERSPACE_DIR) && $(CARGO) clean
+	@cd $(USERSPACE_DIR)/init && $(CARGO) clean
+	@cd $(USERSPACE_DIR)/mello-term && $(CARGO) clean
+	@cd $(USERSPACE_DIR)/mello-sh && $(CARGO) clean
+	@cd $(USERSPACE_DIR)/mellobox && $(CARGO) clean
 	@rm -rf $(ISO_ROOT)
 	@rm -f $(ISO_NAME)
 	@rm -rf $(LIMINE_DIR)
@@ -131,12 +172,14 @@ help:
 	@echo "MelloOS Build System"
 	@echo ""
 	@echo "Available targets:"
-	@echo "  make build    - Build the kernel (default)"
-	@echo "  make iso      - Create bootable ISO image"
-	@echo "  make run      - Build ISO and run kernel in QEMU"
-	@echo "  make limine   - Download Limine bootloader"
-	@echo "  make clean    - Clean build artifacts and ISO files"
-	@echo "  make help     - Show this help message"
+	@echo "  make build     - Build the kernel and userspace programs (default)"
+	@echo "  make userspace - Build all userspace programs (init, mello-term, mello-sh, mellobox)"
+	@echo "  make symlinks  - Create symlinks for mellobox utilities"
+	@echo "  make iso       - Create bootable ISO image with all binaries"
+	@echo "  make run       - Build ISO and run kernel in QEMU"
+	@echo "  make limine    - Download Limine bootloader"
+	@echo "  make clean     - Clean build artifacts and ISO files"
+	@echo "  make help      - Show this help message"
 	@echo ""
 	@echo "Configuration:"
 	@echo "  KERNEL_DIR    = $(KERNEL_DIR)"

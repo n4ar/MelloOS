@@ -6,32 +6,54 @@ use std::process::Command;
 fn main() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    // Path to the userspace init binary
-    let init_binary_path = PathBuf::from("userspace/init/target/x86_64-unknown-none/release/init");
+    // Helper function to copy or create placeholder for userspace binaries
+    fn handle_userspace_binary(
+        binary_path: PathBuf,
+        dest_name: &str,
+        out_dir: &PathBuf,
+    ) -> PathBuf {
+        let dest = out_dir.join(dest_name);
 
-    // Create an empty placeholder if the init binary doesn't exist
-    let init_binary_dest = out_dir.join("init_binary.bin");
+        if binary_path.exists() {
+            println!("cargo:warning=Found {} at {:?}", dest_name, binary_path);
+            fs::copy(&binary_path, &dest)
+                .unwrap_or_else(|_| panic!("Failed to copy {}", dest_name));
+            println!("cargo:warning=Copied {} to {:?}", dest_name, dest);
+        } else {
+            println!(
+                "cargo:warning={} not found at {:?}, creating empty placeholder",
+                dest_name, binary_path
+            );
+            fs::write(&dest, &[])
+                .unwrap_or_else(|_| panic!("Failed to create empty {} placeholder", dest_name));
+        }
 
-    if init_binary_path.exists() {
-        println!("cargo:warning=Found init binary at {:?}", init_binary_path);
-
-        // Copy the init binary to the output directory
-        fs::copy(&init_binary_path, &init_binary_dest).expect("Failed to copy init binary");
-
-        println!("cargo:warning=Copied init binary to {:?}", init_binary_dest);
-    } else {
-        println!(
-            "cargo:warning=Init binary not found at {:?}, creating empty placeholder",
-            init_binary_path
-        );
-
-        // Create an empty file as placeholder
-        fs::write(&init_binary_dest, &[]).expect("Failed to create empty init binary placeholder");
+        dest
     }
 
-    // Tell cargo to rerun this build script if the init binary changes
+    // Handle all userspace binaries
+    let init_binary_path = PathBuf::from("userspace/init/target/x86_64-unknown-none/release/init");
+    let mello_term_path =
+        PathBuf::from("userspace/mello-term/target/x86_64-unknown-none/release/mello-term");
+    let mello_sh_path =
+        PathBuf::from("userspace/mello-sh/target/x86_64-unknown-none/release/mello-sh");
+    let mellobox_path =
+        PathBuf::from("userspace/mellobox/target/x86_64-unknown-none/release/mellobox");
+
+    let _init_dest = handle_userspace_binary(init_binary_path, "init_binary.bin", &out_dir);
+    let _mello_term_dest = handle_userspace_binary(mello_term_path, "mello_term_binary.bin", &out_dir);
+    let _mello_sh_dest = handle_userspace_binary(mello_sh_path, "mello_sh_binary.bin", &out_dir);
+    let _mellobox_dest = handle_userspace_binary(mellobox_path, "mellobox_binary.bin", &out_dir);
+
+    // Tell cargo to rerun this build script if any userspace binary changes
     println!("cargo:rerun-if-changed=userspace/init/target/x86_64-unknown-none/release/init");
     println!("cargo:rerun-if-changed=userspace/init/src/main.rs");
+    println!("cargo:rerun-if-changed=userspace/mello-term/target/x86_64-unknown-none/release/mello-term");
+    println!("cargo:rerun-if-changed=userspace/mello-term/src/main.rs");
+    println!("cargo:rerun-if-changed=userspace/mello-sh/target/x86_64-unknown-none/release/mello-sh");
+    println!("cargo:rerun-if-changed=userspace/mello-sh/src/main.rs");
+    println!("cargo:rerun-if-changed=userspace/mellobox/target/x86_64-unknown-none/release/mellobox");
+    println!("cargo:rerun-if-changed=userspace/mellobox/src/main.rs");
 
     // Compile AP trampoline assembly
     let trampoline_src = PathBuf::from("src/arch/x86_64/smp/boot_ap.S");
