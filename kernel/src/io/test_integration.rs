@@ -26,6 +26,17 @@ pub fn test_io_infrastructure() {
         crate::io::mmio_write32,
     );
     
+    // IRQ management functions are available
+    let _irq_ops = (
+        crate::io::init_ioapic_routing,
+        crate::io::register_irq_handler,
+        crate::io::register_irq_handler_affinity,
+        crate::io::unregister_irq_handler,
+        crate::io::handle_irq,
+        crate::io::is_irq_registered,
+        crate::io::registered_irq_count,
+    );
+    
     crate::serial_println!("[IO] I/O infrastructure integration test passed");
 }
 

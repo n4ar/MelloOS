@@ -30,3 +30,6 @@ iso_root/
 
 # Kiro
 .kiro/
+
+# PR
+.pr/
