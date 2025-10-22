@@ -8,6 +8,7 @@ use crate::sync::SpinLock;
 
 // Driver modules
 pub mod input;
+pub mod serial;
 
 /// Represents a device driver
 #[derive(Copy, Clone)]
@@ -282,9 +283,11 @@ fn register_builtin_drivers() {
     // Register keyboard driver
     driver_register(crate::drivers::input::keyboard::KEYBOARD_DRIVER);
     
+    // Register serial driver
+    driver_register(crate::drivers::serial::SERIAL_DRIVER);
+    
     // Note: Additional drivers will be registered here once they are implemented
-    // in tasks 7 and 8:
-    // - driver_register(crate::drivers::serial::uart16550::SERIAL_DRIVER);
+    // in task 8:
     // - driver_register(crate::drivers::block::virtio_blk::VIRTIO_BLK_DRIVER);
     
     let count = driver_count();
