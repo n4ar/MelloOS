@@ -857,6 +857,10 @@ pub extern "C" fn _start() -> ! {
     // Initialize /proc virtual filesystem
     fs::proc::init();
 
+    serial_println!("[KERNEL] Initializing driver subsystem...");
+    // Initialize device drivers and I/O subsystem (Phase 7)
+    drivers::init_drivers();
+
     serial_println!("[KERNEL] Initializing scheduler...");
     // Initialize the task scheduler
     init_scheduler();

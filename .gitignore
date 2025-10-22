@@ -33,3 +33,6 @@ iso_root/
 
 # PR
 .pr/
+
+#logs
+*.log
