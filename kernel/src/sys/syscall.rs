@@ -150,6 +150,13 @@ pub const SYS_TCGETPGRP: usize = 21;
 pub const SYS_FCNTL: usize = 22;
 pub const SYS_PIPE2: usize = 23;
 pub const SYS_DUP2: usize = 24;
+pub const SYS_READ_STDIN: usize = 25;
+pub const SYS_SERIAL_WRITE: usize = 26;
+pub const SYS_SERIAL_READ: usize = 27;
+pub const SYS_BLOCK_READ: usize = 28;
+pub const SYS_BLOCK_WRITE: usize = 29;
+pub const SYS_GET_DEVICE_LIST: usize = 30;
+pub const SYS_GET_BLOCK_DEVICE_INFO: usize = 31;
 
 static NEXT_FAKE_PID: AtomicUsize = AtomicUsize::new(2000);
 
@@ -207,6 +214,13 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_FCNTL => "SYS_FCNTL",
         SYS_PIPE2 => "SYS_PIPE2",
         SYS_DUP2 => "SYS_DUP2",
+        SYS_READ_STDIN => "SYS_READ_STDIN",
+        SYS_SERIAL_WRITE => "SYS_SERIAL_WRITE",
+        SYS_SERIAL_READ => "SYS_SERIAL_READ",
+        SYS_BLOCK_READ => "SYS_BLOCK_READ",
+        SYS_BLOCK_WRITE => "SYS_BLOCK_WRITE",
+        SYS_GET_DEVICE_LIST => "SYS_GET_DEVICE_LIST",
+        SYS_GET_BLOCK_DEVICE_INFO => "SYS_GET_BLOCK_DEVICE_INFO",
         _ => "INVALID",
     };
 
@@ -255,6 +269,13 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_FCNTL => sys_fcntl(arg1, arg2, arg3),
         SYS_PIPE2 => sys_pipe2(arg1, arg2),
         SYS_DUP2 => sys_dup2(arg1, arg2),
+        SYS_READ_STDIN => sys_read_stdin(arg1, arg2),
+        SYS_SERIAL_WRITE => sys_serial_write(arg1, arg2),
+        SYS_SERIAL_READ => sys_serial_read(arg1, arg2),
+        SYS_BLOCK_READ => sys_block_read(arg1, arg2, arg3),
+        SYS_BLOCK_WRITE => sys_block_write(arg1, arg2, arg3),
+        SYS_GET_DEVICE_LIST => sys_get_device_list(arg1, arg2),
+        SYS_GET_BLOCK_DEVICE_INFO => sys_get_block_device_info(arg1),
         _ => {
             serial_println!("[SYSCALL] ERROR: Invalid syscall ID: {}", syscall_id);
             -1 // Invalid syscall
@@ -2033,5 +2054,378 @@ fn sys_dup2(oldfd: usize, newfd: usize) -> isize {
     } else {
         serial_println!("[SYSCALL] sys_dup2: failed to allocate at FD {}", newfd);
         -1
+    }
+}
+
+/// sys_read_stdin handler - Read keyboard input from stdin
+///
+/// # Arguments
+/// * `buf_ptr` - Pointer to buffer
+/// * `len` - Maximum bytes to read
+///
+/// # Returns
+/// Number of bytes read, or -1 on error
+///
+/// # Description
+/// Reads keyboard input from the PS/2 keyboard driver buffer.
+/// This is a non-blocking read that returns immediately if no data is available.
+fn sys_read_stdin(buf_ptr: usize, len: usize) -> isize {
+    if len == 0 {
+        return 0;
+    }
+
+    // Validate buffer
+    if !validate_user_buffer(buf_ptr, len) {
+        serial_println!("[SYSCALL] sys_read_stdin: invalid buffer");
+        return -1;
+    }
+
+    // Convert pointer to mutable slice
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+
+    // Read from keyboard buffer
+    let mut bytes_read = 0;
+    while bytes_read < len {
+        match crate::drivers::input::keyboard::keyboard_read() {
+            Some(ch) => {
+                buffer[bytes_read] = ch;
+                bytes_read += 1;
+            }
+            None => {
+                // No more data available
+                break;
+            }
+        }
+    }
+
+    bytes_read as isize
+}
+
+/// sys_serial_write handler - Write data to serial port
+///
+/// # Arguments
+/// * `buf_ptr` - Pointer to buffer
+/// * `len` - Number of bytes to write
+///
+/// # Returns
+/// Number of bytes written, or -1 on error
+fn sys_serial_write(buf_ptr: usize, len: usize) -> isize {
+    if len == 0 {
+        return 0;
+    }
+
+    // Validate buffer
+    let user_ok = validate_user_buffer(buf_ptr, len);
+    if !user_ok {
+        let allow_kernel = buf_ptr >= USER_LIMIT && kernel_buffer_allowed();
+        if !allow_kernel {
+            serial_println!("[SYSCALL] sys_serial_write: invalid buffer");
+            return -1;
+        }
+    }
+
+    // Convert pointer to slice
+    let buffer = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len) };
+
+    // Write to serial port
+    for &byte in buffer {
+        crate::drivers::serial::uart16550::serial_write(byte);
+    }
+
+    len as isize
+}
+
+/// sys_serial_read handler - Read data from serial port
+///
+/// # Arguments
+/// * `buf_ptr` - Pointer to buffer
+/// * `len` - Maximum bytes to read
+///
+/// # Returns
+/// Number of bytes read, or -1 on error
+///
+/// # Description
+/// Non-blocking read from serial port. Returns immediately if no data is available.
+fn sys_serial_read(buf_ptr: usize, len: usize) -> isize {
+    if len == 0 {
+        return 0;
+    }
+
+    // Validate buffer
+    if !validate_user_buffer(buf_ptr, len) {
+        serial_println!("[SYSCALL] sys_serial_read: invalid buffer");
+        return -1;
+    }
+
+    // Convert pointer to mutable slice
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
+
+    // Read from serial port
+    let mut bytes_read = 0;
+    while bytes_read < len {
+        match crate::drivers::serial::uart16550::serial_read() {
+            Some(byte) => {
+                buffer[bytes_read] = byte;
+                bytes_read += 1;
+            }
+            None => {
+                // No more data available
+                break;
+            }
+        }
+    }
+
+    bytes_read as isize
+}
+
+/// sys_block_read handler - Read a block from disk
+///
+/// # Arguments
+/// * `lba` - Logical Block Address (sector number)
+/// * `buf_ptr` - Pointer to buffer (must be at least 512 bytes)
+/// * `count` - Number of blocks to read
+///
+/// # Returns
+/// Number of blocks read, or -1 on error
+fn sys_block_read(lba: usize, buf_ptr: usize, count: usize) -> isize {
+    if count == 0 {
+        return 0;
+    }
+
+    // Calculate buffer size needed (512 bytes per block)
+    let buf_size = count * 512;
+
+    // Validate buffer
+    if !validate_user_buffer(buf_ptr, buf_size) {
+        serial_println!("[SYSCALL] sys_block_read: invalid buffer");
+        return -1;
+    }
+
+    // Convert pointer to mutable slice
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size) };
+
+    // Read blocks
+    let mut blocks_read = 0;
+    for i in 0..count {
+        let block_lba = (lba + i) as u64;
+        let block_buf = &mut buffer[i * 512..(i + 1) * 512];
+        
+        match crate::drivers::block::virtio_blk::block_read(block_lba, block_buf) {
+            Ok(()) => {
+                blocks_read += 1;
+            }
+            Err(e) => {
+                serial_println!("[SYSCALL] sys_block_read: error reading block {}: {:?}", block_lba, e);
+                if blocks_read == 0 {
+                    return -1; // Return error if no blocks were read
+                } else {
+                    break; // Return partial read
+                }
+            }
+        }
+    }
+
+    blocks_read as isize
+}
+
+/// sys_block_write handler - Write a block to disk
+///
+/// # Arguments
+/// * `lba` - Logical Block Address (sector number)
+/// * `buf_ptr` - Pointer to buffer (must be at least 512 bytes)
+/// * `count` - Number of blocks to write
+///
+/// # Returns
+/// Number of blocks written, or -1 on error
+fn sys_block_write(lba: usize, buf_ptr: usize, count: usize) -> isize {
+    if count == 0 {
+        return 0;
+    }
+
+    // Calculate buffer size needed (512 bytes per block)
+    let buf_size = count * 512;
+
+    // Validate buffer
+    let user_ok = validate_user_buffer(buf_ptr, buf_size);
+    if !user_ok {
+        let allow_kernel = buf_ptr >= USER_LIMIT && kernel_buffer_allowed();
+        if !allow_kernel {
+            serial_println!("[SYSCALL] sys_block_write: invalid buffer");
+            return -1;
+        }
+    }
+
+    // Convert pointer to slice
+    let buffer = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, buf_size) };
+
+    // Write blocks
+    let mut blocks_written = 0;
+    for i in 0..count {
+        let block_lba = (lba + i) as u64;
+        let block_buf = &buffer[i * 512..(i + 1) * 512];
+        
+        match crate::drivers::block::virtio_blk::block_write(block_lba, block_buf) {
+            Ok(()) => {
+                blocks_written += 1;
+            }
+            Err(e) => {
+                serial_println!("[SYSCALL] sys_block_write: error writing block {}: {:?}", block_lba, e);
+                if blocks_written == 0 {
+                    return -1; // Return error if no blocks were written
+                } else {
+                    break; // Return partial write
+                }
+            }
+        }
+    }
+
+    blocks_written as isize
+}
+
+/// Device information structure for userland
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DeviceInfo {
+    pub name: [u8; 32],      // Device name (null-terminated)
+    pub bus_type: u32,       // Bus type (0=Platform, 1=PS2, 2=PCI, 3=Virtio)
+    pub io_base: u64,        // I/O base address
+    pub irq: u32,            // IRQ number (0xFFFFFFFF if none)
+    pub state: u32,          // Device state (0=Detected, 1=Initializing, 2=Active, 3=Failed, 4=Shutdown)
+    pub has_driver: u32,     // 1 if driver is loaded, 0 otherwise
+}
+
+/// sys_get_device_list handler - Query device tree
+///
+/// # Arguments
+/// * `buf_ptr` - Pointer to array of DeviceInfo structures
+/// * `max_devices` - Maximum number of devices to return
+///
+/// # Returns
+/// Number of devices returned, or -1 on error
+fn sys_get_device_list(buf_ptr: usize, max_devices: usize) -> isize {
+    if max_devices == 0 {
+        return 0;
+    }
+
+    // Calculate buffer size
+    let buf_size = max_devices * core::mem::size_of::<DeviceInfo>();
+
+    // Validate buffer
+    if !validate_user_buffer(buf_ptr, buf_size) {
+        serial_println!("[SYSCALL] sys_get_device_list: invalid buffer");
+        return -1;
+    }
+
+    // Convert pointer to mutable slice
+    let buffer = unsafe { 
+        core::slice::from_raw_parts_mut(buf_ptr as *mut DeviceInfo, max_devices) 
+    };
+
+    // Iterate over devices and fill buffer
+    let mut count = 0;
+    crate::io::devtree::for_each_device(|device| {
+        if count >= max_devices {
+            return;
+        }
+
+        // Copy device name
+        let mut name = [0u8; 32];
+        let name_bytes = device.name.as_bytes();
+        let copy_len = core::cmp::min(name_bytes.len(), 31);
+        name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+
+        // Convert bus type to u32
+        let bus_type = match device.bus {
+            crate::io::devtree::BusType::Platform => 0,
+            crate::io::devtree::BusType::PS2 => 1,
+            crate::io::devtree::BusType::PCI => 2,
+            crate::io::devtree::BusType::Virtio => 3,
+        };
+
+        // Convert IRQ to u32 (0xFFFFFFFF if none)
+        let irq = device.irq.unwrap_or(0xFF) as u32;
+        let irq = if device.irq.is_none() { 0xFFFFFFFF } else { irq };
+
+        // Convert state to u32
+        let state = match device.state {
+            crate::io::devtree::DeviceState::Detected => 0,
+            crate::io::devtree::DeviceState::Initializing => 1,
+            crate::io::devtree::DeviceState::Active => 2,
+            crate::io::devtree::DeviceState::Failed => 3,
+            crate::io::devtree::DeviceState::Shutdown => 4,
+        };
+
+        // Check if driver is loaded
+        let has_driver = if device.driver.is_some() { 1 } else { 0 };
+
+        // Fill device info
+        buffer[count] = DeviceInfo {
+            name,
+            bus_type,
+            io_base: device.io_base,
+            irq,
+            state,
+            has_driver,
+        };
+
+        count += 1;
+    });
+
+    count as isize
+}
+
+/// Block device information structure for userland
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BlockDeviceInfo {
+    pub block_count: u64,    // Total number of blocks
+    pub block_size: u32,     // Size of each block in bytes
+    pub capacity_mb: u32,    // Total capacity in megabytes
+}
+
+/// sys_get_block_device_info handler - Get block device information
+///
+/// # Arguments
+/// * `buf_ptr` - Pointer to BlockDeviceInfo structure
+///
+/// # Returns
+/// 0 on success, or -1 on error
+fn sys_get_block_device_info(buf_ptr: usize) -> isize {
+    // Validate buffer
+    if !validate_user_buffer(buf_ptr, core::mem::size_of::<BlockDeviceInfo>()) {
+        serial_println!("[SYSCALL] sys_get_block_device_info: invalid buffer");
+        return -1;
+    }
+
+    // Get block device info from virtio-blk driver
+    // For now, we'll use a simple approach - try to read block 0 to check if device is ready
+    let mut test_buf = [0u8; 512];
+    match crate::drivers::block::virtio_blk::block_read(0, &mut test_buf) {
+        Ok(()) => {
+            // Device is ready, get info
+            // Note: In a full implementation, we'd have a proper API to query device info
+            // For now, we'll use hardcoded values based on the virtio-blk driver
+            
+            let block_count = 1024 * 1024; // 1M blocks (from driver default)
+            let block_size = 512;
+            let capacity_mb = (block_count * block_size) / (1024 * 1024);
+
+            let info = BlockDeviceInfo {
+                block_count,
+                block_size: block_size as u32,
+                capacity_mb: capacity_mb as u32,
+            };
+
+            // Write to user buffer
+            unsafe {
+                *(buf_ptr as *mut BlockDeviceInfo) = info;
+            }
+
+            0
+        }
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_get_block_device_info: device not ready");
+            -1
+        }
     }
 }

@@ -21,6 +21,15 @@ const SYS_RMDIR: usize = 84;
 const SYS_GETCWD: usize = 79;
 const SYS_KILL: usize = 62;
 
+// Device driver syscalls
+const SYS_READ_STDIN: usize = 25;
+const SYS_SERIAL_WRITE: usize = 26;
+const SYS_SERIAL_READ: usize = 27;
+const SYS_BLOCK_READ: usize = 28;
+const SYS_BLOCK_WRITE: usize = 29;
+const SYS_GET_DEVICE_LIST: usize = 30;
+const SYS_GET_BLOCK_DEVICE_INFO: usize = 31;
+
 /// Raw system call with 0 arguments
 #[inline]
 unsafe fn syscall0(n: usize) -> isize {
@@ -199,3 +208,59 @@ pub const S_IRWXU: i32 = 0o700;
 pub const S_IRUSR: i32 = 0o400;
 pub const S_IWUSR: i32 = 0o200;
 pub const S_IXUSR: i32 = 0o100;
+
+/// Read from keyboard (stdin)
+pub fn read_stdin(buf: &mut [u8]) -> isize {
+    unsafe { syscall2(SYS_READ_STDIN, buf.as_mut_ptr() as usize, buf.len()) }
+}
+
+/// Write to serial port
+pub fn serial_write(buf: &[u8]) -> isize {
+    unsafe { syscall2(SYS_SERIAL_WRITE, buf.as_ptr() as usize, buf.len()) }
+}
+
+/// Read from serial port
+pub fn serial_read(buf: &mut [u8]) -> isize {
+    unsafe { syscall2(SYS_SERIAL_READ, buf.as_mut_ptr() as usize, buf.len()) }
+}
+
+/// Read blocks from disk
+pub fn block_read(lba: usize, buf: &mut [u8], count: usize) -> isize {
+    unsafe { syscall3(SYS_BLOCK_READ, lba, buf.as_mut_ptr() as usize, count) }
+}
+
+/// Write blocks to disk
+pub fn block_write(lba: usize, buf: &[u8], count: usize) -> isize {
+    unsafe { syscall3(SYS_BLOCK_WRITE, lba, buf.as_ptr() as usize, count) }
+}
+
+/// Device information structure (must match kernel definition)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DeviceInfo {
+    pub name: [u8; 32],      // Device name (null-terminated)
+    pub bus_type: u32,       // Bus type (0=Platform, 1=PS2, 2=PCI, 3=Virtio)
+    pub io_base: u64,        // I/O base address
+    pub irq: u32,            // IRQ number (0xFFFFFFFF if none)
+    pub state: u32,          // Device state
+    pub has_driver: u32,     // 1 if driver is loaded, 0 otherwise
+}
+
+/// Get list of devices
+pub fn get_device_list(devices: &mut [DeviceInfo]) -> isize {
+    unsafe { syscall2(SYS_GET_DEVICE_LIST, devices.as_mut_ptr() as usize, devices.len()) }
+}
+
+/// Block device information structure (must match kernel definition)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BlockDeviceInfo {
+    pub block_count: u64,    // Total number of blocks
+    pub block_size: u32,     // Size of each block in bytes
+    pub capacity_mb: u32,    // Total capacity in megabytes
+}
+
+/// Get block device information
+pub fn get_block_device_info(info: &mut BlockDeviceInfo) -> isize {
+    unsafe { syscall1(SYS_GET_BLOCK_DEVICE_INFO, info as *mut _ as usize) }
+}
