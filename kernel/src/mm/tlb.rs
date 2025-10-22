@@ -17,7 +17,7 @@ const MAX_SHOOTDOWN_CPUS: usize = 64;
 ///
 /// Contains information about a TLB flush request that needs to be
 /// propagated to other CPU cores.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct TlbShootdownRequest {
     /// Virtual address to flush (or 0 for full TLB flush)
     pub vaddr: usize,
@@ -87,8 +87,11 @@ pub unsafe fn flush_all() {
     let cr3: usize;
     core::arch::asm!(
         "mov {}, cr3",
-        "mov cr3, {}",
         out(reg) cr3,
+        options(nostack, preserves_flags)
+    );
+    core::arch::asm!(
+        "mov cr3, {}",
         in(reg) cr3,
         options(nostack, preserves_flags)
     );
@@ -278,7 +281,36 @@ pub unsafe fn tlb_shootdown(vaddr: usize, page_count: usize, cpu_mask: u64) -> b
     }
 
     // Wait for acknowledgments (timeout after 100ms)
-    let success = wait_for_acks(&request, expected_acks, 100);
+    // We need to wait by checking the global state periodically
+    let start = core::arch::x86_64::_rdtsc();
+    const TSC_PER_MS: u64 = 2_400_000;
+    let timeout_tsc = 100 * TSC_PER_MS;
+    
+    let mut success = false;
+    loop {
+        // Check if all acknowledgments received
+        let ack_count = {
+            let shootdown = TLB_SHOOTDOWN.lock();
+            if let Some(ref req) = *shootdown {
+                req.ack_count.load(Ordering::Acquire)
+            } else {
+                0
+            }
+        };
+        
+        if ack_count >= expected_acks {
+            success = true;
+            break;
+        }
+        
+        // Check timeout
+        let now = core::arch::x86_64::_rdtsc();
+        if now - start >= timeout_tsc {
+            break;
+        }
+        
+        core::hint::spin_loop();
+    }
 
     // Clear the global request
     {
@@ -311,25 +343,29 @@ pub unsafe fn tlb_shootdown(vaddr: usize, page_count: usize, cpu_mask: u64) -> b
 /// # Safety
 /// This function is called from an interrupt handler and must not block.
 pub unsafe fn handle_tlb_shootdown_ipi() {
-    // Get the current shootdown request
-    let request = {
-        let shootdown = TLB_SHOOTDOWN.lock();
-        *shootdown
-    };
-
-    if let Some(req) = request {
+    // Access the current shootdown request without moving it
+    let shootdown = TLB_SHOOTDOWN.lock();
+    
+    if let Some(ref req) = *shootdown {
         // Check if this CPU is in the target mask
         let current_cpu = percpu_current().id;
         if (req.cpu_mask & (1 << current_cpu)) != 0 {
+            // Copy the values we need before releasing the lock
+            let vaddr = req.vaddr;
+            let page_count = req.page_count;
+            
+            // Acknowledge first
+            req.acknowledge();
+            
+            // Release lock before flushing (flushing is slow)
+            drop(shootdown);
+            
             // Flush TLB
-            if req.page_count == 0 {
+            if page_count == 0 {
                 flush_all();
             } else {
-                flush_range(req.vaddr, req.page_count);
+                flush_range(vaddr, page_count);
             }
-
-            // Acknowledge
-            req.acknowledge();
 
             // Update statistics
             percpu_current().inc_tlb_shootdowns();

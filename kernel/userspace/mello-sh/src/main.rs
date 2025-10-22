@@ -43,6 +43,13 @@ impl Shell {
         env.insert(String::from("PATH"), String::from("/bin"));
         env.insert(String::from("PWD"), String::from("/"));
         
+        // Set default locale to C.UTF-8 for proper UTF-8 support
+        // This ensures all components handle UTF-8 correctly
+        env.insert(String::from("LANG"), String::from("C.UTF-8"));
+        
+        // Support for Thai language (th_TH.UTF-8) can be set by user
+        // via 'export LANG=th_TH.UTF-8' command
+        
         Self {
             jobs: JobTable::new(),
             history: History::new(),

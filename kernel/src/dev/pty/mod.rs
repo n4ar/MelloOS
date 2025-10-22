@@ -173,21 +173,25 @@ impl RingBuffer {
     }
 
     /// Get the number of bytes available to read
+    #[inline(always)]
     pub fn available(&self) -> usize {
         self.count
     }
 
     /// Get the number of bytes available to write
+    #[inline(always)]
     pub fn space(&self) -> usize {
         self.data.len() - self.count
     }
 
     /// Check if the buffer is empty
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
 
     /// Check if the buffer is full
+    #[inline(always)]
     pub fn is_full(&self) -> bool {
         self.count == self.data.len()
     }
@@ -196,13 +200,32 @@ impl RingBuffer {
     ///
     /// Returns the number of bytes actually written (may be less than requested
     /// if buffer is full).
+    ///
+    /// Optimized for performance with inline hint and fast path for contiguous writes.
+    #[inline]
     pub fn write(&mut self, data: &[u8]) -> usize {
         let space = self.space();
+        if space == 0 {
+            return 0;
+        }
+        
         let to_write = data.len().min(space);
-
-        for i in 0..to_write {
-            self.data[self.write_pos] = data[i];
-            self.write_pos = (self.write_pos + 1) % self.data.len();
+        let buffer_len = self.data.len();
+        
+        // Fast path: contiguous write (no wrap-around)
+        let contiguous = (buffer_len - self.write_pos).min(to_write);
+        if contiguous > 0 {
+            // Use slice copy for better performance
+            self.data[self.write_pos..self.write_pos + contiguous]
+                .copy_from_slice(&data[..contiguous]);
+            self.write_pos = (self.write_pos + contiguous) % buffer_len;
+        }
+        
+        // Handle wrap-around if needed
+        let remaining = to_write - contiguous;
+        if remaining > 0 {
+            self.data[..remaining].copy_from_slice(&data[contiguous..to_write]);
+            self.write_pos = remaining;
         }
 
         self.count += to_write;
@@ -213,13 +236,33 @@ impl RingBuffer {
     ///
     /// Returns the number of bytes actually read (may be less than requested
     /// if buffer doesn't have enough data).
+    ///
+    /// Optimized for performance with inline hint and fast path for contiguous reads.
+    #[inline]
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
         let available = self.available();
+        if available == 0 {
+            return 0;
+        }
+        
         let to_read = buf.len().min(available);
-
-        for i in 0..to_read {
-            buf[i] = self.data[self.read_pos];
-            self.read_pos = (self.read_pos + 1) % self.data.len();
+        let buffer_len = self.data.len();
+        
+        // Fast path: contiguous read (no wrap-around)
+        let contiguous = (buffer_len - self.read_pos).min(to_read);
+        if contiguous > 0 {
+            // Use slice copy for better performance
+            buf[..contiguous].copy_from_slice(
+                &self.data[self.read_pos..self.read_pos + contiguous]
+            );
+            self.read_pos = (self.read_pos + contiguous) % buffer_len;
+        }
+        
+        // Handle wrap-around if needed
+        let remaining = to_read - contiguous;
+        if remaining > 0 {
+            buf[contiguous..to_read].copy_from_slice(&self.data[..remaining]);
+            self.read_pos = remaining;
         }
 
         self.count -= to_read;
