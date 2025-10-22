@@ -158,6 +158,7 @@ pub const SYS_BLOCK_WRITE: usize = 29;
 pub const SYS_GET_DEVICE_LIST: usize = 30;
 pub const SYS_GET_BLOCK_DEVICE_INFO: usize = 31;
 pub const SYS_READ_KERNEL_LOG: usize = 32;
+pub const SYS_GET_IRQ_STATS: usize = 33;
 
 static NEXT_FAKE_PID: AtomicUsize = AtomicUsize::new(2000);
 
@@ -223,6 +224,7 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_GET_DEVICE_LIST => "SYS_GET_DEVICE_LIST",
         SYS_GET_BLOCK_DEVICE_INFO => "SYS_GET_BLOCK_DEVICE_INFO",
         SYS_READ_KERNEL_LOG => "SYS_READ_KERNEL_LOG",
+        SYS_GET_IRQ_STATS => "SYS_GET_IRQ_STATS",
         _ => "INVALID",
     };
 
@@ -279,6 +281,7 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_GET_DEVICE_LIST => sys_get_device_list(arg1, arg2),
         SYS_GET_BLOCK_DEVICE_INFO => sys_get_block_device_info(arg1),
         SYS_READ_KERNEL_LOG => sys_read_kernel_log(arg1, arg2),
+        SYS_GET_IRQ_STATS => sys_get_irq_stats(arg1, arg2),
         _ => {
             serial_println!("[SYSCALL] ERROR: Invalid syscall ID: {}", syscall_id);
             -1 // Invalid syscall
@@ -2463,4 +2466,58 @@ fn sys_get_block_device_info(buf_ptr: usize) -> isize {
             -1
         }
     }
+}
+
+/// IRQ statistics entry structure
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct IrqStatsEntry {
+    pub irq: u8,
+    pub _padding: [u8; 7],
+    pub cpu_counts: [u64; 8],
+}
+
+/// sys_get_irq_stats handler - Get IRQ statistics per CPU
+///
+/// # Arguments
+/// * `buf_ptr` - Pointer to array of IrqStatsEntry structures
+/// * `max_entries` - Maximum number of entries to return
+///
+/// # Returns
+/// Number of IRQ entries returned, or -1 on error
+fn sys_get_irq_stats(buf_ptr: usize, max_entries: usize) -> isize {
+    if max_entries == 0 {
+        return 0;
+    }
+
+    let buf_size = max_entries * core::mem::size_of::<IrqStatsEntry>();
+
+    // Validate buffer
+    if !validate_user_buffer(buf_ptr, buf_size) {
+        serial_println!("[SYSCALL] sys_get_irq_stats: invalid buffer");
+        return -1;
+    }
+
+    // Use a fixed-size buffer (support up to 32 IRQs)
+    const MAX_IRQS: usize = 32;
+    let mut temp_buffer: [(u8, [u64; 8]); MAX_IRQS] = [(0, [0; 8]); MAX_IRQS];
+    let actual_max = if max_entries > MAX_IRQS { MAX_IRQS } else { max_entries };
+    
+    let count = crate::io::irq::get_all_irq_stats(&mut temp_buffer[..actual_max], actual_max);
+
+    // Convert to IrqStatsEntry format and copy to user buffer
+    let user_buffer = unsafe {
+        core::slice::from_raw_parts_mut(buf_ptr as *mut IrqStatsEntry, max_entries)
+    };
+
+    for i in 0..count {
+        let (irq, cpu_counts) = temp_buffer[i];
+        user_buffer[i] = IrqStatsEntry {
+            irq,
+            _padding: [0; 7],
+            cpu_counts,
+        };
+    }
+
+    count as isize
 }

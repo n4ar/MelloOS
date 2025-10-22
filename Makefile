@@ -15,6 +15,7 @@ DISK_BENCH_BINARY := $(USERSPACE_DIR)/disk_bench/target/x86_64-unknown-none/rele
 DMESG_BINARY := $(USERSPACE_DIR)/dmesg/target/x86_64-unknown-none/release/dmesg
 LSDEV_BINARY := $(USERSPACE_DIR)/lsdev/target/x86_64-unknown-none/release/lsdev
 DISKINFO_BINARY := $(USERSPACE_DIR)/diskinfo/target/x86_64-unknown-none/release/diskinfo
+IRQ_TEST_BINARY := $(USERSPACE_DIR)/irq_test/target/x86_64-unknown-none/release/irq_test
 BUILD_MODE := release
 ISO_ROOT := iso_root
 ISO_NAME := mellos.iso
@@ -62,6 +63,8 @@ userspace:
 	@cd $(USERSPACE_DIR)/lsdev && $(CARGO) build $(CARGO_BUILD_FLAGS)
 	@echo "$(COLOR_YELLOW)Building diskinfo...$(COLOR_RESET)"
 	@cd $(USERSPACE_DIR)/diskinfo && $(CARGO) build $(CARGO_BUILD_FLAGS)
+	@echo "$(COLOR_YELLOW)Building irq_test...$(COLOR_RESET)"
+	@cd $(USERSPACE_DIR)/irq_test && $(CARGO) build $(CARGO_BUILD_FLAGS)
 	@echo "$(COLOR_GREEN)✓ All userspace programs built successfully!$(COLOR_RESET)"
 
 # Create symlinks for mellobox utilities
@@ -141,6 +144,7 @@ iso: build limine symlinks
 	@if [ -f "$(DMESG_BINARY)" ]; then cp $(DMESG_BINARY) $(ISO_ROOT)/bin/dmesg; fi
 	@if [ -f "$(LSDEV_BINARY)" ]; then cp $(LSDEV_BINARY) $(ISO_ROOT)/bin/lsdev; fi
 	@if [ -f "$(DISKINFO_BINARY)" ]; then cp $(DISKINFO_BINARY) $(ISO_ROOT)/bin/diskinfo; fi
+	@if [ -f "$(IRQ_TEST_BINARY)" ]; then cp $(IRQ_TEST_BINARY) $(ISO_ROOT)/bin/irq_test; fi
 	
 	# Copy Limine bootloader files
 	@echo "$(COLOR_YELLOW)Copying Limine bootloader files...$(COLOR_RESET)"
@@ -192,6 +196,7 @@ clean:
 	@cd $(USERSPACE_DIR)/dmesg && $(CARGO) clean
 	@cd $(USERSPACE_DIR)/lsdev && $(CARGO) clean
 	@cd $(USERSPACE_DIR)/diskinfo && $(CARGO) clean
+	@cd $(USERSPACE_DIR)/irq_test && $(CARGO) clean
 	@rm -rf $(ISO_ROOT)
 	@rm -f $(ISO_NAME)
 	@rm -rf $(LIMINE_DIR)

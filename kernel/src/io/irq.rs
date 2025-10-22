@@ -63,6 +63,10 @@ static IRQ_HANDLERS: SpinLock<[Option<IrqHandler>; MAX_IRQS]> = SpinLock::new([N
 /// Flag indicating whether IOAPIC has been initialized
 static IOAPIC_INITIALIZED: SpinLock<bool> = SpinLock::new(false);
 
+/// IRQ statistics per CPU (IRQ number -> count per CPU)
+/// Format: [IRQ][CPU] = count
+static IRQ_STATS: SpinLock<[[u64; 8]; MAX_IRQS]> = SpinLock::new([[0; 8]; MAX_IRQS]);
+
 // ============================================================================
 // IOAPIC Driver
 // ============================================================================
@@ -336,6 +340,15 @@ pub fn handle_irq(irq: u8) {
 
     if let Some(handler) = handlers[irq as usize] {
         let cpu_id = crate::arch::x86_64::smp::percpu::percpu_current().id;
+        
+        // Update IRQ statistics
+        {
+            let mut stats = IRQ_STATS.lock();
+            if (cpu_id as usize) < 8 {
+                stats[irq as usize][cpu_id as usize] += 1;
+            }
+        }
+        
         // Note: Using trace-level logging here would be too verbose
         // Only log in debug builds
         #[cfg(debug_assertions)]
@@ -409,4 +422,53 @@ pub fn is_irq_registered(irq: u8) -> bool {
 pub fn registered_irq_count() -> usize {
     let handlers = IRQ_HANDLERS.lock();
     handlers.iter().filter(|h| h.is_some()).count()
+}
+
+/// Get IRQ statistics for a specific IRQ across all CPUs
+///
+/// # Arguments
+/// * `irq` - IRQ number to query
+/// * `cpu_stats` - Output buffer for per-CPU counts (must be at least 8 elements)
+///
+/// # Returns
+/// `true` if the IRQ is registered, `false` otherwise
+pub fn get_irq_stats(irq: u8, cpu_stats: &mut [u64; 8]) -> bool {
+    let handlers = IRQ_HANDLERS.lock();
+    let is_registered = handlers[irq as usize].is_some();
+    drop(handlers);
+    
+    if is_registered {
+        let stats = IRQ_STATS.lock();
+        cpu_stats.copy_from_slice(&stats[irq as usize]);
+        true
+    } else {
+        false
+    }
+}
+
+/// Get all IRQ statistics
+///
+/// # Arguments
+/// * `buffer` - Output buffer for IRQ statistics (IRQ number, CPU counts)
+/// * `max_entries` - Maximum number of entries to return
+///
+/// # Returns
+/// The number of registered IRQs with statistics
+pub fn get_all_irq_stats(buffer: &mut [(u8, [u64; 8])], max_entries: usize) -> usize {
+    let handlers = IRQ_HANDLERS.lock();
+    let stats = IRQ_STATS.lock();
+    
+    let mut count = 0;
+    for irq in 0..MAX_IRQS {
+        if count >= max_entries {
+            break;
+        }
+        
+        if handlers[irq].is_some() {
+            buffer[count] = (irq as u8, stats[irq]);
+            count += 1;
+        }
+    }
+    
+    count
 }
