@@ -1,20 +1,71 @@
-# Advanced Userland & Shell Integration Tests
+# MelloOS Integration Tests
 
-This directory contains comprehensive integration tests for Phase 6.6 - Advanced Userland & Shell Environment.
+This directory contains comprehensive integration tests for MelloOS development phases.
 
 ## Overview
 
 The integration test suite validates the complete functionality of:
-- PTY (pseudo-terminal) subsystem
-- Job control and signal handling
-- Shell pipeline execution
-- I/O redirection
-- Interactive terminal sessions
-- System stability and resource management
+- **Phase 6.6**: Advanced Userland & Shell Environment
+  - PTY (pseudo-terminal) subsystem
+  - Job control and signal handling
+  - Shell pipeline execution
+  - I/O redirection
+  - Interactive terminal sessions
+  - System stability and resource management
+- **Phase 7**: Device Drivers & I/O Subsystem
+  - Driver manager and device tree
+  - Device discovery and enumeration
+  - Keyboard, serial, and block device drivers
+  - IRQ handling and distribution
+  - SMP interrupt safety
 
 ## Test Suites
 
-### 1. PTY Integration Test (`test_pty_integration.sh`)
+## Phase 7: Device Drivers & I/O Subsystem
+
+### 1. Driver Subsystem Test (`test_drivers.sh`)
+
+Tests the complete driver subsystem functionality.
+
+**What it tests:**
+- Driver manager initialization
+- IOAPIC routing configuration
+- Device discovery (PS/2, virtio buses)
+- Driver registration and probing
+- Keyboard driver (PS/2) initialization
+- Serial driver (UART16550) initialization
+- Block device driver (virtio-blk) initialization
+- IRQ handler registration and dispatch
+- Device enumeration (lsdev tool)
+- Block device information (diskinfo tool)
+- Kernel logging (dmesg tool)
+- IRQ distribution across CPU cores (SMP)
+- Error handling and system stability
+
+**Requirements covered:** 1.1-1.6, 2.1-2.5, 3.1-3.5, 4.1-4.5, 5.1-5.5, 6.1-6.5, 7.1-7.5, 8.1-8.7, 9.1-9.6, 10.1-10.5
+
+**Usage:**
+```bash
+./test_drivers.sh                  # Default: 2 CPUs, 30s timeout
+./test_drivers.sh -smp 4           # Test with 4 CPUs
+./test_drivers.sh -timeout 60      # Custom timeout
+./test_drivers.sh -smp 4 -timeout 45
+```
+
+**Test Categories:**
+1. Driver manager initialization
+2. Device discovery and enumeration
+3. Keyboard driver (PS/2)
+4. Serial driver (UART16550)
+5. Block device driver (virtio-blk)
+6. IRQ handling and distribution
+7. SMP interrupt safety
+
+---
+
+## Phase 6.6: Advanced Userland & Shell
+
+### 2. PTY Integration Test (`test_pty_integration.sh`)
 
 Tests the PTY subsystem functionality.
 
@@ -34,7 +85,7 @@ Tests the PTY subsystem functionality.
 ./test_pty_integration.sh -timeout 45
 ```
 
-### 2. Job Control Test (`test_job_control.sh`)
+### 3. Job Control Test (`test_job_control.sh`)
 
 Tests shell job control functionality.
 
@@ -55,7 +106,7 @@ Tests shell job control functionality.
 ./test_job_control.sh -timeout 60
 ```
 
-### 3. Pipeline Test (`test_pipeline.sh`)
+### 4. Pipeline Test (`test_pipeline.sh`)
 
 Tests shell pipeline functionality.
 
@@ -75,7 +126,7 @@ Tests shell pipeline functionality.
 ./test_pipeline.sh -timeout 30
 ```
 
-### 4. I/O Redirection Test (`test_io_redirection.sh`)
+### 5. I/O Redirection Test (`test_io_redirection.sh`)
 
 Tests shell I/O redirection functionality.
 
@@ -95,7 +146,7 @@ Tests shell I/O redirection functionality.
 ./test_io_redirection.sh -timeout 30
 ```
 
-### 5. Interactive Session Test (`test_interactive_session.sh`)
+### 6. Interactive Session Test (`test_interactive_session.sh`)
 
 Tests complete interactive terminal session.
 
@@ -116,7 +167,7 @@ Tests complete interactive terminal session.
 ./test_interactive_session.sh -timeout 45
 ```
 
-### 6. Stability Test (`test_stability.sh`)
+### 7. Stability Test (`test_stability.sh`)
 
 Long-running tests for system stability.
 
