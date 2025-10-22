@@ -580,7 +580,7 @@ fn sys_exec(_elf_ptr: usize, _len: usize) -> isize {
 
 /// File descriptor type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FdType {
+pub enum FdType {
     /// Invalid/closed FD
     Invalid,
     /// PTY master device
@@ -602,7 +602,7 @@ const O_APPEND: u32 = 0x400;
 
 /// File descriptor table entry
 #[derive(Debug, Clone, Copy)]
-struct FileDescriptor {
+pub struct FileDescriptor {
     /// Type of file descriptor
     fd_type: FdType,
     /// FD flags (FD_CLOEXEC, etc.)

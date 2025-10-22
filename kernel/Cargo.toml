@@ -1,6 +1,6 @@
 [package]
 name = "mellos-kernel"
-version = "0.6.0-release"
+version = "0.6.6-development"
 edition = "2021"
 
 [dependencies]

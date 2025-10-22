@@ -68,6 +68,7 @@
 //! syscall(2, 100, 0, 0);
 //! ```
 
+pub mod ioctl;
 pub mod ipc;
 pub mod port;
 pub mod syscall;

@@ -3,6 +3,8 @@
 //! This module implements POSIX-like signal handling for process management
 //! and job control.
 
+pub mod security;
+
 /// Signal number type
 pub type Signal = u32;
 
