@@ -13,6 +13,7 @@ KBD_TEST_BINARY := $(USERSPACE_DIR)/kbd_test/target/x86_64-unknown-none/release/
 SERIAL_TEST_BINARY := $(USERSPACE_DIR)/serial_test/target/x86_64-unknown-none/release/serial_test
 DISK_BENCH_BINARY := $(USERSPACE_DIR)/disk_bench/target/x86_64-unknown-none/release/disk_bench
 DMESG_BINARY := $(USERSPACE_DIR)/dmesg/target/x86_64-unknown-none/release/dmesg
+LSDEV_BINARY := $(USERSPACE_DIR)/lsdev/target/x86_64-unknown-none/release/lsdev
 BUILD_MODE := release
 ISO_ROOT := iso_root
 ISO_NAME := mellos.iso
@@ -56,6 +57,8 @@ userspace:
 	@cd $(USERSPACE_DIR)/disk_bench && $(CARGO) build $(CARGO_BUILD_FLAGS)
 	@echo "$(COLOR_YELLOW)Building dmesg...$(COLOR_RESET)"
 	@cd $(USERSPACE_DIR)/dmesg && $(CARGO) build $(CARGO_BUILD_FLAGS)
+	@echo "$(COLOR_YELLOW)Building lsdev...$(COLOR_RESET)"
+	@cd $(USERSPACE_DIR)/lsdev && $(CARGO) build $(CARGO_BUILD_FLAGS)
 	@echo "$(COLOR_GREEN)✓ All userspace programs built successfully!$(COLOR_RESET)"
 
 # Create symlinks for mellobox utilities
@@ -133,6 +136,7 @@ iso: build limine symlinks
 	@if [ -f "$(SERIAL_TEST_BINARY)" ]; then cp $(SERIAL_TEST_BINARY) $(ISO_ROOT)/bin/serial_test; fi
 	@if [ -f "$(DISK_BENCH_BINARY)" ]; then cp $(DISK_BENCH_BINARY) $(ISO_ROOT)/bin/disk_bench; fi
 	@if [ -f "$(DMESG_BINARY)" ]; then cp $(DMESG_BINARY) $(ISO_ROOT)/bin/dmesg; fi
+	@if [ -f "$(LSDEV_BINARY)" ]; then cp $(LSDEV_BINARY) $(ISO_ROOT)/bin/lsdev; fi
 	
 	# Copy Limine bootloader files
 	@echo "$(COLOR_YELLOW)Copying Limine bootloader files...$(COLOR_RESET)"
@@ -182,6 +186,7 @@ clean:
 	@cd $(USERSPACE_DIR)/serial_test && $(CARGO) clean
 	@cd $(USERSPACE_DIR)/disk_bench && $(CARGO) clean
 	@cd $(USERSPACE_DIR)/dmesg && $(CARGO) clean
+	@cd $(USERSPACE_DIR)/lsdev && $(CARGO) clean
 	@rm -rf $(ISO_ROOT)
 	@rm -f $(ISO_NAME)
 	@rm -rf $(LIMINE_DIR)
