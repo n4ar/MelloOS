@@ -6,12 +6,18 @@
 //! - IRQ management
 //! - Device tree and bus scanning
 
+pub mod devtree;
 pub mod irq;
 pub mod mmio;
 pub mod port;
 mod test_integration;
 
 // Re-export commonly used functions
+pub use devtree::{
+    device_count, device_register, find_device_by_name, for_each_device, for_each_device_on_bus,
+    init_device_tree, ps2_controller_present, scan_pci_bus, scan_platform_bus, scan_ps2_bus,
+    scan_virtio_bus, BusType, Device, DeviceState,
+};
 pub use irq::{
     handle_irq, init_ioapic_routing, is_irq_registered, register_irq_handler,
     register_irq_handler_affinity, registered_irq_count, unregister_irq_handler,
