@@ -482,7 +482,7 @@ impl Task {
     /// After exec, all signal handlers are reset to their default actions,
     /// except for signals that were set to SIG_IGN which remain ignored.
     pub fn reset_signal_handlers(&mut self) {
-        for (sig_num, handler) in self.signal_handlers.iter_mut().enumerate() {
+        for (_sig_num, handler) in self.signal_handlers.iter_mut().enumerate() {
             // Keep ignored signals ignored, reset everything else to default
             if !matches!(handler.handler, crate::signal::SigHandler::Ignore) {
                 *handler = SigAction::default();

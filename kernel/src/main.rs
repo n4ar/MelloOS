@@ -21,7 +21,7 @@ mod sync;
 mod sys;
 mod user;
 
-use sched::{init_scheduler, priority::TaskPriority, spawn_task, yield_now};
+use sched::{init_scheduler, priority::TaskPriority, spawn_task};
 
 use limine::request::{FramebufferRequest, RsdpRequest};
 

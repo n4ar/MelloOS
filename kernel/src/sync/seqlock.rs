@@ -135,7 +135,7 @@ impl<T> SeqLock<T> {
     ///
     /// # Returns
     /// A guard that provides mutable access to the data
-    pub fn write(&self) -> SeqLockWriteGuard<T> {
+    pub fn write(&self) -> SeqLockWriteGuard<'_, T> {
         // Spin until we can acquire the lock
         loop {
             let seq = self.seq.load(Ordering::Acquire);
@@ -168,7 +168,7 @@ impl<T> SeqLock<T> {
     ///
     /// # Returns
     /// Some(guard) if write lock was acquired, None if another writer is active
-    pub fn try_write(&self) -> Option<SeqLockWriteGuard<T>> {
+    pub fn try_write(&self) -> Option<SeqLockWriteGuard<'_, T>> {
         let seq = self.seq.load(Ordering::Acquire);
         
         // If odd, another writer is active

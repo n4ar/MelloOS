@@ -345,7 +345,7 @@ pub fn run_memory_tests(pmm: &mut pmm::PhysicalMemoryManager, mapper: &mut pagin
 /// This should be called early in kernel initialization, after framebuffer setup
 /// but before any dynamic memory allocation is needed.
 pub fn init_memory() {
-    use spin::Mutex;
+    
 
     // Get HHDM offset from Limine
     let hhdm_response = HHDM_REQUEST

@@ -1509,7 +1509,7 @@ fn sys_kill(pid: usize, signal: usize) -> isize {
     }
 
     // Get current task for permission checks
-    let sender_id = match crate::sched::get_current_task_info() {
+    let _sender_id = match crate::sched::get_current_task_info() {
         Some((id, _)) => id,
         None => {
             serial_println!("[SYSCALL] sys_kill: no current task");
@@ -1771,7 +1771,7 @@ fn sys_tcsetpgrp(fd: usize, pgid: usize) -> isize {
         }
     };
 
-    let current_sid = current_task.sid;
+    let _current_sid = current_task.sid;
 
     // Look up file descriptor
     let fd_table = FD_TABLE.lock();

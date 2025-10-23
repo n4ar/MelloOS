@@ -727,7 +727,7 @@ pub fn write_master(number: PtyNumber, data: &[u8]) -> usize {
                 // Echo back if ECHO is enabled
                 if termios.c_lflag & lflag::ECHO != 0 {
                     // Echo to master output buffer
-                    let mut echo_byte = processed_byte;
+                    let echo_byte = processed_byte;
                     
                     // Output processing for echo
                     if termios.c_oflag & oflag::OPOST != 0 {
@@ -846,7 +846,7 @@ pub fn write_slave(number: PtyNumber, data: &[u8]) -> usize {
         let mut bytes_written = 0;
         
         for &byte in data {
-            let mut processed_byte = byte;
+            let processed_byte = byte;
             
             // Output processing (c_oflag)
             if termios.c_oflag & oflag::OPOST != 0 {

@@ -409,8 +409,8 @@ pub fn init_bsp_gdt_tss() -> Result<(), &'static str> {
 /// # Errors
 /// Returns an error string if initialization fails
 pub fn init_smp(lapic: &mut LocalApic) -> Result<usize, &'static str> {
-    use crate::mm::paging::{PageMapper, PageTableFlags};
-    use crate::mm::pmm::PhysicalMemoryManager;
+    
+    
 
     // CRITICAL: Disable interrupts during SMP initialization to prevent deadlocks
     // Timer interrupts from APs can cause serial_println deadlocks if BSP holds the lock

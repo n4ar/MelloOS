@@ -4,7 +4,7 @@
 /// It supports ET_EXEC format with PT_LOAD segments and proper memory protection.
 use crate::mm::paging::{PageMapper, PageTableFlags};
 use crate::mm::pmm::PhysicalMemoryManager;
-use crate::mm::{phys_to_virt, PhysAddr};
+use crate::mm::phys_to_virt;
 use crate::sched::task::{MemoryRegion, MemoryRegionType, Task, USER_LIMIT};
 use crate::serial_println;
 use core::mem;

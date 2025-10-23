@@ -1020,7 +1020,7 @@ pub fn prepare_process_context_switch(
     let new_process_guard =
         ProcessManager::get_process(new_process_id).ok_or(ProcessError::ProcessNotFound)?;
 
-    let new_process = new_process_guard
+    let _new_process = new_process_guard
         .get()
         .ok_or(ProcessError::ProcessNotFound)?;
 

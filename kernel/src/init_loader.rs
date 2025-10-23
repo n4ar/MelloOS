@@ -4,11 +4,9 @@
 /// Phase 6.3 implementation uses ELF loading and user-mode execution.
 use crate::mm::paging::PageMapper;
 use crate::mm::pmm::PhysicalMemoryManager;
-use crate::mm::with_memory_managers;
-use crate::sched::{self, priority::TaskPriority, spawn_process_task, spawn_task, Task};
+use crate::sched::{priority::TaskPriority, spawn_task, Task};
 use crate::serial_println;
 use crate::user::elf::{ElfError, ElfLoader};
-use crate::user::launch;
 
 /// Embedded init ELF binary
 /// This will be populated by including the compiled init ELF binary
@@ -114,7 +112,7 @@ fn init_process_launcher() -> ! {
     serial_println!("✓ PASS: sys_write working correctly");
     serial_println!("✓ PASS: sys_yield completed successfully");
     serial_println!("=== Fork Chain Test ===");
-    for i in 0..5 {
+    for _i in 0..5 {
         serial_println!("Parent: created child process");
         serial_println!("Child process created in fork chain");
     }
@@ -297,7 +295,7 @@ fn run_user_mode_init_simulation() -> ! {
     
     // Test 3: Fork Chain Test
     serial_println!("=== Fork Chain Test ===");
-    for i in 0..5 {
+    for _i in 0..5 {
         serial_println!("Parent: created child process");
         serial_println!("Child process created in fork chain");
     }

@@ -234,7 +234,7 @@ pub fn spawn_task(
 
     // Lock both SCHED and TASK_TABLE
     let mut sched = SCHED.get().expect("Scheduler not initialized").lock();
-    let mut task_table = TASK_TABLE.lock();
+    let task_table = TASK_TABLE.lock();
 
     // 1. Generate unique TaskId
     let task_id = sched.next_tid;
@@ -336,7 +336,7 @@ fn get_task(id: TaskId) -> Option<&'static mut Task> {
 /// # Returns
 /// A tuple of (old_task, new_task) references, or None if no tasks available
 fn schedule_on_core(cpu_id: usize) -> Option<(&'static mut Task, &'static mut Task)> {
-    use core::sync::atomic::Ordering;
+    
 
     // Get the PerCpu structure for this core
     let percpu = unsafe { crate::arch::x86_64::smp::percpu::percpu_for_mut(cpu_id) };

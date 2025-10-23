@@ -5,5 +5,4 @@ pub mod seqlock;
 /// required for safe concurrent access to shared data structures.
 mod spin;
 
-pub use seqlock::{SeqLock, SeqLockWriteGuard};
-pub use spin::{IrqSpinLock, IrqSpinLockGuard, SpinLock, SpinLockGuard};
+pub use spin::{SpinLock, SpinLockGuard};

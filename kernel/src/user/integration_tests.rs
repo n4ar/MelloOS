@@ -263,7 +263,7 @@ fn performance_monitoring_test() -> ! {
     );
     serial_println!("[USER-TEST] ========================================");
 
-    let cpu_id = unsafe { crate::arch::x86_64::smp::percpu::percpu_current().id };
+    let _cpu_id = unsafe { crate::arch::x86_64::smp::percpu::percpu_current().id };
     let pid = unsafe { syscall(SYS_GETPID, 0, 0, 0) };
 
     serial_println!(

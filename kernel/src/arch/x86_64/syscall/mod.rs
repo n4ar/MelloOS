@@ -266,9 +266,9 @@ extern "C" fn syscall_dispatcher_enhanced(
     arg1: usize,
     arg2: usize,
     arg3: usize,
-    arg4: usize,
-    arg5: usize,
-    arg6: usize,
+    _arg4: usize,
+    _arg5: usize,
+    _arg6: usize,
 ) -> isize {
     // Get current CPU and process for detailed logging
     let cpu_id = unsafe { crate::arch::x86_64::smp::percpu::percpu_current().id };
@@ -644,8 +644,8 @@ fn sys_getpid_enhanced() -> isize {
 /// * Negative error code on failure
 fn sys_fork_stub() -> isize {
     use crate::mm::paging::PageTable;
-    use crate::sched::priority::TaskPriority;
-    use crate::sched::{self, Task};
+    
+    use crate::sched::{self};
     use crate::user::process::{ProcessError, ProcessManager};
 
     serial_println!("[SYSCALL] SYS_FORK: Creating child process");
@@ -822,9 +822,9 @@ fn close_cloexec_fds() {
 /// * Negative error code on failure
 fn sys_exec_stub(path_ptr: usize, _argv_ptr: usize) -> isize {
     use crate::sched;
-    use crate::user::elf::ElfLoader;
+    
     use crate::user::process::{
-        copy_from_user, is_user_pointer_valid, ProcessError, ProcessManager,
+        copy_from_user, is_user_pointer_valid, ProcessManager,
     };
 
     serial_println!("[SYSCALL] SYS_EXEC: Replacing current process");
@@ -1075,7 +1075,7 @@ fn sys_wait_stub(child_pid: usize) -> isize {
         ProcessManager::find_zombie_child(parent_task_id)
     } else {
         // Wait for specific child
-        if let Some(mut child_guard) = ProcessManager::get_process(child_pid) {
+        if let Some(child_guard) = ProcessManager::get_process(child_pid) {
             if let Some(child_process) = child_guard.get() {
                 if child_process.is_child_of(parent_task_id)
                     && child_process.state == crate::user::process::ProcessState::Zombie

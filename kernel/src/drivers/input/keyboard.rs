@@ -57,7 +57,7 @@ pub fn keyboard_probe(device: &Device) -> bool {
 }
 
 /// Initialize the PS/2 keyboard driver
-pub fn keyboard_init(device: &Device) -> Result<(), DriverError> {
+pub fn keyboard_init(_device: &Device) -> Result<(), DriverError> {
     crate::log_info!("KEYBOARD", "Initializing PS/2 keyboard driver");
     
     // Register IRQ handler for keyboard interrupt (IRQ 1)
@@ -129,7 +129,7 @@ fn keyboard_irq_handler() {
 /// Read a character from the keyboard buffer (non-blocking)
 /// Returns Some(char) if a character is available, None otherwise
 pub fn keyboard_read() -> Option<u8> {
-    let mut head = BUFFER_HEAD.lock();
+    let head = BUFFER_HEAD.lock();
     let mut tail = BUFFER_TAIL.lock();
     let buffer = KEYBOARD_BUFFER.lock();
     

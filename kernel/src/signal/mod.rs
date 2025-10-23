@@ -355,7 +355,7 @@ pub fn deliver_pending_signals(task: &mut crate::sched::task::Task) -> Option<Si
             // Signal is ignored
             return None;
         }
-        SigHandler::Custom(handler_addr) => {
+        SigHandler::Custom(_handler_addr) => {
             // Custom handler - needs to be invoked in userspace
             // This requires setting up a signal frame on the user stack
             // For now, return the signal so the caller can handle it
@@ -378,9 +378,9 @@ pub fn deliver_pending_signals(task: &mut crate::sched::task::Task) -> Option<Si
 /// # Returns
 /// Ok(()) if the frame was setup successfully, Err if stack setup failed
 pub fn setup_signal_frame(
-    task: &mut crate::sched::task::Task,
-    signal: Signal,
-    handler_addr: usize,
+    _task: &mut crate::sched::task::Task,
+    _signal: Signal,
+    _handler_addr: usize,
 ) -> Result<(), ()> {
     // TODO: Implement signal frame setup
     // This requires:

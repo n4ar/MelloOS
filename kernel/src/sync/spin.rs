@@ -52,7 +52,7 @@ impl<T> SpinLock<T> {
     /// the same lock.
     ///
     /// Returns a guard that will automatically release the lock when dropped.
-    pub fn lock(&self) -> SpinLockGuard<T> {
+    pub fn lock(&self) -> SpinLockGuard<'_, T> {
         let mut backoff = 1;
         const MAX_BACKOFF: usize = 256;
 
@@ -85,7 +85,7 @@ impl<T> SpinLock<T> {
     /// or `None` if the lock is currently held by another thread.
     ///
     /// This function does not block and will return immediately.
-    pub fn try_lock(&self) -> Option<SpinLockGuard<T>> {
+    pub fn try_lock(&self) -> Option<SpinLockGuard<'_, T>> {
         // Try to acquire the lock once
         // Use Acquire ordering to ensure all subsequent reads see the latest data
         if self
@@ -108,7 +108,7 @@ impl<T> SpinLock<T> {
     /// * `timeout_ms` - Maximum time to wait in milliseconds
     ///
     /// This function uses exponential backoff and checks the timeout periodically.
-    pub fn try_lock_timeout(&self, timeout_ms: u64) -> Option<SpinLockGuard<T>> {
+    pub fn try_lock_timeout(&self, timeout_ms: u64) -> Option<SpinLockGuard<'_, T>> {
         // Get current timestamp (assuming we have a TSC-based timer)
         let start = unsafe { core::arch::x86_64::_rdtsc() };
         // Approximate TSC frequency (2.4 GHz typical)
@@ -242,7 +242,7 @@ impl<T> IrqSpinLock<T> {
     ///
     /// Returns a guard that will automatically release the lock and restore
     /// interrupts when dropped.
-    pub fn lock(&self) -> IrqSpinLockGuard<T> {
+    pub fn lock(&self) -> IrqSpinLockGuard<'_, T> {
         // Save current RFLAGS register
         let flags = unsafe { save_flags() };
 
@@ -262,7 +262,7 @@ impl<T> IrqSpinLock<T> {
     ///
     /// If the lock cannot be acquired, interrupts are not disabled and the
     /// original interrupt state is preserved.
-    pub fn try_lock(&self) -> Option<IrqSpinLockGuard<T>> {
+    pub fn try_lock(&self) -> Option<IrqSpinLockGuard<'_, T>> {
         // Save current RFLAGS register
         let flags = unsafe { save_flags() };
 
