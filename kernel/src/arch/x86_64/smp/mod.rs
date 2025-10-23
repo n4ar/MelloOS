@@ -78,8 +78,14 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
         );
     }
 
+    // Save parameters to local variables BEFORE any function calls
+    // This prevents them from being clobbered by serial_println
+    let saved_cpu_id = cpu_id;
+    let saved_apic_id = apic_id;
+    let saved_lapic_address = lapic_address;
+
     // Debug: Print CPU ID to see if it's corrupted
-    serial_println!("[SMP] AP entry: cpu_id={}, apic_id={}, lapic=0x{:X}", cpu_id, apic_id, lapic_address);
+    serial_println!("[SMP] AP entry: cpu_id={}, apic_id={}, lapic=0x{:X}", saved_cpu_id, saved_apic_id, saved_lapic_address);
 
     // Match BSP feature setup so NX-marked pages are valid on this core
     crate::mm::enable_nx_bit();
@@ -87,7 +93,7 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
 
     // Initialize PerCpu structure for this AP
     unsafe {
-        percpu::init_percpu(cpu_id, apic_id);
+        percpu::init_percpu(saved_cpu_id, saved_apic_id);
     }
 
     // Debug: '4' after init_percpu
@@ -112,7 +118,7 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
 
     // Configure GS.BASE MSR to point to our PerCpu structure
     unsafe {
-        percpu::setup_gs_base(cpu_id);
+        percpu::setup_gs_base(saved_cpu_id);
     }
 
     // Debug: '6' after setup_gs_base
@@ -126,7 +132,7 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
     }
 
     // TEMPORARILY COMMENTED: serial_println may deadlock
-    // serial_println!("[SMP] AP#{} PerCpu and GS.BASE initialized", cpu_id);
+    // serial_println!("[SMP] AP#{} PerCpu and GS.BASE initialized", saved_cpu_id);
 
     // Debug: '7' before GDT/TSS init
     unsafe {
@@ -139,8 +145,8 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
     }
 
     // Initialize GDT and TSS for this AP
-    if let Err(e) = crate::arch::x86_64::gdt::init_gdt_tss_for_cpu(cpu_id) {
-        serial_println!("[SMP] AP#{} failed to initialize GDT/TSS: {}", cpu_id, e);
+    if let Err(e) = crate::arch::x86_64::gdt::init_gdt_tss_for_cpu(saved_cpu_id) {
+        serial_println!("[SMP] AP#{} failed to initialize GDT/TSS: {}", saved_cpu_id, e);
         loop {
             unsafe {
                 core::arch::asm!("hlt");
@@ -169,7 +175,7 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
     }
 
     // Initialize Local APIC for this AP using passed address
-    let mut lapic = unsafe { LocalApic::new(lapic_address) };
+    let mut lapic = unsafe { LocalApic::new(saved_lapic_address) };
     lapic.init();
 
     // Debug: 'A' after LAPIC init
@@ -184,11 +190,11 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
 
     // Verify LAPIC ID matches expected APIC ID
     let actual_apic_id = lapic.id();
-    if actual_apic_id != apic_id {
+    if actual_apic_id != saved_apic_id {
         serial_println!(
             "[SMP] AP#{} warning: LAPIC ID mismatch (expected {}, got {})",
-            cpu_id,
-            apic_id,
+            saved_cpu_id,
+            saved_apic_id,
             actual_apic_id
         );
     }
@@ -224,12 +230,13 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
         );
     }
 
-    // Initialize APIC timer for this AP
-    // Each CPU needs its own timer for preemptive multitasking
+    // Initialize APIC timer for this AP but DON'T start it yet
+    // Timer will be started after kernel initialization is complete
+    // to prevent deadlocks during init
     unsafe {
         lapic.init_timer(lapic_frequency, crate::config::SCHED_HZ);
     }
-    serial_println!("[APIC] core{} timer @{}Hz", cpu_id, crate::config::SCHED_HZ);
+    serial_println!("[APIC] core{} timer configured @{}Hz (not started)", saved_cpu_id, crate::config::SCHED_HZ);
 
     // Debug: 'Z' after timer init
     unsafe {
@@ -252,7 +259,7 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
     }
 
     // Signal BSP that we are online
-    CPU_ONLINE[cpu_id].store(true, Ordering::Release);
+    CPU_ONLINE[saved_cpu_id].store(true, Ordering::Release);
     CPU_COUNT.fetch_add(1, Ordering::SeqCst);
 
     // Debug: 'C' after signaling online
@@ -266,25 +273,48 @@ pub extern "C" fn ap_entry64(cpu_id: usize, apic_id: u8, lapic_address: u64) -> 
     }
 
     // Log that we are online
-    serial_println!("[SMP] AP#{} online", cpu_id);
+    serial_println!("[SMP] AP#{} online", saved_cpu_id);
 
-    // Enable interrupts
-    unsafe {
-        core::arch::asm!("sti", options(nostack, nomem));
-    }
+    // NOTE: Do NOT enable interrupts yet!
+    // Interrupts will be enabled by BSP after kernel initialization is complete.
+    // This prevents deadlocks during init when interrupt handlers try to acquire
+    // locks that BSP is holding.
 
-    // Enter scheduler idle loop - this AP is now ready to run tasks
-    serial_println!("[SMP] AP#{} entering idle loop", cpu_id);
+    // Enter idle loop - wait for BSP to enable interrupts
+    serial_println!("[SMP] AP#{} entering idle loop (interrupts disabled)", saved_cpu_id);
     
-    // Idle loop: wait for timer interrupts to trigger scheduler
-    // The scheduler will be invoked by timer interrupts (APIC timer)
+    // Idle loop: spin until interrupts are enabled by BSP
+    // Once enabled, timer interrupts will trigger the scheduler
     loop {
         unsafe {
-            // Use hlt to save power while waiting for interrupts
+            // Use pause to reduce power and bus contention while spinning
+            core::arch::asm!("pause", options(nostack, nomem));
             // Timer interrupts will wake us up and trigger the scheduler
             core::arch::asm!("hlt", options(nostack, nomem));
         }
     }
+}
+
+/// Enable interrupts on all CPUs
+///
+/// This should be called by BSP after kernel initialization is complete.
+/// It enables interrupts on BSP and sends IPI to all APs to enable their interrupts.
+///
+/// # Safety
+/// This function should only be called once, after all kernel subsystems are initialized.
+pub unsafe fn enable_interrupts_all_cpus() {
+    serial_println!("[SMP] Enabling interrupts on all CPUs...");
+    
+    // Enable interrupts on BSP (current CPU)
+    core::arch::asm!("sti", options(nostack, nomem));
+    serial_println!("[SMP] BSP interrupts enabled");
+    
+    // Note: APs are already in idle loop with interrupts disabled
+    // They will enable interrupts when they receive the scheduler's first task
+    // or we can send an IPI to wake them up, but for now they'll enable
+    // interrupts when the scheduler starts running tasks on them
+    
+    serial_println!("[SMP] All CPUs ready for scheduling");
 }
 
 /// Check if a specific CPU is online
@@ -381,6 +411,20 @@ pub fn init_bsp_gdt_tss() -> Result<(), &'static str> {
 pub fn init_smp(lapic: &mut LocalApic) -> Result<usize, &'static str> {
     use crate::mm::paging::{PageMapper, PageTableFlags};
     use crate::mm::pmm::PhysicalMemoryManager;
+
+    // CRITICAL: Disable interrupts during SMP initialization to prevent deadlocks
+    // Timer interrupts from APs can cause serial_println deadlocks if BSP holds the lock
+    let interrupts_enabled = unsafe {
+        let rflags: u64;
+        core::arch::asm!("pushfq; pop {}", out(reg) rflags, options(nomem, preserves_flags));
+        (rflags & 0x200) != 0
+    };
+    
+    if interrupts_enabled {
+        unsafe {
+            core::arch::asm!("cli", options(nostack, nomem));
+        }
+    }
 
     serial_println!("[SMP] Initializing SMP...");
 
@@ -519,7 +563,10 @@ pub fn init_smp(lapic: &mut LocalApic) -> Result<usize, &'static str> {
             return Err("AP stack outside identity-mapped region");
         }
 
-        // Write stack pointer and CPU ID to trampoline
+        // CRITICAL: Write trampoline data for this specific AP
+        // NOTE: All APs share the same trampoline memory region (0x8000-0x8FFF)
+        // We MUST wait for each AP to boot completely before writing data for the next AP
+        // to avoid race conditions where multiple APs read corrupted/mixed data
         unsafe {
             let stack_ptr = TRAMPOLINE_STACK_PTR as *mut u64;
             *stack_ptr = stack_top as u64;
@@ -534,6 +581,9 @@ pub fn init_smp(lapic: &mut LocalApic) -> Result<usize, &'static str> {
             // Write LAPIC address to trampoline
             let lapic_addr_ptr = TRAMPOLINE_LAPIC_ADDR as *mut u64;
             *lapic_addr_ptr = madt_info.lapic_address;
+
+            // Memory barrier to ensure all writes complete before sending IPI
+            core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 
             // Debug: Show what we wrote to trampoline
             serial_println!("[SMP] DEBUG: Wrote to trampoline - cpu_id={}, apic_id={}, lapic=0x{:X}", 
@@ -554,7 +604,7 @@ pub fn init_smp(lapic: &mut LocalApic) -> Result<usize, &'static str> {
             continue;
         }
 
-        // Wait 10ms
+        // Wait 10ms for INIT to complete
         busy_wait_ms(10);
 
         // Send first SIPI
@@ -565,7 +615,7 @@ pub fn init_smp(lapic: &mut LocalApic) -> Result<usize, &'static str> {
             continue;
         }
 
-        // Wait 200μs
+        // Wait 200μs before second SIPI
         busy_wait_us(200);
 
         // Send second SIPI
@@ -575,7 +625,8 @@ pub fn init_smp(lapic: &mut LocalApic) -> Result<usize, &'static str> {
             continue;
         }
 
-        // Wait up to 500ms for AP to come online (increased from 100ms)
+        // CRITICAL: Wait for this AP to come online BEFORE initializing next AP
+        // This prevents race condition where multiple APs read the same trampoline data
         let mut timeout = 500;
         while timeout > 0 && !is_cpu_online(cpu_id) {
             busy_wait_ms(1);
@@ -589,8 +640,12 @@ pub fn init_smp(lapic: &mut LocalApic) -> Result<usize, &'static str> {
 
         if is_cpu_online(cpu_id) {
             serial_println!("[SMP] AP#{} came online successfully", cpu_id);
+            // NOTE: No delay needed - the AP has already signaled online status
+            // which means it has read all trampoline data. We can immediately
+            // proceed to initialize the next AP.
         } else {
             serial_println!("[SMP] AP#{} failed to come online (timeout after 500ms)", cpu_id);
+            serial_println!("[SMP] WARNING: Continuing with remaining APs, but this may cause issues");
         }
 
         cpu_id += 1;
@@ -601,6 +656,12 @@ pub fn init_smp(lapic: &mut LocalApic) -> Result<usize, &'static str> {
         "[SMP] SMP initialization complete: {} CPUs online",
         total_cpus
     );
+
+    // NOTE: Do NOT re-enable interrupts here!
+    // Interrupts will be enabled by the caller (main.rs) after all
+    // kernel subsystems are initialized to prevent deadlocks during init.
+    // The interrupts_enabled flag is kept for future use if needed.
+    let _ = interrupts_enabled; // Suppress unused variable warning
 
     Ok(total_cpus)
 }

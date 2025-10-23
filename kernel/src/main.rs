@@ -88,18 +88,14 @@ fn syscall_test_task() -> ! {
         let result = unsafe { syscall(0, 0, msg.as_ptr() as usize, msg.len()) };
         serial_println!("[TEST] sys_write returned: {}", result);
 
-        // Test sys_sleep (syscall 2) - sleep for 50 ticks
-        serial_println!("[TEST] Calling sys_sleep(50)...");
-        let sleep_result = unsafe { syscall(2, 50, 0, 0) };
+        // Test sys_sleep (syscall 2) - sleep for 20 ticks (reduced from 50)
+        serial_println!("[TEST] Calling sys_sleep(20)...");
+        let sleep_result = unsafe { syscall(2, 20, 0, 0) };
         serial_println!("[TEST] sys_sleep returned: {}", sleep_result);
         serial_println!("[TEST] Woke up from sleep!");
 
-        // Busy-wait delay
-        for _ in 0..5_000_000 {
-            unsafe {
-                core::arch::asm!("nop");
-            }
-        }
+        // Use sleep instead of busy-wait
+        unsafe { syscall(2, 50, 0, 0) };
     }
 }
 
@@ -548,13 +544,14 @@ fn smp_test_task_a() -> ! {
         // Get current CPU ID from per-CPU data
         let cpu_id = arch::x86_64::smp::percpu::percpu_current().id;
 
-        // Log execution with required format
-        if count < 20 {
+        // Log execution with required format (reduced iterations in fast boot mode)
+        let max_logs = if config::FAST_BOOT_MODE { 10 } else { 20 };
+        if count < max_logs {
             serial_println!("[SCHED][core{}] run A", cpu_id);
         }
 
-        // Perform simple work (busy loop)
-        for _ in 0..500_000 {
+        // Perform simple work (reduced busy loop)
+        for _ in 0..50_000 {
             unsafe {
                 core::arch::asm!("nop");
             }
@@ -591,13 +588,14 @@ fn smp_test_task_b() -> ! {
         // Get current CPU ID from per-CPU data
         let cpu_id = arch::x86_64::smp::percpu::percpu_current().id;
 
-        // Log execution with required format
-        if count < 20 {
+        // Log execution with required format (reduced iterations in fast boot mode)
+        let max_logs = if config::FAST_BOOT_MODE { 10 } else { 20 };
+        if count < max_logs {
             serial_println!("[SCHED][core{}] run B", cpu_id);
         }
 
-        // Perform simple work (busy loop)
-        for _ in 0..500_000 {
+        // Perform simple work (reduced busy loop)
+        for _ in 0..50_000 {
             unsafe {
                 core::arch::asm!("nop");
             }
@@ -634,13 +632,14 @@ fn smp_test_task_c() -> ! {
         // Get current CPU ID from per-CPU data
         let cpu_id = arch::x86_64::smp::percpu::percpu_current().id;
 
-        // Log execution with required format
-        if count < 20 {
+        // Log execution with required format (reduced iterations in fast boot mode)
+        let max_logs = if config::FAST_BOOT_MODE { 10 } else { 20 };
+        if count < max_logs {
             serial_println!("[SCHED][core{}] run C", cpu_id);
         }
 
-        // Perform simple work (busy loop)
-        for _ in 0..500_000 {
+        // Perform simple work (reduced busy loop)
+        for _ in 0..50_000 {
             unsafe {
                 core::arch::asm!("nop");
             }
@@ -677,13 +676,14 @@ fn smp_test_task_d() -> ! {
         // Get current CPU ID from per-CPU data
         let cpu_id = arch::x86_64::smp::percpu::percpu_current().id;
 
-        // Log execution with required format
-        if count < 20 {
+        // Log execution with required format (reduced iterations in fast boot mode)
+        let max_logs = if config::FAST_BOOT_MODE { 10 } else { 20 };
+        if count < max_logs {
             serial_println!("[SCHED][core{}] run D", cpu_id);
         }
 
-        // Perform simple work (busy loop)
-        for _ in 0..500_000 {
+        // Perform simple work (reduced busy loop)
+        for _ in 0..50_000 {
             unsafe {
                 core::arch::asm!("nop");
             }
@@ -710,9 +710,17 @@ fn print_test_results_delayed() -> ! {
         );
     }
 
-    // Wait for tests to complete (10 seconds at ~20Hz timer)
+    // Wait for tests to complete
+    // In fast boot mode: 3 seconds (300 ticks at 100Hz)
+    // In normal mode: 10 seconds (1000 ticks at 100Hz)
+    let wait_ticks = if config::FAST_BOOT_MODE {
+        300
+    } else {
+        1000
+    };
+    
     unsafe {
-        sys_sleep(200);
+        sys_sleep(wait_ticks);
     }
 
     // Print integration test results
@@ -721,8 +729,8 @@ fn print_test_results_delayed() -> ! {
     // Continue sleeping to avoid consuming CPU
     loop {
         unsafe {
-            sys_sleep(5000);
-        } // Sleep for 50 seconds
+            sys_sleep(1000);
+        } // Sleep for 10 seconds at 100Hz
     }
 }
 
@@ -852,10 +860,12 @@ pub extern "C" fn _start() -> ! {
     serial_println!("[KERNEL] Initializing PTY subsystem...");
     // Initialize PTY (pseudo-terminal) subsystem
     dev::pty::init();
+    serial_println!("[KERNEL] PTY subsystem initialized successfully");
 
     serial_println!("[KERNEL] Initializing /proc filesystem...");
     // Initialize /proc virtual filesystem
     fs::proc::init();
+    serial_println!("[KERNEL] /proc filesystem initialized successfully");
 
     serial_println!("[KERNEL] Initializing driver subsystem...");
     // Initialize device drivers and I/O subsystem (Phase 7)
@@ -946,10 +956,12 @@ pub extern "C" fn _start() -> ! {
     serial_println!("[KERNEL] Tasks will be distributed across cores");
     serial_println!("[KERNEL] ========================================");
 
-    serial_println!("[KERNEL] Enabling interrupts...");
-    // Enable interrupts to start task switching
+    serial_println!("[KERNEL] Enabling interrupts on all CPUs...");
+    // Enable interrupts on all CPUs to start task switching
+    // This must be done AFTER all kernel subsystems are initialized
+    // to prevent deadlocks during init
     unsafe {
-        core::arch::asm!("sti");
+        arch::x86_64::smp::enable_interrupts_all_cpus();
     }
 
     serial_println!("[KERNEL] Scheduler initialization complete!");

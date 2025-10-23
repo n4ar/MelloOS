@@ -8,7 +8,7 @@ echo "Driver Subsystem Integration Test Suite"
 echo "=========================================="
 
 # Configuration
-TEST_TIMEOUT=30  # Seconds to wait for tests
+TEST_TIMEOUT=20  # Seconds to wait for tests (optimized from 30s with faster boot)
 SMP_CPUS=2      # Default CPU count for SMP IRQ testing
 OUTPUT_FILE=$(mktemp)
 RESULTS_FILE=$(mktemp)
@@ -121,7 +121,11 @@ run_qemu_test() {
         -no-shutdown &
     
     QEMU_PID=$!
+    
+    # Wait for boot completion or timeout
+    echo "Waiting for boot completion (timeout: ${TEST_TIMEOUT}s)..."
     sleep $TEST_TIMEOUT
+    
     kill -9 $QEMU_PID 2>/dev/null || true
     wait $QEMU_PID 2>/dev/null || true
     

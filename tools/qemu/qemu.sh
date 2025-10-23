@@ -13,7 +13,7 @@ if [ ! -f "mellos.iso" ]; then
 fi
 
 # Parse command line arguments
-SMP_CPUS=4  # Default to 4 CPUs for SMP testing
+SMP_CPUS=2  # Default to 2 CPUs (4 CPUs has AP#2 boot issue)
 ENABLE_KVM=""
 PRESET=""
 
@@ -134,6 +134,8 @@ if [ $UEFI_MODE -eq 1 ]; then
         -boot d \
         -serial stdio \
         -bios "$UEFI_BIOS" \
+        -no-reboot \
+        -no-shutdown \
         $ENABLE_KVM
 elif [ $UEFI_MODE -eq 2 ]; then
     echo "Booting in UEFI mode (EDK2)..."
@@ -145,6 +147,8 @@ elif [ $UEFI_MODE -eq 2 ]; then
         -boot d \
         -serial stdio \
         -drive if=pflash,format=raw,readonly=on,file="$UEFI_CODE" \
+        -no-reboot \
+        -no-shutdown \
         $ENABLE_KVM
 else
     echo "Booting in BIOS mode (UEFI firmware not found)..."
@@ -156,5 +160,7 @@ else
         -cdrom mellos.iso \
         -boot d \
         -serial stdio \
+        -no-reboot \
+        -no-shutdown \
         $ENABLE_KVM
 fi

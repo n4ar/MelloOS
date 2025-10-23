@@ -238,13 +238,13 @@ pub extern "C" fn _start() -> ! {
 
     // Sleep for a bit to allow other tests to run
     sys_write("Init process entering monitoring loop...\n");
-    sys_sleep(100);
+    sys_sleep(50); // Reduced from 100 ticks
 
-    // Enter monitoring loop
+    // Enter monitoring loop with shorter sleep for faster boot
     let mut counter = 0u32;
     loop {
         sys_write("Init process monitoring system...\n");
-        sys_sleep(1000);
+        sys_sleep(200); // Reduced from 1000 ticks (2 seconds at 100Hz vs 50 seconds at 20Hz)
         counter = counter.wrapping_add(1);
 
         // Periodically yield to other processes
