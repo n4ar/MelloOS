@@ -5,11 +5,13 @@
 //! - Memory-mapped I/O (MMIO)
 //! - IRQ management
 //! - Device tree and bus scanning
+//! - Block I/O queue management
 
 pub mod devtree;
 pub mod irq;
 pub mod mmio;
 pub mod port;
+pub mod bio;
 mod test_integration;
 
 // Re-export commonly used functions

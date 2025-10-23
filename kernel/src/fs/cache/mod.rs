@@ -1,0 +1,17 @@
+//! Filesystem caching subsystem
+//!
+//! This module provides caching mechanisms for filesystem data and metadata:
+//! - Page cache: Caches file data pages with adaptive read-ahead
+//! - Buffer cache: Caches filesystem metadata blocks
+//! - Writeback: Write-back coalescing and dirty page flushing
+//! - Throttle: Dirty page throttling
+
+pub mod page_cache;
+pub mod buffer_cache;
+pub mod writeback;
+pub mod throttle;
+
+pub use page_cache::{PageCache, PageCacheEntry, ReadAheadWindow};
+pub use buffer_cache::{BufferCache, BufferEntry};
+pub use writeback::{WritebackConfig, WritebackScheduler, WritebackBatch};
+pub use throttle::{ThrottleConfig, ThrottleManager};

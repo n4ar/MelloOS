@@ -46,6 +46,7 @@ pub mod paging;
 pub mod pmm;
 pub mod security;
 pub mod tlb;
+pub mod mmap;
 
 struct MemoryManagerState {
     pmm: pmm::PhysicalMemoryManager,

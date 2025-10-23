@@ -5,3 +5,4 @@
 pub mod vfs;
 pub mod proc;
 pub mod syscalls;
+pub mod cache;
