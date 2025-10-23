@@ -517,6 +517,187 @@ grep "สวัสดี" file.txt
 - Copy to clipboard
 - Paste from clipboard
 
+## Device Driver Testing Tools
+
+MelloOS includes several testing tools for verifying device driver functionality.
+
+### kbd_test - Keyboard Driver Test
+
+Tests the PS/2 keyboard driver by echoing typed characters.
+
+```bash
+kbd_test
+```
+
+**Usage:**
+- Type any characters on the keyboard
+- Characters will be echoed back to the screen
+- Press Ctrl+C to exit the program
+
+**What it tests:**
+- PS/2 keyboard driver initialization
+- Scancode to ASCII translation
+- IRQ 1 interrupt handling
+- Keyboard buffer management
+
+### serial_test - Serial Port Test
+
+Tests the UART16550 serial driver with loopback verification.
+
+```bash
+serial_test
+```
+
+**Output:**
+```
+Serial loopback test
+Testing serial port...
+Serial test PASSED
+```
+
+**What it tests:**
+- Serial port initialization (COM1)
+- Transmit functionality
+- Receive functionality
+- Data integrity
+
+### disk_bench - Disk Benchmark
+
+Reads sector 0 (MBR) from the disk and verifies the boot signature.
+
+```bash
+disk_bench
+```
+
+**Output:**
+```
+Disk benchmark - reading sector 0
+MBR signature valid
+Read time: 1234 us
+```
+
+**What it tests:**
+- virtio-blk driver initialization
+- Block read operations
+- MBR signature verification (0x55AA)
+- Read performance measurement
+
+### dmesg - Kernel Log Display
+
+Displays the kernel log buffer, including driver lifecycle events.
+
+```bash
+dmesg
+```
+
+**Output:**
+```
+[    0.123] Initializing driver subsystem
+[    0.124] Registering driver: ps2-keyboard
+[    0.125] Registering driver: uart16550
+[    0.126] Registering driver: virtio-blk
+[    0.127] Scanning PS/2 bus
+[    0.128] Registering device: ps2-keyboard on PS2 bus
+[    0.129] Driver ps2-keyboard matched device ps2-keyboard
+[    0.130] PS/2 keyboard initialized
+...
+```
+
+**What it shows:**
+- Driver registration events
+- Device detection
+- Driver probing and initialization
+- Runtime driver events
+- Error messages
+
+### lsdev - List Devices
+
+Lists all detected devices in the device tree.
+
+```bash
+lsdev
+```
+
+**Output:**
+```
+Device Tree:
+NAME              BUS       IO_BASE    IRQ    DRIVER
+--------------------------------------------------------
+ps2-keyboard      PS2       0x00000060   1    ps2-keyboard
+serial-com1       Platform  0x000003F8   4    uart16550
+virtio-blk        Virtio    0x00000000  N/A   virtio-blk
+```
+
+**Columns:**
+- **NAME**: Device name
+- **BUS**: Bus type (Platform, PS2, PCI, Virtio)
+- **IO_BASE**: I/O port base address (hex)
+- **IRQ**: Interrupt request number
+- **DRIVER**: Associated driver name (or "none")
+
+**What it shows:**
+- All detected hardware devices
+- Device resources (I/O ports, IRQs)
+- Driver assignments
+- Device tree structure
+
+### diskinfo - Block Device Information
+
+Displays information about block devices (disks).
+
+```bash
+diskinfo
+```
+
+**Output:**
+```
+Block Device Information:
+  Block count: 204800
+  Block size:  512 bytes
+  Total size:  100 MB
+```
+
+**What it shows:**
+- Number of blocks on disk
+- Block size (sector size)
+- Total disk capacity in MB
+
+**Use cases:**
+- Verify disk is detected
+- Check disk size before filesystem operations
+- Confirm block size for I/O operations
+
+### irq_test - Interrupt Distribution Test
+
+Tests interrupt routing and distribution across CPU cores (SMP systems).
+
+```bash
+irq_test
+```
+
+**Output:**
+```
+IRQ Distribution Test
+Triggering interrupts...
+CPU 0: 1234 interrupts
+CPU 1: 1198 interrupts
+CPU 2: 1256 interrupts
+CPU 3: 1212 interrupts
+Total: 4900 interrupts
+Distribution: BALANCED
+```
+
+**What it tests:**
+- IOAPIC interrupt routing
+- IRQ distribution across cores
+- Interrupt affinity settings
+- SMP interrupt safety
+
+**Use cases:**
+- Verify SMP interrupt handling
+- Check load balancing
+- Debug interrupt routing issues
+
 ## /proc Filesystem
 
 The /proc filesystem provides system and process information.

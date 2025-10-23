@@ -882,6 +882,372 @@ Fixes: #123
 - [Linux System Call Reference](https://man7.org/linux/man-pages/)
 - [POSIX Specification](https://pubs.opengroup.org/onlinepubs/9699919799/)
 
+## Adding New Device Drivers
+
+### Step 1: Define Driver Structure
+
+Create a new driver module in the appropriate category:
+
+```rust
+// kernel/src/drivers/mydevice/mod.rs
+use crate::drivers::{Driver, Device, DriverError};
+use crate::io::port::{inb, outb};
+use crate::io::irq::register_irq_handler;
+use crate::sync::Mutex;
+
+// Device-specific constants
+const MY_DEVICE_PORT: u16 = 0x1234;
+const MY_DEVICE_IRQ: u8 = 5;
+
+// Device state
+static DEVICE_STATE: Mutex<Option<MyDeviceState>> = Mutex::new(None);
+
+struct MyDeviceState {
+    base_port: u16,
+    // ... other state fields
+}
+```
+
+### Step 2: Implement Driver Functions
+
+```rust
+/// Probe function - check if device is compatible
+pub fn my_device_probe(device: &Device) -> bool {
+    // Check device name, bus type, or other properties
+    device.name == "my-device" && device.bus == BusType::Platform
+}
+
+/// Initialize function - set up device
+pub fn my_device_init(device: &Device) -> Result<(), DriverError> {
+    log::info!("Initializing my device driver");
+    
+    // 1. Validate device resources
+    if device.io_base == 0 {
+        return Err(DriverError::ResourceUnavailable);
+    }
+    
+    // 2. Initialize hardware
+    unsafe {
+        outb(MY_DEVICE_PORT, 0x01);  // Enable device
+    }
+    
+    // 3. Register IRQ handler if needed
+    if let Some(irq) = device.irq {
+        register_irq_handler(irq, my_device_irq_handler)
+            .map_err(|_| DriverError::InitFailure)?;
+    }
+    
+    // 4. Initialize driver state
+    let state = MyDeviceState {
+        base_port: device.io_base as u16,
+    };
+    
+    let mut global_state = DEVICE_STATE.lock();
+    *global_state = Some(state);
+    
+    log::info!("My device initialized successfully");
+    Ok(())
+}
+
+/// Shutdown function - clean up device
+pub fn my_device_shutdown(device: &Device) -> Result<(), DriverError> {
+    log::info!("Shutting down my device");
+    
+    // 1. Unregister IRQ handler
+    if let Some(irq) = device.irq {
+        crate::io::irq::unregister_irq_handler(irq);
+    }
+    
+    // 2. Disable hardware
+    unsafe {
+        outb(MY_DEVICE_PORT, 0x00);  // Disable device
+    }
+    
+    // 3. Clear driver state
+    let mut state = DEVICE_STATE.lock();
+    *state = None;
+    
+    Ok(())
+}
+
+/// IRQ handler - handle device interrupts
+fn my_device_irq_handler() {
+    // Read device status
+    let status = unsafe { inb(MY_DEVICE_PORT) };
+    
+    // Process interrupt
+    if status & 0x01 != 0 {
+        // Handle specific condition
+        process_device_event();
+    }
+    
+    // Clear interrupt
+    unsafe {
+        outb(MY_DEVICE_PORT + 1, 0xFF);
+    }
+}
+```
+
+### Step 3: Define Driver Constant
+
+```rust
+/// Driver registration constant
+pub const MY_DEVICE_DRIVER: Driver = Driver {
+    name: "my-device",
+    probe: my_device_probe,
+    init: my_device_init,
+    shutdown: my_device_shutdown,
+};
+```
+
+### Step 4: Register Driver
+
+In `kernel/src/drivers/mod.rs`, add your driver to the registration function:
+
+```rust
+fn register_builtin_drivers() {
+    log::info!("Registering built-in drivers");
+    driver_register(crate::drivers::input::keyboard::KEYBOARD_DRIVER);
+    driver_register(crate::drivers::serial::uart16550::SERIAL_DRIVER);
+    driver_register(crate::drivers::block::virtio_blk::VIRTIO_BLK_DRIVER);
+    driver_register(crate::drivers::mydevice::MY_DEVICE_DRIVER);  // Add here
+}
+```
+
+### Step 5: Add Device to Bus Scan
+
+In `kernel/src/io/devtree.rs`, add device detection:
+
+```rust
+pub fn scan_platform_bus() {
+    log::info!("Scanning platform bus");
+    
+    // Detect my device
+    if my_device_present() {
+        let device = Device {
+            name: "my-device",
+            bus: BusType::Platform,
+            io_base: 0x1234,
+            irq: Some(5),
+            irq_affinity: None,
+            driver: None,
+            state: DeviceState::Detected,
+        };
+        crate::drivers::device_register(device);
+    }
+}
+
+fn my_device_present() -> bool {
+    // Check if device exists
+    unsafe {
+        let id = inb(MY_DEVICE_PORT);
+        id == EXPECTED_DEVICE_ID
+    }
+}
+```
+
+### Step 6: Add Public API
+
+Provide functions for other kernel subsystems to use:
+
+```rust
+/// Public API for device operations
+pub fn my_device_read() -> Option<u8> {
+    let state = DEVICE_STATE.lock();
+    if let Some(dev) = state.as_ref() {
+        unsafe {
+            Some(inb(dev.base_port))
+        }
+    } else {
+        None
+    }
+}
+
+pub fn my_device_write(value: u8) {
+    let state = DEVICE_STATE.lock();
+    if let Some(dev) = state.as_ref() {
+        unsafe {
+            outb(dev.base_port, value);
+        }
+    }
+}
+```
+
+### Step 7: Add Syscalls (Optional)
+
+If userland needs access, add syscalls in `kernel/src/sys/syscall.rs`:
+
+```rust
+pub fn sys_my_device_read() -> Option<u8> {
+    crate::drivers::mydevice::my_device_read()
+}
+
+pub fn sys_my_device_write(value: u8) {
+    crate::drivers::mydevice::my_device_write(value);
+}
+```
+
+### Step 8: Test the Driver
+
+Create a userland test program:
+
+```rust
+// kernel/userspace/my_device_test/src/main.rs
+fn main() {
+    println!("Testing my device driver...");
+    
+    // Write test
+    my_device_write(0x42);
+    
+    // Read test
+    if let Some(value) = my_device_read() {
+        println!("Read value: 0x{:02X}", value);
+    }
+    
+    println!("Test complete");
+}
+```
+
+### Driver Development Best Practices
+
+1. **Validate all inputs**: Check device resources before use
+2. **Handle errors gracefully**: Return DriverError, don't panic
+3. **Log important events**: Use log macros for debugging
+4. **Minimize IRQ handler work**: Defer processing to task context
+5. **Use proper synchronization**: Protect shared state with locks
+6. **Follow lock ordering**: Prevent deadlocks in SMP
+7. **Test thoroughly**: Create userland test programs
+8. **Document behavior**: Add doc comments to public APIs
+
+### Common Driver Patterns
+
+**Buffered I/O:**
+```rust
+static BUFFER: Mutex<[u8; 256]> = Mutex::new([0; 256]);
+static HEAD: Mutex<usize> = Mutex::new(0);
+static TAIL: Mutex<usize> = Mutex::new(0);
+
+fn irq_handler() {
+    let data = read_from_device();
+    
+    let mut head = HEAD.lock();
+    let tail = TAIL.lock();
+    let mut buffer = BUFFER.lock();
+    
+    let next_head = (*head + 1) % 256;
+    if next_head != *tail {
+        buffer[*head] = data;
+        *head = next_head;
+    }
+}
+
+pub fn read() -> Option<u8> {
+    let mut head = HEAD.lock();
+    let mut tail = TAIL.lock();
+    let buffer = BUFFER.lock();
+    
+    if *head == *tail {
+        None
+    } else {
+        let data = buffer[*tail];
+        *tail = (*tail + 1) % 256;
+        Some(data)
+    }
+}
+```
+
+**DMA Setup (Future):**
+```rust
+fn setup_dma_transfer(buffer: &[u8]) -> Result<(), DriverError> {
+    // Allocate DMA buffer
+    let dma_buf = crate::mm::alloc_dma_buffer(buffer.len())?;
+    
+    // Copy data to DMA buffer
+    dma_buf.copy_from_slice(buffer);
+    
+    // Program device with physical address
+    let phys_addr = crate::mm::virt_to_phys(dma_buf.as_ptr() as usize)?;
+    unsafe {
+        outl(DEVICE_DMA_ADDR, phys_addr as u32);
+        outl(DEVICE_DMA_LEN, buffer.len() as u32);
+        outb(DEVICE_DMA_CTRL, DMA_START);
+    }
+    
+    Ok(())
+}
+```
+
+**MMIO Device:**
+```rust
+use crate::io::mmio::{mmio_read32, mmio_write32};
+
+struct MmioDevice {
+    base_addr: usize,
+}
+
+impl MmioDevice {
+    fn read_register(&self, offset: usize) -> u32 {
+        unsafe { mmio_read32(self.base_addr + offset) }
+    }
+    
+    fn write_register(&self, offset: usize, value: u32) {
+        unsafe { mmio_write32(self.base_addr + offset, value) }
+    }
+    
+    fn init(&self) {
+        // Reset device
+        self.write_register(0x00, 0x01);
+        
+        // Configure device
+        self.write_register(0x04, 0x12345678);
+        
+        // Enable device
+        self.write_register(0x00, 0x03);
+    }
+}
+```
+
+### Debugging Drivers
+
+**Serial Debug Output:**
+```rust
+use crate::drivers::serial::serial_println;
+
+fn my_driver_function() {
+    serial_println!("Driver: entering function");
+    serial_println!("Driver: value = {}", value);
+    serial_println!("Driver: exiting function");
+}
+```
+
+**Log Macros:**
+```rust
+use log::{debug, info, warn, error};
+
+fn my_driver_init() {
+    info!("Initializing driver");
+    debug!("Device base: 0x{:04X}", base);
+    warn!("Device not responding");
+    error!("Initialization failed");
+}
+```
+
+**IRQ Debugging:**
+```rust
+fn irq_handler() {
+    let cpu = crate::arch::cpu_id();
+    log::trace!("IRQ on CPU {}", cpu);
+    
+    // Count interrupts
+    static IRQ_COUNT: AtomicUsize = AtomicUsize::new(0);
+    let count = IRQ_COUNT.fetch_add(1, Ordering::Relaxed);
+    
+    if count % 1000 == 0 {
+        log::info!("Processed {} interrupts", count);
+    }
+}
+```
+
 ## Appendix: Quick Reference
 
 ### System Call Template

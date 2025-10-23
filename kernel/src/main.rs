@@ -5,7 +5,7 @@
 mod arch;
 mod config;
 mod dev;
-mod drivers;
+pub mod drivers;
 mod framebuffer;
 mod fs;
 mod init_loader;

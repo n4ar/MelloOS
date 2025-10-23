@@ -4,37 +4,7 @@
 //! It scans various buses (Platform, PS/2, PCI, virtio) to detect hardware devices.
 
 use crate::sync::SpinLock;
-
-/// Bus types supported by the system
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BusType {
-    Platform,   // Platform devices (built-in)
-    PS2,        // PS/2 keyboard/mouse
-    PCI,        // PCI/PCIe devices
-    Virtio,     // Paravirtualized devices
-}
-
-/// Device state tracking
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DeviceState {
-    Detected,      // Device found but not initialized
-    Initializing,  // Driver init in progress
-    Active,        // Device operational
-    Failed,        // Initialization failed
-    Shutdown,      // Device shut down
-}
-
-/// Represents a hardware device
-#[derive(Debug, Clone, Copy)]
-pub struct Device {
-    pub name: &'static str,
-    pub bus: BusType,
-    pub io_base: u64,
-    pub irq: Option<u8>,
-    pub irq_affinity: Option<u8>, // Target CPU core for IRQ routing
-    pub driver: Option<&'static str>,
-    pub state: DeviceState,
-}
+use crate::drivers::{Device, DeviceState, BusType};
 
 /// Maximum number of devices supported
 const MAX_DEVICES: usize = 64;
@@ -70,6 +40,13 @@ impl DeviceRegistry {
 
     fn find_by_name(&self, name: &str) -> Option<&Device> {
         self.get_all().find(|d| d.name == name)
+    }
+
+    fn find_by_name_mut(&mut self, name: &str) -> Option<&mut Device> {
+        self.devices[..self.count]
+            .iter_mut()
+            .filter_map(|d| d.as_mut())
+            .find(|d| d.name == name)
     }
 
     fn find_by_bus(&self, bus: BusType) -> impl Iterator<Item = &Device> {
@@ -109,6 +86,18 @@ pub fn find_device_by_name(name: &str) -> Option<Device> {
     DEVICE_TREE.lock().find_by_name(name).cloned()
 }
 
+/// Update a device's state and driver assignment
+pub fn update_device(name: &str, driver: Option<&'static str>, state: DeviceState) -> bool {
+    let mut tree = DEVICE_TREE.lock();
+    if let Some(device) = tree.find_by_name_mut(name) {
+        device.driver = driver;
+        device.state = state;
+        true
+    } else {
+        false
+    }
+}
+
 /// Iterate over all devices with a callback
 pub fn for_each_device<F>(mut f: F)
 where
@@ -135,9 +124,17 @@ where
 pub fn scan_platform_bus() {
     crate::serial_println!("[IO] Scanning platform bus");
     
-    // Platform devices are typically hardcoded
-    // Examples: framebuffer, timer, ACPI devices
-    // For now, this is a placeholder for future platform device registration
+    // Register serial port (COM1)
+    let serial_device = Device {
+        name: "serial-com1",
+        bus: BusType::Platform,
+        io_base: 0x3F8, // COM1 base address
+        irq: Some(4),   // COM1 IRQ
+        irq_affinity: None,
+        driver: None,
+        state: DeviceState::Detected,
+    };
+    device_register(serial_device);
     
     #[cfg(debug_assertions)]
     crate::serial_println!("[IO] Platform bus scan complete");

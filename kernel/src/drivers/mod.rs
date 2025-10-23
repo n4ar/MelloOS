@@ -186,37 +186,57 @@ pub fn driver_probe_all() {
         return;
     }
     
-    // Process each device
-    let mut devices = DEVICE_REGISTRY.lock();
-    let device_count = devices.count;
+    // Get device count from devtree
+    let device_count = crate::io::devtree::device_count();
     
     if device_count == 0 {
         crate::serial_println!("[DRIVER] No devices detected, skipping probe");
         return;
     }
     
+    crate::serial_println!("[DRIVER] Found {} devices to probe", device_count);
+    
     let mut matched_count = 0;
     let mut failed_count = 0;
+    let mut unmatched_count = 0;
     
-    for device in devices.iter_mut() {
-        if device.driver.is_some() {
-            continue; // Already has a driver
+    // Collect device names first to avoid holding devtree lock during probing
+    const MAX_DEVICES: usize = 32;
+    let mut device_names: [Option<&'static str>; MAX_DEVICES] = [None; MAX_DEVICES];
+    let mut name_count = 0;
+    
+    crate::io::devtree::for_each_device(|device| {
+        if device.driver.is_none() && name_count < MAX_DEVICES {
+            device_names[name_count] = Some(device.name);
+            name_count += 1;
         }
+    });
+    
+    // Probe each device
+    for device_name_opt in &device_names[..name_count] {
+        let device_name = match device_name_opt {
+            Some(name) => *name,
+            None => continue,
+        };
+        // Get device info
+        let device = match crate::io::devtree::find_device_by_name(device_name) {
+            Some(d) => d,
+            None => continue,
+        };
         
         crate::serial_println!("[DRIVER] Probing device: {}", device.name);
-        device.state = DeviceState::Initializing;
+        crate::io::devtree::update_device(device.name, None, DeviceState::Initializing);
         
         // Try each driver
         let drivers = DRIVER_REGISTRY.lock();
         let mut found_match = false;
         
         for driver in drivers.iter() {
-            if (driver.probe)(device) {
+            if (driver.probe)(&device) {
                 crate::serial_println!("[DRIVER]   ✓ Driver '{}' matched device '{}'", driver.name, device.name);
-                match (driver.init)(device) {
+                match (driver.init)(&device) {
                     Ok(()) => {
-                        device.driver = Some(driver.name);
-                        device.state = DeviceState::Active;
+                        crate::io::devtree::update_device(device.name, Some(driver.name), DeviceState::Active);
                         crate::serial_println!("[DRIVER]   ✓ Driver '{}' initialized successfully", driver.name);
                         matched_count += 1;
                         found_match = true;
@@ -224,7 +244,7 @@ pub fn driver_probe_all() {
                     }
                     Err(e) => {
                         crate::serial_println!("[DRIVER]   ✗ Driver '{}' init failed: {:?}", driver.name, e);
-                        device.state = DeviceState::Failed;
+                        crate::io::devtree::update_device(device.name, None, DeviceState::Failed);
                         failed_count += 1;
                         found_match = true;
                         break;
@@ -235,13 +255,14 @@ pub fn driver_probe_all() {
         drop(drivers); // Release driver lock
         
         if !found_match {
-            device.state = DeviceState::Detected;
+            crate::io::devtree::update_device(device.name, None, DeviceState::Detected);
             crate::serial_println!("[DRIVER]   ⚠ No driver found for device '{}'", device.name);
+            unmatched_count += 1;
         }
     }
     
     crate::serial_println!("[DRIVER] Probing complete: {} matched, {} failed, {} unmatched", 
-                          matched_count, failed_count, device_count - matched_count - failed_count);
+                          matched_count, failed_count, unmatched_count);
 }
 
 /// Get the number of registered devices

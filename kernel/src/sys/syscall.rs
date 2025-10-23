@@ -2374,10 +2374,10 @@ fn sys_get_device_list(buf_ptr: usize, max_devices: usize) -> isize {
 
         // Convert bus type to u32
         let bus_type = match device.bus {
-            crate::io::devtree::BusType::Platform => 0,
-            crate::io::devtree::BusType::PS2 => 1,
-            crate::io::devtree::BusType::PCI => 2,
-            crate::io::devtree::BusType::Virtio => 3,
+            crate::io::BusType::Platform => 0,
+            crate::io::BusType::PS2 => 1,
+            crate::io::BusType::PCI => 2,
+            crate::io::BusType::Virtio => 3,
         };
 
         // Convert IRQ to u32 (0xFFFFFFFF if none)
@@ -2386,11 +2386,11 @@ fn sys_get_device_list(buf_ptr: usize, max_devices: usize) -> isize {
 
         // Convert state to u32
         let state = match device.state {
-            crate::io::devtree::DeviceState::Detected => 0,
-            crate::io::devtree::DeviceState::Initializing => 1,
-            crate::io::devtree::DeviceState::Active => 2,
-            crate::io::devtree::DeviceState::Failed => 3,
-            crate::io::devtree::DeviceState::Shutdown => 4,
+            crate::io::DeviceState::Detected => 0,
+            crate::io::DeviceState::Initializing => 1,
+            crate::io::DeviceState::Active => 2,
+            crate::io::DeviceState::Failed => 3,
+            crate::io::DeviceState::Shutdown => 4,
         };
 
         // Check if driver is loaded

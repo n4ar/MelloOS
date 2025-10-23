@@ -36,3 +36,4 @@ iso_root/
 
 #logs
 *.log
+qemu.log

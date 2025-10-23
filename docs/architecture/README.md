@@ -14,6 +14,7 @@ System architecture and design documentation for MelloOS.
 - **[performance-optimizations.md](performance-optimizations.md)**: Performance optimization strategies
 - **[IO Infrastructure.md](IO%20Infrastructure.md)**: I/O port, MMIO, and IRQ infrastructure
 - **[device-syscalls.md](device-syscalls.md)**: Device driver syscalls for userland access
+- **[device-drivers.md](device-drivers.md)**: Device driver subsystem architecture and implementation
 
 ## Reading Order
 
@@ -27,3 +28,4 @@ System architecture and design documentation for MelloOS.
 8. **performance-optimizations.md** - Performance tuning
 9. **IO Infrastructure.md** - Low-level I/O infrastructure
 10. **device-syscalls.md** - Device driver syscalls
+11. **device-drivers.md** - Complete device driver subsystem (Phase 7)
