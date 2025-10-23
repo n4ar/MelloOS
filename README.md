@@ -1,6 +1,6 @@
 # MelloOS
 
-A modern x86_64 operating system kernel written in Rust, featuring true multi-core support (SMP), preemptive multitasking, priority-based scheduling, system calls, inter-process communication, user-mode process execution, and a complete userland environment with shell, terminal emulator, and POSIX-like utilities.
+A modern x86_64 operating system kernel written in Rust from scratch, featuring true multi-core support (SMP), preemptive multitasking, priority-based scheduling, comprehensive system calls, inter-process communication, user-mode process execution, device drivers, and a complete userland environment with an interactive shell, terminal emulator, and POSIX-like utilities.
 
 ## ✨ Highlights
 
@@ -8,17 +8,69 @@ A modern x86_64 operating system kernel written in Rust, featuring true multi-co
 - 🐚 **Interactive Shell**: Full-featured POSIX-like shell with job control
 - 📺 **Terminal Emulator**: VT/ANSI-compatible with UTF-8 support
 - 🛠️ **14 Utilities**: BusyBox-style multi-call binary (ls, cat, grep, ps, etc.)
+- 🔌 **Device Drivers**: Keyboard, serial, and virtio-blk block device support
 - 🔒 **Memory Protection**: User/kernel isolation with NX bit support
-- ⚡ **Fast Syscalls**: Modern syscall/sysret mechanism
+- ⚡ **Fast Syscalls**: Modern syscall/sysret mechanism (20+ syscalls)
 - 📡 **Signals**: 31 POSIX signals with job control
 - 🖥️ **PTY Subsystem**: Complete pseudo-terminal implementation
 - 📊 **/proc Filesystem**: Virtual filesystem for system information
 - 🌍 **UTF-8 Support**: International text throughout userland
-- 🧪 **Comprehensive Testing**: 10+ test scripts with performance benchmarks
+- 🧪 **Comprehensive Testing**: 15+ test scripts with performance benchmarks
 
 ## 🌟 Features
 
-### Phase 6.6: Advanced Userland & Shell Environment ✅ COMPLETE
+### Phase 7: Device Drivers & I/O ✅ COMPLETE
+
+**Complete device driver infrastructure with keyboard, serial, and block device support:**
+
+- **Driver Framework**: Generic driver model with registration and probing
+  - Driver Manager for centralized driver management
+  - Device discovery and enumeration (Platform, PS/2, PCI, virtio buses)
+  - Device tree for hardware tracking
+  - Hot-plug support (future)
+
+- **Input Drivers**:
+  - PS/2 keyboard driver with scancode translation
+  - Full keyboard layout support (US QWERTY)
+  - Special key handling (Ctrl, Alt, Shift, Caps Lock)
+  - Interrupt-driven input processing
+
+- **Serial Drivers**:
+  - UART16550 serial port driver (COM1)
+  - Configurable baud rate and line settings
+  - Interrupt-driven I/O
+  - Kernel logging and debugging support
+
+- **Block Drivers**:
+  - virtio-blk driver for QEMU/virtualization
+  - Block device abstraction layer (BlockDevice trait)
+  - Sector-based I/O operations
+  - Device information queries (capacity, block size)
+
+- **I/O Infrastructure**:
+  - Port I/O (inb/outb) for legacy devices
+  - MMIO (Memory-Mapped I/O) support
+  - IRQ management with IOAPIC routing
+  - CPU affinity for interrupt handling
+  - SMP-safe interrupt distribution
+
+- **System Calls for Devices**:
+  - `SYS_READ_STDIN` (25) - Read from keyboard
+  - `SYS_SERIAL_WRITE` (26) - Write to serial port
+  - `SYS_SERIAL_READ` (27) - Read from serial port
+  - `SYS_BLOCK_READ` (28) - Read disk blocks
+  - `SYS_BLOCK_WRITE` (29) - Write disk blocks
+  - `SYS_GET_DEVICE_LIST` (30) - Enumerate devices
+  - `SYS_GET_BLOCK_DEVICE_INFO` (31) - Query block device info
+
+- **Userland Testing Tools**:
+  - `kbd_test` - Keyboard input testing
+  - `serial_test` - Serial port communication
+  - `disk_bench` - Disk performance benchmarking
+  - `dmesg` - Kernel log display
+  - `lsdev` - Device enumeration
+  - `diskinfo` - Block device information
+  - `irq_test` - Interrupt distribution testing
 
 **Complete userland environment with interactive shell, terminal emulator, and utilities:**
 
@@ -70,63 +122,66 @@ A modern x86_64 operating system kernel written in Rust, featuring true multi-co
   - Foreground/background process group management
   - Orphaned process group handling
 
-### Phase 6: User-Mode Support ✅
+### Phase 6: User-Mode Support ✅ COMPLETE
 
 - **Ring 3 Execution**: User processes run in ring 3 with privilege level isolation
 - **GDT/TSS Configuration**: Per-CPU Global Descriptor Tables and Task State Segments
-- **Fast Syscalls**: syscall/sysret mechanism for efficient kernel transitions
+- **Fast Syscalls**: syscall/sysret mechanism for efficient kernel transitions (< 100ns)
 - **Process Management**: Process Control Blocks (PCB) with fine-grained locking
 - **Memory Protection**: User/kernel address space separation (< 512GB user space)
 - **ELF Loader**: Load and execute ELF binaries in user space
 - **Process Lifecycle**: Fork, exec, exit, wait syscalls
 - **User Stack**: 8KB user stacks with guard pages
+- **Security**: User pointer validation, capability checks, memory isolation
 
-### Phase 5: SMP Multi-Core Support ✅
+### Phase 5: SMP Multi-Core Support ✅ COMPLETE
 
 - **Symmetric Multi-Processing**: Support for up to 16 CPU cores with automatic detection
 - **ACPI MADT Integration**: CPU discovery via ACPI Multiple APIC Description Table
-- **AP Bootstrap**: INIT/SIPI sequence to bring Application Processors online
+- **AP Bootstrap**: INIT/SIPI sequence to bring Application Processors online (~500ms per AP)
 - **Per-Core Scheduling**: Independent runqueues with automatic load balancing
 - **Inter-Processor Interrupts**: Cross-core communication and coordination (RESCHEDULE_IPI)
 - **SMP-Safe Synchronization**: SpinLocks with proper lock ordering to prevent deadlocks
 - **Per-CPU Data Structures**: GS.BASE-based per-core data to minimize contention
 - **Cross-Core IPC**: Message passing between tasks on different CPU cores
 - **APIC Timer**: Per-core Local APIC timers for preemptive multitasking at 20 Hz
+- **Load Balancing**: Periodic rebalancing every 100ms (2 ticks at 20Hz)
 
-### Phase 4: Advanced Scheduling, System Calls, and IPC ✅
+### Phase 4: Advanced Scheduling, System Calls, and IPC ✅ COMPLETE
 
 - **Priority-Based Scheduler**: Three-level priority system (High, Normal, Low) with O(1) task selection
 - **System Call Interface**: Legacy `int 0x80` and modern syscall/sysret mechanisms
-- **Extended Syscalls**: 10 syscalls including fork, exec, wait, getpid, yield
+- **Extended Syscalls**: 20+ syscalls including fork, exec, wait, getpid, yield, pipe, dup2, ioctl
 - **Inter-Process Communication**: Port-based message passing with 256 ports and 16-message queues
 - **Sleep/Wake Mechanism**: Timer-based task suspension with automatic wake-up
 - **Userland Init Process**: First userland process demonstrating syscall and IPC usage
 - **Kernel Metrics**: Atomic counters tracking context switches, syscalls, and IPC operations
 - **Preemption Control**: Critical section support with preempt_disable/enable
 
-### Phase 3: Task Scheduler ✅
+### Phase 3: Task Scheduler ✅ COMPLETE
 
 - **Preemptive Multitasking**: Multiple tasks run concurrently with automatic time-sharing
 - **Round-Robin Scheduling**: Fair CPU time distribution within same priority level
 - **Context Switching**: Assembly-optimized register save/restore (< 1μs per switch)
-- **Timer Interrupts**: PIT-based periodic interrupts at 100 Hz (10ms time slices)
+- **Timer Interrupts**: APIC-based periodic interrupts at 20 Hz (50ms time slices)
 - **Task Management**: Task Control Blocks (TCB) with unique IDs, states, and priorities
 - **Per-Task Stacks**: Isolated 8KB stacks for each task
 
-### Phase 2: Memory Management ✅
+### Phase 2: Memory Management ✅ COMPLETE
 
 - **Physical Memory Manager (PMM)**: Bitmap-based frame allocator for 4KB pages
 - **Paging System**: 4-level page tables with per-section permissions (RX, R, RW+NX)
 - **Kernel Heap Allocator**: Buddy System algorithm (64B to 1MB blocks)
 - **Security Features**: NX bit support, write protection, memory zeroing, guard pages
 - **Memory Statistics**: Total/free memory tracking in MB
+- **TLB Management**: Efficient TLB invalidation for page table updates
 
-### Phase 1: Basic Kernel ✅
+### Phase 1: Basic Kernel ✅ COMPLETE
 
-- **UEFI Boot**: Limine bootloader integration
+- **UEFI Boot**: Limine bootloader integration (BIOS and UEFI support)
 - **Framebuffer Driver**: Pixel-level graphics with 8x8 bitmap font
-- **Serial Console**: COM1 output for debugging
-- **Panic Handler**: Basic error handling
+- **Serial Console**: COM1 output for debugging and logging
+- **Panic Handler**: Comprehensive error handling with stack traces
 
 ## 🏗️ Architecture
 
@@ -205,6 +260,24 @@ A modern x86_64 operating system kernel written in Rust, featuring true multi-co
 │  └─────────────────────────────────────────────────────────────┘   │
 │                                                                     │
 │  ┌─────────────────────────────────────────────────────────────┐   │
+│  │           Device Drivers (drivers/)                         │   │
+│  │  - Driver Manager with registration and probing             │   │
+│  │  - PS/2 keyboard driver (scancode translation)              │   │
+│  │  - UART16550 serial driver (COM1)                           │   │
+│  │  - virtio-blk block device driver                           │   │
+│  │  - Device tree for hardware tracking                        │   │
+│  │  - IRQ management with IOAPIC routing                       │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
+│  │           I/O Infrastructure (io/)                          │   │
+│  │  - Port I/O (inb/outb) for legacy devices                   │   │
+│  │  - MMIO (Memory-Mapped I/O) support                         │   │
+│  │  - IRQ handling with CPU affinity                           │   │
+│  │  - Device tree management                                   │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
 │  │           Memory Management (mm/)                           │   │
 │  │  ┌──────────┐ ┌──────────┐ ┌────────────────────────────┐  │   │
 │  │  │   PMM    │ │  Paging  │ │    Heap Allocator          │  │   │
@@ -256,6 +329,17 @@ A modern x86_64 operating system kernel written in Rust, featuring true multi-co
 │  └─────────────────────────────────────────────────────────────┘   │
 │                                                                     │
 │  ┌─────────────────────────────────────────────────────────────┐   │
+│  │  Device Testing Tools                                       │   │
+│  │  - kbd_test (keyboard input testing)                        │   │
+│  │  - serial_test (serial port communication)                  │   │
+│  │  - disk_bench (disk performance benchmarking)               │   │
+│  │  - dmesg (kernel log display)                               │   │
+│  │  - lsdev (device enumeration)                               │   │
+│  │  - diskinfo (block device information)                      │   │
+│  │  - irq_test (interrupt distribution testing)                │   │
+│  └─────────────────────────────────────────────────────────────┘   │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────────────┐   │
 │  │  init (PID 1)                                               │   │
 │  │  - System initialization                                    │   │
 │  │  - Process reaping                                          │   │
@@ -302,12 +386,14 @@ rustc --version
 - `spin` - Spinlock implementation
 - `x86_64` - x86-64 architecture support
 - `bitflags` - Bit flag manipulation
+- `volatile` - Volatile memory access
 
 **Build Tools:**
 - GNU Assembler (as) or Clang - For assembly files
 - objcopy - For binary extraction
 - xorriso - For ISO creation
 - QEMU - For testing and development
+- make - Build automation
 
 ### Building and Running
 
@@ -437,6 +523,20 @@ mellos/
 │   │   │       │   ├── mod.rs # MSR configuration
 │   │   │       │   └── entry.S # Syscall entry point
 │   │   │       └── user_entry.S # User-mode transition
+│   │   ├── drivers/       # Device drivers
+│   │   │   ├── mod.rs     # Driver manager
+│   │   │   ├── input/     # Input device drivers
+│   │   │   │   └── keyboard.rs # PS/2 keyboard
+│   │   │   ├── serial/    # Serial port drivers
+│   │   │   │   └── uart16550.rs # UART16550
+│   │   │   └── block/     # Block device drivers
+│   │   │       └── virtio_blk.rs # virtio-blk
+│   │   ├── io/            # I/O infrastructure
+│   │   │   ├── mod.rs     # I/O module
+│   │   │   ├── port.rs    # Port I/O (inb/outb)
+│   │   │   ├── mmio.rs    # Memory-mapped I/O
+│   │   │   ├── irq.rs     # IRQ management
+│   │   │   └── devtree.rs # Device tree
 │   │   ├── mm/            # Memory management
 │   │   │   ├── pmm.rs     # Physical memory manager
 │   │   │   ├── paging.rs  # Virtual memory (4-level)
@@ -498,18 +598,25 @@ mellos/
 │   │   │   │   ├── scrollback.rs # Scrollback buffer
 │   │   │   │   └── clipboard.rs # Clipboard support
 │   │   │   └── Cargo.toml
-│   │   └── mellobox/      # Coreutils (multi-call binary)
-│   │       ├── src/
-│   │       │   ├── main.rs
-│   │       │   ├── args.rs      # Argument parser
-│   │       │   ├── error.rs     # Error handling
-│   │       │   ├── syscalls.rs  # Syscall wrappers
-│   │       │   └── commands/    # Utility implementations
-│   │       │       ├── ls.rs, cat.rs, cp.rs, mv.rs, rm.rs
-│   │       │       ├── grep.rs, echo.rs, ps.rs, kill.rs
-│   │       │       ├── mkdir.rs, touch.rs, pwd.rs
-│   │       │       └── true_cmd.rs, false_cmd.rs
-│   │       └── Cargo.toml
+│   │   ├── mellobox/      # Coreutils (multi-call binary)
+│   │   │   ├── src/
+│   │   │   │   ├── main.rs
+│   │   │   │   ├── args.rs      # Argument parser
+│   │   │   │   ├── error.rs     # Error handling
+│   │   │   │   ├── syscalls.rs  # Syscall wrappers
+│   │   │   │   └── commands/    # Utility implementations
+│   │   │   │       ├── ls.rs, cat.rs, cp.rs, mv.rs, rm.rs
+│   │   │   │       ├── grep.rs, echo.rs, ps.rs, kill.rs
+│   │   │   │       ├── mkdir.rs, touch.rs, pwd.rs
+│   │   │   │       └── true_cmd.rs, false_cmd.rs
+│   │   │   └── Cargo.toml
+│   │   ├── kbd_test/     # Keyboard testing tool
+│   │   ├── serial_test/  # Serial port testing tool
+│   │   ├── disk_bench/   # Disk benchmarking tool
+│   │   ├── dmesg/        # Kernel log display
+│   │   ├── lsdev/        # Device enumeration
+│   │   ├── diskinfo/     # Block device info
+│   │   └── irq_test/     # Interrupt testing
 │   ├── Cargo.toml         # Kernel dependencies
 │   ├── build.rs           # Build script (compiles assembly)
 │   └── linker.ld          # Kernel linker script
@@ -571,6 +678,18 @@ MelloOS provides 20+ system calls accessible via the modern `syscall` instructio
 | 59 | SYS_EXECVE | (path, argv, envp) | Execute new program |
 | 61 | SYS_WAIT4 | (pid, status, options) | Wait for child process |
 | 39 | SYS_GETPID | () | Get current process ID |
+
+### Device System Calls
+
+| ID | Name | Arguments | Description |
+|----|------|-----------|-------------|
+| 25 | SYS_READ_STDIN | (buf, len) | Read from keyboard |
+| 26 | SYS_SERIAL_WRITE | (buf, len) | Write to serial port |
+| 27 | SYS_SERIAL_READ | (buf, len) | Read from serial port |
+| 28 | SYS_BLOCK_READ | (lba, buf, count) | Read disk blocks |
+| 29 | SYS_BLOCK_WRITE | (lba, buf, count) | Write disk blocks |
+| 30 | SYS_GET_DEVICE_LIST | (devices, max) | Enumerate devices |
+| 31 | SYS_GET_BLOCK_DEVICE_INFO | (info) | Query block device |
 
 ### I/O and File Operations
 
@@ -728,7 +847,9 @@ $ export PATH=/bin      # Search path
 $ echo $HOME            # Display variable
 ```
 
-## 🧰 Userland Utilities (mellobox)
+## 🧰 Userland Utilities
+
+### Core Utilities (mellobox)
 
 MelloOS includes a BusyBox-style multi-call binary with 14 utilities:
 
@@ -754,6 +875,18 @@ MelloOS includes a BusyBox-style multi-call binary with 14 utilities:
 - **true** - Return success (exit code 0)
 - **false** - Return failure (exit code 1)
 
+### Device Testing Tools
+
+MelloOS includes specialized tools for testing device drivers:
+
+- **kbd_test** - Keyboard input testing and scancode display
+- **serial_test** - Serial port communication testing
+- **disk_bench** - Disk performance benchmarking (read/write throughput)
+- **dmesg** - Display kernel log messages
+- **lsdev** - Enumerate all detected devices
+- **diskinfo** - Display block device information (capacity, block size)
+- **irq_test** - Test interrupt distribution across CPUs
+
 ### Usage Examples
 
 ```bash
@@ -772,9 +905,18 @@ $ echo "Hello, World!"
 $ ps
 $ kill -9 42
 
+# Device testing
+$ lsdev                    # List all devices
+$ diskinfo                 # Show disk information
+$ kbd_test                 # Test keyboard input
+$ disk_bench               # Benchmark disk performance
+$ dmesg                    # View kernel logs
+$ irq_test                 # Test interrupt distribution
+
 # Pipelines
 $ cat /proc/stat | grep cpu
 $ ps | grep mello
+$ dmesg | grep "SMP"
 ```
 
 ## 🛠️ Development
@@ -993,6 +1135,25 @@ All metrics are thread-safe and can be accessed from any CPU core without locks.
 
 ## 🗺️ Roadmap
 
+### Phase 7: Device Drivers & I/O ✅ COMPLETE
+- [x] Generic driver model and framework
+- [x] Driver Manager with registration and probing
+- [x] PS/2 keyboard driver with scancode translation
+- [x] UART16550 serial port driver (COM1)
+- [x] virtio-blk block device driver
+- [x] Block device abstraction layer (BlockDevice trait)
+- [x] Device discovery and enumeration (Platform, PS/2, PCI, virtio)
+- [x] IRQ management with IOAPIC routing and CPU affinity
+- [x] I/O infrastructure (port I/O, MMIO, IRQ handling)
+- [x] Device tree for hardware tracking
+- [x] System calls for device access (7 new syscalls)
+- [x] Userland testing tools (7 utilities)
+- [x] Integration test suite
+- [x] SMP-safe interrupt handling
+- [x] Documentation and developer guidelines
+
+**Note:** AHCI and NVMe drivers deferred to future optimization phase. virtio-blk provides sufficient functionality for Phase 8 filesystem support.
+
 ### Phase 6.6: Advanced Userland & Shell Environment ✅ COMPLETE
 - [x] mello-sh shell with job control, pipelines, I/O redirection
 - [x] mello-term terminal emulator with PTY integration
@@ -1006,18 +1167,7 @@ All metrics are thread-safe and can be accessed from any CPU core without locks.
 - [x] Comprehensive testing suite
 - [x] Build system integration
 
-### Phase 7: Device Drivers & I/O (Next) 🎯
-- [ ] Generic driver model and framework
-- [ ] Keyboard driver (PS/2 and USB)
-- [ ] Serial port driver enhancements
-- [ ] Disk controller support:
-  - [ ] AHCI (SATA) driver
-  - [ ] NVMe driver
-- [ ] Block device abstraction layer
-- [ ] Device discovery and enumeration
-- [ ] Interrupt handling for devices
-
-### Phase 8: Filesystem & Storage
+### Phase 8: Filesystem & Storage (Next) 🎯
 - [ ] VFS (Virtual File System) layer
 - [ ] tmpfs (temporary filesystem in RAM)
 - [ ] ext2 filesystem support (read-only → read-write)
@@ -1026,6 +1176,8 @@ All metrics are thread-safe and can be accessed from any CPU core without locks.
 - [ ] File descriptor management
 - [ ] Path resolution
 - [ ] Directory operations
+
+**Prerequisites:** All previous phases complete ✅, Block device driver operational ✅
 
 ### Phase 9: Networking Stack
 - [ ] virtio-net driver (for QEMU/virtualization)
@@ -1065,6 +1217,9 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[SMP Implementation](docs/architecture/smp.md)**: Multi-core support implementation details
 - **[Task Scheduler](docs/architecture/task-scheduler.md)**: Scheduler design and algorithms
 - **[Memory Management](docs/architecture/memory-management-logging.md)**: Memory subsystem details
+- **[Device Drivers](docs/architecture/device-drivers.md)**: Driver framework and implementation
+- **[Device Syscalls](docs/architecture/device-syscalls.md)**: Device system call interface
+- **[I/O Infrastructure](docs/architecture/IO%20Infrastructure.md)**: Port I/O, MMIO, and IRQ management
 - **[PTY Subsystem](docs/architecture/pty-subsystem.md)**: Pseudo-terminal architecture
 - **[Signals & Job Control](docs/architecture/signals-job-control.md)**: Signal handling and job control
 - **[/proc Filesystem](docs/architecture/proc-filesystem.md)**: Virtual filesystem structure
@@ -1101,8 +1256,8 @@ Comprehensive documentation is available in the `docs/` directory:
 ```
 Virtual Address Space (x86-64 Canonical Addresses):
 0x0000_0000_0000_0000 - 0x0000_7FFF_FFFF_FFFF : User space (512GB)
-  0x0000_0000_0040_0000 - 0x0000_0000_004F_FFFF : Init process code/data
-  0x0000_7FFF_FFFF_0000 - 0x0000_7FFF_FFFF_FFFF : User stack (8KB)
+0x0000_0000_0040_0000 - 0x0000_0000_004F_FFFF : Init process code/data
+0x0000_7FFF_FFFF_0000 - 0x0000_7FFF_FFFF_FFFF : User stack (8KB)
 0x0000_8000_0000_0000 - 0xFFFF_7FFF_FFFF_FFFF : Non-canonical (invalid)
 0xFFFF_8000_0000_0000 - 0xFFFF_9FFF_FFFF_FFFF : HHDM (direct physical mapping)
 0xFFFF_A000_0000_0000 - 0xFFFF_A000_00FF_FFFF : Kernel heap (16MB, buddy allocator)
@@ -1177,40 +1332,45 @@ Ready → Running → Ready (preempted or yielded)
 - **User-Mode Execution**: Ring 3 transitions, syscalls, process management
 - **Memory Protection**: User/kernel address space separation enforced
 - **Complete Userland**: Shell, terminal emulator, and 14 utilities
+- **Device Drivers**: PS/2 keyboard, UART16550 serial, virtio-blk block device
+- **I/O Infrastructure**: Port I/O, MMIO, IRQ management with CPU affinity
 - **PTY Subsystem**: Full pseudo-terminal support with termios
 - **Signal Infrastructure**: 31 POSIX signals with handlers
 - **Job Control**: Background jobs, fg/bg, process groups, sessions
 - **/proc Filesystem**: Virtual filesystem for system information
 - **UTF-8 Support**: International text throughout userland
 - **Build System**: Automated build with symlinks and ISO creation
+- **Testing Tools**: 7 device testing utilities (kbd_test, disk_bench, lsdev, etc.)
 
 ### Next Phase 🎯
-- **Phase 7: Device Drivers & I/O**: Ready to begin
-  - Generic driver model
-  - Keyboard and disk drivers
-  - Block device abstraction
-  - Device discovery
+- **Phase 8: Filesystem & Storage**: Ready to begin
+  - VFS (Virtual File System) layer
+  - tmpfs and ext2/FAT32 support
+  - Mount/umount syscalls
+  - File operations
 
 ### Recent Achievements 🎉
-- **Phase 6.6 Complete**: Full userland environment with shell, terminal, and utilities
-- **PTY Subsystem**: Complete pseudo-terminal implementation with job control
-- **Signal Infrastructure**: POSIX-like signal handling with security checks
-- **/proc Filesystem**: Virtual filesystem with lock-free reads
-- **UTF-8 Support**: Full international text support in shell and terminal
-- **Performance Optimizations**: Ring buffer optimizations, inline hints, fast paths
-- **Comprehensive Testing**: 10+ test scripts covering all major features
-- **Build System Integration**: Automated build with mellobox symlinks
+- **Phase 7 Complete**: Full device driver infrastructure with keyboard, serial, and disk support
+- **Driver Framework**: Generic driver model with registration, probing, and device tree
+- **Block Device Support**: virtio-blk driver with BlockDevice trait abstraction
+- **IRQ Management**: IOAPIC routing with CPU affinity and SMP-safe handling
+- **Device Syscalls**: 7 new syscalls for device access (read_stdin, block_read, get_device_list, etc.)
+- **Testing Tools**: 7 specialized utilities for device testing and benchmarking
+- **Integration Tests**: Comprehensive test suite for driver functionality
+- **Documentation**: Complete architecture docs for device drivers and I/O infrastructure
 
 ### Test Results 📊
 - **Boot Tests**: ✅ All CPUs come online successfully
 - **SMP Tests**: ✅ Multi-core scheduling and load balancing working
+- **Device Tests**: ✅ Keyboard, serial, and disk drivers operational
+- **Driver Tests**: ✅ Device discovery, IRQ handling, and I/O working
 - **UTF-8 Tests**: ✅ Thai, emoji, and mixed scripts render correctly
 - **Job Control Tests**: ✅ Background jobs, fg/bg, signals working
 - **Pipeline Tests**: ✅ Multi-stage pipelines with I/O redirection
 - **PTY Tests**: ✅ Terminal emulation and signal generation
 - **Performance Tests**: ✅ All targets met or exceeded
 
-See [docs/SMP-ACHIEVEMENT.md](docs/SMP-ACHIEVEMENT.md) for SMP implementation details, [tools/testing/TEST_SUITE_SUMMARY.md](tools/testing/TEST_SUITE_SUMMARY.md) for complete test results, and [tools/testing/PERFORMANCE_VERIFICATION_REPORT.md](tools/testing/PERFORMANCE_VERIFICATION_REPORT.md) for performance benchmarks.
+See [docs/SMP-ACHIEVEMENT.md](docs/SMP-ACHIEVEMENT.md) for SMP implementation details, [docs/architecture/device-drivers.md](docs/architecture/device-drivers.md) for driver architecture, [tools/testing/TEST_SUITE_SUMMARY.md](tools/testing/TEST_SUITE_SUMMARY.md) for complete test results, and [tools/testing/PERFORMANCE_VERIFICATION_REPORT.md](tools/testing/PERFORMANCE_VERIFICATION_REPORT.md) for performance benchmarks.
 
 ## 🤝 Contributing
 
