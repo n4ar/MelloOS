@@ -324,3 +324,21 @@ pub fn allocated_bytes() -> usize {
         0
     }
 }
+
+// GlobalAlloc implementation for Rust's alloc crate
+use core::alloc::{GlobalAlloc, Layout};
+
+struct KernelAllocator;
+
+unsafe impl GlobalAlloc for KernelAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        kmalloc(layout.size())
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        kfree(ptr, layout.size())
+    }
+}
+
+#[global_allocator]
+static GLOBAL: KernelAllocator = KernelAllocator;
