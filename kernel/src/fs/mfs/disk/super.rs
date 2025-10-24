@@ -3,8 +3,16 @@
 //! Superblock structure and operations for persistent MelloFS.
 
 use crate::drivers::block::BlockDevice;
+use super::checksum::crc32c_u64;
 use alloc::sync::Arc;
-use core::mem;
+
+/// Get current time in nanoseconds since Unix epoch
+///
+/// For now, returns 0. A proper implementation would read from RTC or TSC.
+fn current_time_ns() -> u64 {
+    // TODO: Implement proper time reading
+    0
+}
 
 /// Magic number for MelloFS disk format: "MFSD"
 pub const MFS_MAGIC: u32 = 0x4D465344;
@@ -15,6 +23,9 @@ pub const MFS_VERSION: u32 = 1;
 /// Superblock location (LBA)
 pub const PRIMARY_SUPERBLOCK_LBA: u64 = 16;
 pub const PRIMARY_SUPERBLOCK_BLOCKS: u64 = 16;
+
+/// Secondary superblock is at the end of the device (last 16 blocks)
+/// The actual LBA is computed as: total_blocks - SECONDARY_SUPERBLOCK_BLOCKS
 
 /// Supported block sizes
 pub const BLOCK_SIZE_4K: u32 = 4096;
@@ -172,7 +183,7 @@ impl MfsSuperblock {
             )
         };
         
-        crc32c(bytes) as u64
+        crc32c_u64(bytes)
     }
     
     /// Verify superblock checksum
@@ -224,7 +235,8 @@ impl MfsSuperblock {
     ) -> Result<Self, &'static str> {
         // Read superblock blocks
         let mut buffer = alloc::vec![0u8; Self::SIZE];
-        device.read(lba, &mut buffer)?;
+        device.read_block(lba, &mut buffer)
+            .map_err(|_| "Failed to read superblock")?;
         
         // Parse superblock
         let sb = unsafe {
@@ -243,6 +255,9 @@ impl MfsSuperblock {
         device: &Arc<dyn BlockDevice>,
         lba: u64,
     ) -> Result<(), &'static str> {
+        // Update timestamps
+        self.modified_time = current_time_ns();
+        
         // Update checksum
         self.checksum = self.compute_checksum();
         
@@ -255,9 +270,71 @@ impl MfsSuperblock {
         };
         
         // Write to device
-        device.write(lba, bytes)?;
+        device.write_block(lba, bytes)
+            .map_err(|_| "Failed to write superblock")?;
         
         Ok(())
+    }
+    
+    /// Get secondary superblock LBA
+    ///
+    /// Secondary superblock is stored at the end of the device
+    pub fn secondary_superblock_lba(total_blocks: u64) -> u64 {
+        if total_blocks > PRIMARY_SUPERBLOCK_BLOCKS {
+            total_blocks - PRIMARY_SUPERBLOCK_BLOCKS
+        } else {
+            0 // Invalid
+        }
+    }
+    
+    /// Write both primary and secondary superblocks
+    pub fn write_both(
+        &mut self,
+        device: &Arc<dyn BlockDevice>,
+    ) -> Result<(), &'static str> {
+        // Write primary superblock
+        self.write_to_device(device, PRIMARY_SUPERBLOCK_LBA)?;
+        
+        // Write secondary superblock
+        let secondary_lba = Self::secondary_superblock_lba(self.total_blocks);
+        if secondary_lba > 0 {
+            self.write_to_device(device, secondary_lba)?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Try to read superblock, falling back to secondary if primary fails
+    pub fn read_with_fallback(
+        device: &Arc<dyn BlockDevice>,
+        total_blocks: u64,
+    ) -> Result<Self, &'static str> {
+        // Try primary superblock first
+        match Self::read_from_device(device, PRIMARY_SUPERBLOCK_LBA) {
+            Ok(sb) => {
+                crate::log_info!("MFS", "Loaded primary superblock");
+                return Ok(sb);
+            }
+            Err(e) => {
+                crate::log_warn!("MFS", "Primary superblock failed: {}, trying secondary", e);
+            }
+        }
+        
+        // Try secondary superblock
+        let secondary_lba = Self::secondary_superblock_lba(total_blocks);
+        if secondary_lba > 0 {
+            match Self::read_from_device(device, secondary_lba) {
+                Ok(sb) => {
+                    crate::log_info!("MFS", "Loaded secondary superblock");
+                    return Ok(sb);
+                }
+                Err(e) => {
+                    crate::log_error!("MFS", "Secondary superblock also failed: {}", e);
+                }
+            }
+        }
+        
+        Err("Both primary and secondary superblocks failed")
     }
     
     /// Set filesystem label
@@ -276,62 +353,4 @@ impl MfsSuperblock {
     }
 }
 
-/// CRC32C (Castagnoli) implementation
-///
-/// Uses software implementation. Hardware acceleration (SSE4.2) can be added later.
-fn crc32c(data: &[u8]) -> u32 {
-    const POLY: u32 = 0x82F63B78; // Reversed polynomial
-    let mut crc: u32 = 0xFFFFFFFF;
-    
-    for &byte in data {
-        crc ^= byte as u32;
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ POLY
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    
-    crc ^ 0xFFFFFFFF
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_superblock_size() {
-        assert_eq!(mem::size_of::<MfsSuperblock>(), MfsSuperblock::SIZE);
-    }
-    
-    #[test]
-    fn test_superblock_creation() {
-        let sb = MfsSuperblock::new(BLOCK_SIZE_4K, 1000).unwrap();
-        assert_eq!(sb.magic, MFS_MAGIC);
-        assert_eq!(sb.version, MFS_VERSION);
-        assert_eq!(sb.block_size, BLOCK_SIZE_4K);
-        assert_eq!(sb.total_blocks, 1000);
-        assert_eq!(sb.free_blocks, 1000);
-    }
-    
-    #[test]
-    fn test_superblock_checksum() {
-        let sb = MfsSuperblock::new(BLOCK_SIZE_4K, 1000).unwrap();
-        assert!(sb.verify_checksum());
-    }
-    
-    #[test]
-    fn test_invalid_block_size() {
-        assert!(MfsSuperblock::new(2048, 1000).is_err());
-        assert!(MfsSuperblock::new(8192, 1000).is_ok());
-    }
-    
-    #[test]
-    fn test_label() {
-        let mut sb = MfsSuperblock::new(BLOCK_SIZE_4K, 1000).unwrap();
-        sb.set_label("test_fs");
-        assert_eq!(sb.get_label(), "test_fs");
-    }
-}

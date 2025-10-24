@@ -2,6 +2,7 @@
 //!
 //! B-tree nodes for metadata indexing.
 
+use super::checksum::crc32c_u64;
 use alloc::vec::Vec;
 
 /// B-tree node magic: "MFN1"
@@ -193,7 +194,7 @@ impl BtreeNode {
         }
         
         // Compute checksum
-        let checksum = crc32c(&buffer[..self.block_size as usize]);
+        let checksum = crc32c_u64(&buffer[..self.block_size as usize]);
         
         // Update checksum in header
         buffer[24..32].copy_from_slice(&checksum.to_le_bytes());
@@ -222,9 +223,17 @@ impl BtreeNode {
         let mut data_copy = data.to_vec();
         // Zero out checksum field for verification
         data_copy[24..32].fill(0);
-        let computed_checksum = crc32c(&data_copy);
+        let computed_checksum = crc32c_u64(&data_copy);
         
         if stored_checksum != computed_checksum {
+            // Log corruption details
+            crate::log_error!(
+                "MFS",
+                "B-tree node checksum mismatch: node_id={}, expected={:#x}, got={:#x}",
+                header.node_id,
+                stored_checksum,
+                computed_checksum
+            );
             return Err("Checksum mismatch");
         }
         
@@ -473,23 +482,4 @@ pub enum DeleteResult {
     NodeUnderfull(Vec<u8>),
 }
 
-/// CRC32C (Castagnoli) implementation
-fn crc32c(data: &[u8]) -> u64 {
-    const POLY: u32 = 0x82F63B78;
-    let mut crc: u32 = 0xFFFFFFFF;
-    
-    for &byte in data {
-        crc ^= byte as u32;
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ POLY
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    
-    (crc ^ 0xFFFFFFFF) as u64
-}
 
-// Tests would go here but are omitted for kernel code
