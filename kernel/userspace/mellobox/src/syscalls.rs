@@ -264,3 +264,24 @@ pub struct BlockDeviceInfo {
 pub fn get_block_device_info(info: &mut BlockDeviceInfo) -> isize {
     unsafe { syscall1(SYS_GET_BLOCK_DEVICE_INFO, info as *mut _ as usize) }
 }
+
+/// Get file status (follow symlinks)
+pub fn stat(path: &[u8], statbuf: *mut u8) -> isize {
+    unsafe { syscall2(SYS_LSTAT, path.as_ptr() as usize, statbuf as usize) }
+}
+
+/// Mount a filesystem
+pub fn mount(source: *const u8, target: *const u8, fstype: *const u8, flags: usize, data: *const u8) -> isize {
+    // Note: This is a simplified version that packs arguments
+    // The kernel expects: (source_ptr, target_ptr, fstype_ptr)
+    unsafe { syscall3(SYS_MOUNT, source as usize, target as usize, fstype as usize) }
+}
+
+/// Unmount a filesystem
+pub fn umount(target: *const u8, flags: usize) -> isize {
+    unsafe { syscall2(SYS_UMOUNT, target as usize, flags) }
+}
+
+// Mount/umount syscall numbers
+const SYS_MOUNT: usize = 47;
+const SYS_UMOUNT: usize = 48;

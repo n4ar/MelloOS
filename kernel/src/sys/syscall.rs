@@ -159,6 +159,21 @@ pub const SYS_GET_DEVICE_LIST: usize = 30;
 pub const SYS_GET_BLOCK_DEVICE_INFO: usize = 31;
 pub const SYS_READ_KERNEL_LOG: usize = 32;
 pub const SYS_GET_IRQ_STATS: usize = 33;
+pub const SYS_STAT: usize = 34;
+pub const SYS_FSTAT: usize = 35;
+pub const SYS_LSTAT: usize = 36;
+pub const SYS_CHMOD: usize = 37;
+pub const SYS_CHOWN: usize = 38;
+pub const SYS_UTIMENSAT: usize = 39;
+pub const SYS_SETXATTR: usize = 40;
+pub const SYS_GETXATTR: usize = 41;
+pub const SYS_LISTXATTR: usize = 42;
+pub const SYS_MKNOD: usize = 43;
+pub const SYS_SYNC: usize = 44;
+pub const SYS_FSYNC: usize = 45;
+pub const SYS_FDATASYNC: usize = 46;
+pub const SYS_MOUNT: usize = 47;
+pub const SYS_UMOUNT: usize = 48;
 
 static NEXT_FAKE_PID: AtomicUsize = AtomicUsize::new(2000);
 
@@ -182,7 +197,12 @@ static NEXT_FAKE_PID: AtomicUsize = AtomicUsize::new(2000);
 /// - Task state is accessed through per-CPU structures
 /// - Multiple cores can execute syscalls concurrently without contention
 #[no_mangle]
-pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize, arg3: usize) -> isize {
+pub extern "C" fn syscall_dispatcher(
+    syscall_id: usize,
+    arg1: usize,
+    arg2: usize,
+    arg3: usize,
+) -> isize {
     // Get current task ID for logging
     let task_id = match crate::sched::get_current_task_info() {
         Some((id, _)) => id,
@@ -225,6 +245,21 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_GET_BLOCK_DEVICE_INFO => "SYS_GET_BLOCK_DEVICE_INFO",
         SYS_READ_KERNEL_LOG => "SYS_READ_KERNEL_LOG",
         SYS_GET_IRQ_STATS => "SYS_GET_IRQ_STATS",
+        SYS_STAT => "SYS_STAT",
+        SYS_FSTAT => "SYS_FSTAT",
+        SYS_LSTAT => "SYS_LSTAT",
+        SYS_CHMOD => "SYS_CHMOD",
+        SYS_CHOWN => "SYS_CHOWN",
+        SYS_UTIMENSAT => "SYS_UTIMENSAT",
+        SYS_SETXATTR => "SYS_SETXATTR",
+        SYS_GETXATTR => "SYS_GETXATTR",
+        SYS_LISTXATTR => "SYS_LISTXATTR",
+        SYS_MKNOD => "SYS_MKNOD",
+        SYS_SYNC => "SYS_SYNC",
+        SYS_FSYNC => "SYS_FSYNC",
+        SYS_FDATASYNC => "SYS_FDATASYNC",
+        SYS_MOUNT => "SYS_MOUNT",
+        SYS_UMOUNT => "SYS_UMOUNT",
         _ => "INVALID",
     };
 
@@ -282,6 +317,21 @@ pub extern "C" fn syscall_dispatcher(syscall_id: usize, arg1: usize, arg2: usize
         SYS_GET_BLOCK_DEVICE_INFO => sys_get_block_device_info(arg1),
         SYS_READ_KERNEL_LOG => sys_read_kernel_log(arg1, arg2),
         SYS_GET_IRQ_STATS => sys_get_irq_stats(arg1, arg2),
+        SYS_STAT => sys_stat(arg1, arg2),
+        SYS_FSTAT => sys_fstat(arg1, arg2),
+        SYS_LSTAT => sys_lstat(arg1, arg2),
+        SYS_CHMOD => sys_chmod(arg1, arg2),
+        SYS_CHOWN => sys_chown(arg1, arg2, arg3),
+        SYS_UTIMENSAT => sys_utimensat(arg1, arg2, arg3),
+        SYS_SETXATTR => sys_setxattr(arg1, arg2, arg3),
+        SYS_GETXATTR => sys_getxattr(arg1, arg2, arg3),
+        SYS_LISTXATTR => sys_listxattr(arg1, arg2),
+        SYS_MKNOD => sys_mknod(arg1, arg2, arg3),
+        SYS_SYNC => sys_sync(),
+        SYS_FSYNC => sys_fsync(arg1),
+        SYS_FDATASYNC => sys_fdatasync(arg1),
+        SYS_MOUNT => sys_mount(arg1, arg2, arg3),
+        SYS_UMOUNT => sys_umount(arg1, arg2),
         _ => {
             serial_println!("[SYSCALL] ERROR: Invalid syscall ID: {}", syscall_id);
             -1 // Invalid syscall
@@ -804,20 +854,20 @@ static PIPE_TABLE: SpinLock<PipeTable> = SpinLock::new(PipeTable::new());
 /// be inherited by the new program.
 pub fn close_fds_with_cloexec() {
     let mut fd_table = FD_TABLE.lock();
-    
+
     // Scan all file descriptors
     for fd in 0..MAX_FDS {
         if let Some(fd_entry) = fd_table.get(fd) {
             // Check if FD_CLOEXEC flag is set
             if (fd_entry.fd_flags & FD_CLOEXEC) != 0 {
                 serial_println!("[SYSCALL] Closing FD {} (FD_CLOEXEC set)", fd);
-                
+
                 // Get the FD type before closing
                 let fd_type = fd_entry.fd_type;
-                
+
                 // Close the FD
                 fd_table.close(fd);
-                
+
                 // Handle cleanup based on FD type
                 match fd_type {
                     FdType::PtyMaster(pty_num) => {
@@ -864,7 +914,12 @@ impl FdTable {
         None
     }
 
-    fn allocate_with_flags(&mut self, fd_type: FdType, fd_flags: u32, status_flags: u32) -> Option<usize> {
+    fn allocate_with_flags(
+        &mut self,
+        fd_type: FdType,
+        fd_flags: u32,
+        status_flags: u32,
+    ) -> Option<usize> {
         // Start from FD 3 (after stdin/stdout/stderr)
         for i in 3..MAX_FDS {
             if matches!(self.fds[i].fd_type, FdType::Invalid) {
@@ -875,7 +930,13 @@ impl FdTable {
         None
     }
 
-    fn allocate_at(&mut self, fd: usize, fd_type: FdType, fd_flags: u32, status_flags: u32) -> bool {
+    fn allocate_at(
+        &mut self,
+        fd: usize,
+        fd_type: FdType,
+        fd_flags: u32,
+        status_flags: u32,
+    ) -> bool {
         if fd >= MAX_FDS {
             return false;
         }
@@ -953,7 +1014,11 @@ fn sys_open(path_ptr: usize, _flags: usize) -> isize {
                 let mut fd_table = FD_TABLE.lock();
                 match fd_table.allocate(FdType::PtyMaster(pty_num)) {
                     Some(fd) => {
-                        serial_println!("[SYSCALL] sys_open: allocated PTY {} as FD {}", pty_num, fd);
+                        serial_println!(
+                            "[SYSCALL] sys_open: allocated PTY {} as FD {}",
+                            pty_num,
+                            fd
+                        );
                         fd as isize
                     }
                     None => {
@@ -979,7 +1044,11 @@ fn sys_open(path_ptr: usize, _flags: usize) -> isize {
                 let mut fd_table = FD_TABLE.lock();
                 match fd_table.allocate(FdType::PtySlave(pty_num)) {
                     Some(fd) => {
-                        serial_println!("[SYSCALL] sys_open: opened PTY slave {} as FD {}", pty_num, fd);
+                        serial_println!(
+                            "[SYSCALL] sys_open: opened PTY slave {} as FD {}",
+                            pty_num,
+                            fd
+                        );
                         fd as isize
                     }
                     None => {
@@ -1084,11 +1153,11 @@ fn sys_read(fd: usize, buf_ptr: usize, len: usize) -> isize {
 /// 0 on success, or -1 on error
 fn sys_close(fd: usize) -> isize {
     let mut fd_table = FD_TABLE.lock();
-    
+
     match fd_table.close(fd) {
         Some(fd_entry) => {
             serial_println!("[SYSCALL] sys_close: closed FD {}", fd);
-            
+
             // Handle cleanup based on FD type
             match fd_entry.fd_type {
                 FdType::PtyMaster(pty_num) => {
@@ -1113,7 +1182,7 @@ fn sys_close(fd: usize) -> isize {
                     // Should never happen
                 }
             }
-            
+
             0
         }
         None => {
@@ -1124,14 +1193,14 @@ fn sys_close(fd: usize) -> isize {
 }
 
 /// ioctl command numbers
-const TIOCGPTN: usize = 0x80045430;  // Get PTY number
-const TCGETS: usize = 0x5401;        // Get termios structure
-const TCSETS: usize = 0x5402;        // Set termios structure
-const TIOCGWINSZ: usize = 0x5413;    // Get window size
-const TIOCSWINSZ: usize = 0x5414;    // Set window size
-const TIOCSPGRP: usize = 0x5410;     // Set foreground process group
-const TIOCGPGRP: usize = 0x540F;     // Get foreground process group
-const TIOCSCTTY: usize = 0x540E;     // Make this TTY the controlling terminal
+const TIOCGPTN: usize = 0x80045430; // Get PTY number
+const TCGETS: usize = 0x5401; // Get termios structure
+const TCSETS: usize = 0x5402; // Set termios structure
+const TIOCGWINSZ: usize = 0x5413; // Get window size
+const TIOCSWINSZ: usize = 0x5414; // Set window size
+const TIOCSPGRP: usize = 0x5410; // Set foreground process group
+const TIOCGPGRP: usize = 0x540F; // Get foreground process group
+const TIOCSCTTY: usize = 0x540E; // Make this TTY the controlling terminal
 
 /// sys_ioctl handler - Device-specific control operations
 ///
@@ -1154,7 +1223,12 @@ fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> isize {
     };
     drop(fd_table);
 
-    serial_println!("[SYSCALL] sys_ioctl: FD={}, cmd={:#x}, arg={:#x}", fd, cmd, arg);
+    serial_println!(
+        "[SYSCALL] sys_ioctl: FD={}, cmd={:#x}, arg={:#x}",
+        fd,
+        cmd,
+        arg
+    );
 
     // Handle based on command
     match cmd {
@@ -1261,8 +1335,12 @@ fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> isize {
                     unsafe {
                         *(arg as *mut crate::dev::pty::Winsize) = winsize;
                     }
-                    serial_println!("[SYSCALL] sys_ioctl: TIOCGWINSZ for PTY {}: {}x{}", 
-                                  pty_num, winsize.ws_row, winsize.ws_col);
+                    serial_println!(
+                        "[SYSCALL] sys_ioctl: TIOCGWINSZ for PTY {}: {}x{}",
+                        pty_num,
+                        winsize.ws_row,
+                        winsize.ws_col
+                    );
                     0
                 }
                 None => {
@@ -1291,8 +1369,12 @@ fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> isize {
 
             // Set winsize in PTY
             if crate::dev::pty::set_winsize(pty_num, winsize) {
-                serial_println!("[SYSCALL] sys_ioctl: TIOCSWINSZ for PTY {}: {}x{}", 
-                              pty_num, winsize.ws_row, winsize.ws_col);
+                serial_println!(
+                    "[SYSCALL] sys_ioctl: TIOCSWINSZ for PTY {}: {}x{}",
+                    pty_num,
+                    winsize.ws_row,
+                    winsize.ws_col
+                );
                 0
             } else {
                 serial_println!("[SYSCALL] sys_ioctl: TIOCSWINSZ on invalid PTY");
@@ -1334,7 +1416,7 @@ fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> isize {
         TIOCSCTTY => {
             // Make this TTY the controlling terminal
             // arg is typically 0 (force flag, not implemented)
-            
+
             // Get current task
             let current_id = match crate::sched::get_current_task_info() {
                 Some((id, _)) => id,
@@ -1381,7 +1463,7 @@ fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> isize {
             // Also set the session in the PTY slave
             let sid = task.sid;
             // Task reference will be dropped automatically here
-            
+
             if crate::dev::pty::set_session(pty_num, sid) {
                 serial_println!(
                     "[SYSCALL] sys_ioctl: TIOCSCTTY: set PTY {} as controlling terminal for session {}",
@@ -1410,7 +1492,7 @@ fn sys_ioctl(fd: usize, cmd: usize, arg: usize) -> isize {
 /// # Returns
 /// 0 on success, or -1 on error
 fn sys_sigaction(signal: usize, act_ptr: usize, oldact_ptr: usize) -> isize {
-    use crate::signal::{SigAction, signals, is_catchable};
+    use crate::signal::{is_catchable, signals, SigAction};
 
     // Validate signal number
     if signal == 0 || signal >= signals::MAX_SIGNAL as usize {
@@ -1493,7 +1575,7 @@ fn sys_sigaction(signal: usize, act_ptr: usize, oldact_ptr: usize) -> isize {
 /// * pid == -1: Send to all processes (except init)
 /// * pid < -1: Send to all processes in process group |pid|
 fn sys_kill(pid: usize, signal: usize) -> isize {
-    use crate::signal::{signals, send_signal};
+    use crate::signal::{send_signal, signals};
 
     // Validate signal number
     if signal >= signals::MAX_SIGNAL as usize {
@@ -1520,7 +1602,8 @@ fn sys_kill(pid: usize, signal: usize) -> isize {
     // For now, implement simple case: pid > 0 (send to specific process)
     if pid > 0 && pid < 0x8000_0000 {
         // Prevent sending SIGKILL/SIGSTOP to PID 1 (init)
-        if pid == 1 && (signal == signals::SIGKILL as usize || signal == signals::SIGSTOP as usize) {
+        if pid == 1 && (signal == signals::SIGKILL as usize || signal == signals::SIGSTOP as usize)
+        {
             serial_println!("[SYSCALL] sys_kill: cannot send SIGKILL/SIGSTOP to init");
             return -1; // EPERM
         }
@@ -1540,7 +1623,11 @@ fn sys_kill(pid: usize, signal: usize) -> isize {
         // Send the signal
         match send_signal(target, signal as u32) {
             Ok(()) => {
-                serial_println!("[SYSCALL] sys_kill: sent signal {} to process {}", signal, pid);
+                serial_println!(
+                    "[SYSCALL] sys_kill: sent signal {} to process {}",
+                    signal,
+                    pid
+                );
                 0
             }
             Err(()) => {
@@ -1569,7 +1656,7 @@ fn sys_kill(pid: usize, signal: usize) -> isize {
 /// - Must be in same session
 /// - Cannot move process to different session
 fn sys_setpgid(pid: usize, pgid: usize) -> isize {
-    use crate::sched::process_group::{Pid, Pgid};
+    use crate::sched::process_group::{Pgid, Pid};
 
     // Get current task
     let current_id = match crate::sched::get_current_task_info() {
@@ -1601,7 +1688,10 @@ fn sys_setpgid(pid: usize, pgid: usize) -> isize {
     let target_task = match crate::sched::get_task_mut(target_pid) {
         Some(t) => t,
         None => {
-            serial_println!("[SYSCALL] sys_setpgid: target process {} not found", target_pid);
+            serial_println!(
+                "[SYSCALL] sys_setpgid: target process {} not found",
+                target_pid
+            );
             return -1; // ESRCH - no such process
         }
     };
@@ -1624,7 +1714,9 @@ fn sys_setpgid(pid: usize, pgid: usize) -> isize {
 
     serial_println!(
         "[SYSCALL] sys_setpgid: set PID {} PGID from {} to {}",
-        target_pid, old_pgid, target_pgid
+        target_pid,
+        old_pgid,
+        target_pgid
     );
 
     0
@@ -1701,7 +1793,8 @@ fn sys_setsid() -> isize {
 
     serial_println!(
         "[SYSCALL] sys_setsid: created new session {} for PID {}",
-        new_sid, current_id
+        new_sid,
+        current_id
     );
 
     new_sid as isize
@@ -1801,7 +1894,8 @@ fn sys_tcsetpgrp(fd: usize, pgid: usize) -> isize {
     if crate::dev::pty::set_foreground_pgid(pty_num, pgid as Pgid) {
         serial_println!(
             "[SYSCALL] sys_tcsetpgrp: set foreground PGID to {} for PTY {}",
-            pgid, pty_num
+            pgid,
+            pty_num
         );
         0
     } else {
@@ -1843,7 +1937,8 @@ fn sys_tcgetpgrp(fd: usize) -> isize {
         Some(pgid) => {
             serial_println!(
                 "[SYSCALL] sys_tcgetpgrp: foreground PGID is {} for PTY {}",
-                pgid, pty_num
+                pgid,
+                pty_num
             );
             pgid as isize
         }
@@ -1855,10 +1950,10 @@ fn sys_tcgetpgrp(fd: usize) -> isize {
 }
 
 /// fcntl command numbers
-const F_GETFD: usize = 1;  // Get file descriptor flags
-const F_SETFD: usize = 2;  // Set file descriptor flags
-const F_GETFL: usize = 3;  // Get file status flags
-const F_SETFL: usize = 4;  // Set file status flags
+const F_GETFD: usize = 1; // Get file descriptor flags
+const F_SETFD: usize = 2; // Set file descriptor flags
+const F_GETFL: usize = 3; // Get file status flags
+const F_SETFL: usize = 4; // Set file status flags
 
 /// sys_fcntl handler - File descriptor control operations
 ///
@@ -1905,7 +2000,10 @@ fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> isize {
             // Set file status flags (only O_NONBLOCK and O_APPEND can be changed)
             let flags = arg as u32 & (O_NONBLOCK | O_APPEND);
             fd_entry.status_flags = (fd_entry.status_flags & !(O_NONBLOCK | O_APPEND)) | flags;
-            serial_println!("[SYSCALL] sys_fcntl: F_SETFL set flags to {:#x}", fd_entry.status_flags);
+            serial_println!(
+                "[SYSCALL] sys_fcntl: F_SETFL set flags to {:#x}",
+                fd_entry.status_flags
+            );
             0
         }
         _ => {
@@ -1924,7 +2022,11 @@ fn sys_fcntl(fd: usize, cmd: usize, arg: usize) -> isize {
 /// # Returns
 /// 0 on success, or -1 on error
 fn sys_pipe2(pipefd_ptr: usize, flags: usize) -> isize {
-    serial_println!("[SYSCALL] sys_pipe2: pipefd_ptr={:#x}, flags={:#x}", pipefd_ptr, flags);
+    serial_println!(
+        "[SYSCALL] sys_pipe2: pipefd_ptr={:#x}, flags={:#x}",
+        pipefd_ptr,
+        flags
+    );
 
     // Validate pointer
     if !validate_user_buffer(pipefd_ptr, core::mem::size_of::<[i32; 2]>()) {
@@ -1933,7 +2035,11 @@ fn sys_pipe2(pipefd_ptr: usize, flags: usize) -> isize {
     }
 
     // Parse flags
-    let fd_flags = if (flags & 0x80000) != 0 { FD_CLOEXEC } else { 0 }; // O_CLOEXEC = 0x80000
+    let fd_flags = if (flags & 0x80000) != 0 {
+        FD_CLOEXEC
+    } else {
+        0
+    }; // O_CLOEXEC = 0x80000
     let status_flags = (flags as u32) & O_NONBLOCK;
 
     // Allocate a pipe
@@ -1949,33 +2055,35 @@ fn sys_pipe2(pipefd_ptr: usize, flags: usize) -> isize {
 
     // Allocate file descriptors
     let mut fd_table = FD_TABLE.lock();
-    
+
     // Allocate read end
-    let read_fd = match fd_table.allocate_with_flags(FdType::PipeRead(pipe_id), fd_flags, status_flags) {
-        Some(fd) => fd,
-        None => {
-            // Failed to allocate read FD, deallocate pipe
-            let mut pipe_table = PIPE_TABLE.lock();
-            pipe_table.close_reader(pipe_id);
-            pipe_table.close_writer(pipe_id);
-            serial_println!("[SYSCALL] sys_pipe2: no FDs available for read end");
-            return -1; // EMFILE
-        }
-    };
+    let read_fd =
+        match fd_table.allocate_with_flags(FdType::PipeRead(pipe_id), fd_flags, status_flags) {
+            Some(fd) => fd,
+            None => {
+                // Failed to allocate read FD, deallocate pipe
+                let mut pipe_table = PIPE_TABLE.lock();
+                pipe_table.close_reader(pipe_id);
+                pipe_table.close_writer(pipe_id);
+                serial_println!("[SYSCALL] sys_pipe2: no FDs available for read end");
+                return -1; // EMFILE
+            }
+        };
 
     // Allocate write end
-    let write_fd = match fd_table.allocate_with_flags(FdType::PipeWrite(pipe_id), fd_flags, status_flags) {
-        Some(fd) => fd,
-        None => {
-            // Failed to allocate write FD, clean up
-            fd_table.close(read_fd);
-            let mut pipe_table = PIPE_TABLE.lock();
-            pipe_table.close_reader(pipe_id);
-            pipe_table.close_writer(pipe_id);
-            serial_println!("[SYSCALL] sys_pipe2: no FDs available for write end");
-            return -1; // EMFILE
-        }
-    };
+    let write_fd =
+        match fd_table.allocate_with_flags(FdType::PipeWrite(pipe_id), fd_flags, status_flags) {
+            Some(fd) => fd,
+            None => {
+                // Failed to allocate write FD, clean up
+                fd_table.close(read_fd);
+                let mut pipe_table = PIPE_TABLE.lock();
+                pipe_table.close_reader(pipe_id);
+                pipe_table.close_writer(pipe_id);
+                serial_println!("[SYSCALL] sys_pipe2: no FDs available for write end");
+                return -1; // EMFILE
+            }
+        };
 
     drop(fd_table);
 
@@ -1986,7 +2094,12 @@ fn sys_pipe2(pipefd_ptr: usize, flags: usize) -> isize {
         *pipefd.offset(1) = write_fd as i32;
     }
 
-    serial_println!("[SYSCALL] sys_pipe2: created pipe {} with FDs [{}, {}]", pipe_id, read_fd, write_fd);
+    serial_println!(
+        "[SYSCALL] sys_pipe2: created pipe {} with FDs [{}, {}]",
+        pipe_id,
+        read_fd,
+        write_fd
+    );
     0
 }
 
@@ -2054,8 +2167,17 @@ fn sys_dup2(oldfd: usize, newfd: usize) -> isize {
     }
 
     // Close newfd if it's open, then allocate at that position
-    if fd_table.allocate_at(newfd, new_entry.fd_type, new_entry.fd_flags, new_entry.status_flags) {
-        serial_println!("[SYSCALL] sys_dup2: duplicated FD {} to FD {}", oldfd, newfd);
+    if fd_table.allocate_at(
+        newfd,
+        new_entry.fd_type,
+        new_entry.fd_flags,
+        new_entry.status_flags,
+    ) {
+        serial_println!(
+            "[SYSCALL] sys_dup2: duplicated FD {} to FD {}",
+            oldfd,
+            newfd
+        );
         newfd as isize
     } else {
         serial_println!("[SYSCALL] sys_dup2: failed to allocate at FD {}", newfd);
@@ -2247,13 +2369,17 @@ fn sys_block_read(lba: usize, buf_ptr: usize, count: usize) -> isize {
     for i in 0..count {
         let block_lba = (lba + i) as u64;
         let block_buf = &mut buffer[i * 512..(i + 1) * 512];
-        
+
         match crate::drivers::block::virtio_blk::block_read(block_lba, block_buf) {
             Ok(()) => {
                 blocks_read += 1;
             }
             Err(e) => {
-                serial_println!("[SYSCALL] sys_block_read: error reading block {}: {:?}", block_lba, e);
+                serial_println!(
+                    "[SYSCALL] sys_block_read: error reading block {}: {:?}",
+                    block_lba,
+                    e
+                );
                 if blocks_read == 0 {
                     return -1; // Return error if no blocks were read
                 } else {
@@ -2301,13 +2427,17 @@ fn sys_block_write(lba: usize, buf_ptr: usize, count: usize) -> isize {
     for i in 0..count {
         let block_lba = (lba + i) as u64;
         let block_buf = &buffer[i * 512..(i + 1) * 512];
-        
+
         match crate::drivers::block::virtio_blk::block_write(block_lba, block_buf) {
             Ok(()) => {
                 blocks_written += 1;
             }
             Err(e) => {
-                serial_println!("[SYSCALL] sys_block_write: error writing block {}: {:?}", block_lba, e);
+                serial_println!(
+                    "[SYSCALL] sys_block_write: error writing block {}: {:?}",
+                    block_lba,
+                    e
+                );
                 if blocks_written == 0 {
                     return -1; // Return error if no blocks were written
                 } else {
@@ -2324,12 +2454,12 @@ fn sys_block_write(lba: usize, buf_ptr: usize, count: usize) -> isize {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct DeviceInfo {
-    pub name: [u8; 32],      // Device name (null-terminated)
-    pub bus_type: u32,       // Bus type (0=Platform, 1=PS2, 2=PCI, 3=Virtio)
-    pub io_base: u64,        // I/O base address
-    pub irq: u32,            // IRQ number (0xFFFFFFFF if none)
-    pub state: u32,          // Device state (0=Detected, 1=Initializing, 2=Active, 3=Failed, 4=Shutdown)
-    pub has_driver: u32,     // 1 if driver is loaded, 0 otherwise
+    pub name: [u8; 32],  // Device name (null-terminated)
+    pub bus_type: u32,   // Bus type (0=Platform, 1=PS2, 2=PCI, 3=Virtio)
+    pub io_base: u64,    // I/O base address
+    pub irq: u32,        // IRQ number (0xFFFFFFFF if none)
+    pub state: u32, // Device state (0=Detected, 1=Initializing, 2=Active, 3=Failed, 4=Shutdown)
+    pub has_driver: u32, // 1 if driver is loaded, 0 otherwise
 }
 
 /// sys_get_device_list handler - Query device tree
@@ -2355,9 +2485,8 @@ fn sys_get_device_list(buf_ptr: usize, max_devices: usize) -> isize {
     }
 
     // Convert pointer to mutable slice
-    let buffer = unsafe { 
-        core::slice::from_raw_parts_mut(buf_ptr as *mut DeviceInfo, max_devices) 
-    };
+    let buffer =
+        unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut DeviceInfo, max_devices) };
 
     // Iterate over devices and fill buffer
     let mut count = 0;
@@ -2382,7 +2511,11 @@ fn sys_get_device_list(buf_ptr: usize, max_devices: usize) -> isize {
 
         // Convert IRQ to u32 (0xFFFFFFFF if none)
         let irq = device.irq.unwrap_or(0xFF) as u32;
-        let irq = if device.irq.is_none() { 0xFFFFFFFF } else { irq };
+        let irq = if device.irq.is_none() {
+            0xFFFFFFFF
+        } else {
+            irq
+        };
 
         // Convert state to u32
         let state = match device.state {
@@ -2416,9 +2549,9 @@ fn sys_get_device_list(buf_ptr: usize, max_devices: usize) -> isize {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BlockDeviceInfo {
-    pub block_count: u64,    // Total number of blocks
-    pub block_size: u32,     // Size of each block in bytes
-    pub capacity_mb: u32,    // Total capacity in megabytes
+    pub block_count: u64, // Total number of blocks
+    pub block_size: u32,  // Size of each block in bytes
+    pub capacity_mb: u32, // Total capacity in megabytes
 }
 
 /// sys_get_block_device_info handler - Get block device information
@@ -2443,7 +2576,7 @@ fn sys_get_block_device_info(buf_ptr: usize) -> isize {
             // Device is ready, get info
             // Note: In a full implementation, we'd have a proper API to query device info
             // For now, we'll use hardcoded values based on the virtio-blk driver
-            
+
             let block_count = 1024 * 1024; // 1M blocks (from driver default)
             let block_size = 512;
             let capacity_mb = (block_count * block_size) / (1024 * 1024);
@@ -2501,14 +2634,17 @@ fn sys_get_irq_stats(buf_ptr: usize, max_entries: usize) -> isize {
     // Use a fixed-size buffer (support up to 32 IRQs)
     const MAX_IRQS: usize = 32;
     let mut temp_buffer: [(u8, [u64; 8]); MAX_IRQS] = [(0, [0; 8]); MAX_IRQS];
-    let actual_max = if max_entries > MAX_IRQS { MAX_IRQS } else { max_entries };
-    
+    let actual_max = if max_entries > MAX_IRQS {
+        MAX_IRQS
+    } else {
+        max_entries
+    };
+
     let count = crate::io::irq::get_all_irq_stats(&mut temp_buffer[..actual_max], actual_max);
 
     // Convert to IrqStatsEntry format and copy to user buffer
-    let user_buffer = unsafe {
-        core::slice::from_raw_parts_mut(buf_ptr as *mut IrqStatsEntry, max_entries)
-    };
+    let user_buffer =
+        unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut IrqStatsEntry, max_entries) };
 
     for i in 0..count {
         let (irq, cpu_counts) = temp_buffer[i];
@@ -2520,4 +2656,965 @@ fn sys_get_irq_stats(buf_ptr: usize, max_entries: usize) -> isize {
     }
 
     count as isize
+}
+
+/// sys_stat handler - Get file status by path
+///
+/// # Arguments
+/// * `path_ptr` - Pointer to null-terminated path string
+/// * `stat_ptr` - Pointer to Stat structure to fill
+///
+/// # Returns
+/// 0 on success, or -1 on error
+fn sys_stat(path_ptr: usize, stat_ptr: usize) -> isize {
+    use crate::fs::vfs::inode::Stat;
+
+    // Validate pointers
+    if !validate_user_buffer(path_ptr, 1)
+        || !validate_user_buffer(stat_ptr, core::mem::size_of::<Stat>())
+    {
+        serial_println!("[SYSCALL] sys_stat: invalid pointer");
+        return -1; // EFAULT
+    }
+
+    // Read path string
+    let path_bytes = unsafe {
+        let mut len = 0;
+        let ptr = path_ptr as *const u8;
+        while len < 4096 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 4096 {
+            serial_println!("[SYSCALL] sys_stat: path too long");
+            return -1; // ENAMETOOLONG
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let path = match core::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_stat: invalid UTF-8 in path");
+            return -1; // EINVAL
+        }
+    };
+
+    serial_println!("[SYSCALL] sys_stat: path={}", path);
+
+    // TODO: Implement path resolution and stat
+    // For now, return ENOENT (not implemented)
+    serial_println!("[SYSCALL] sys_stat: not implemented");
+    -1 // ENOENT
+}
+
+/// sys_fstat handler - Get file status by file descriptor
+///
+/// # Arguments
+/// * `fd` - File descriptor
+/// * `stat_ptr` - Pointer to Stat structure to fill
+///
+/// # Returns
+/// 0 on success, or -1 on error
+fn sys_fstat(fd: usize, stat_ptr: usize) -> isize {
+    use crate::fs::vfs::inode::Stat;
+
+    // Validate stat pointer
+    if !validate_user_buffer(stat_ptr, core::mem::size_of::<Stat>()) {
+        serial_println!("[SYSCALL] sys_fstat: invalid stat pointer");
+        return -1; // EFAULT
+    }
+
+    serial_println!("[SYSCALL] sys_fstat: fd={}", fd);
+
+    // TODO: Implement fstat for file descriptors
+    // For now, return EBADF (not implemented)
+    serial_println!("[SYSCALL] sys_fstat: not implemented");
+    -1 // EBADF
+}
+
+/// sys_lstat handler - Get file status by path (don't follow symlinks)
+///
+/// # Arguments
+/// * `path_ptr` - Pointer to null-terminated path string
+/// * `stat_ptr` - Pointer to Stat structure to fill
+///
+/// # Returns
+/// 0 on success, or -1 on error
+fn sys_lstat(path_ptr: usize, stat_ptr: usize) -> isize {
+    use crate::fs::vfs::inode::Stat;
+
+    // Validate pointers
+    if !validate_user_buffer(path_ptr, 1)
+        || !validate_user_buffer(stat_ptr, core::mem::size_of::<Stat>())
+    {
+        serial_println!("[SYSCALL] sys_lstat: invalid pointer");
+        return -1; // EFAULT
+    }
+
+    // Read path string
+    let path_bytes = unsafe {
+        let mut len = 0;
+        let ptr = path_ptr as *const u8;
+        while len < 4096 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 4096 {
+            serial_println!("[SYSCALL] sys_lstat: path too long");
+            return -1; // ENAMETOOLONG
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let path = match core::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_lstat: invalid UTF-8 in path");
+            return -1; // EINVAL
+        }
+    };
+
+    serial_println!("[SYSCALL] sys_lstat: path={}", path);
+
+    // TODO: Implement path resolution and lstat (without following symlinks)
+    // For now, return ENOENT (not implemented)
+    serial_println!("[SYSCALL] sys_lstat: not implemented");
+    -1 // ENOENT
+}
+
+/// sys_chmod handler - Change file permissions
+///
+/// # Arguments
+/// * `path_ptr` - Pointer to null-terminated path string
+/// * `mode` - New permission bits
+///
+/// # Returns
+/// 0 on success, or -1 on error
+fn sys_chmod(path_ptr: usize, mode: usize) -> isize {
+    use crate::fs::vfs::inode::{FileMode, SetAttr};
+
+    // Validate path pointer
+    if !validate_user_buffer(path_ptr, 1) {
+        serial_println!("[SYSCALL] sys_chmod: invalid path pointer");
+        return -1; // EFAULT
+    }
+
+    // Read path string
+    let path_bytes = unsafe {
+        let mut len = 0;
+        let ptr = path_ptr as *const u8;
+        while len < 4096 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 4096 {
+            serial_println!("[SYSCALL] sys_chmod: path too long");
+            return -1; // ENAMETOOLONG
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let path = match core::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_chmod: invalid UTF-8 in path");
+            return -1; // EINVAL
+        }
+    };
+
+    serial_println!("[SYSCALL] sys_chmod: path={}, mode={:#o}", path, mode);
+
+    // TODO: Implement path resolution and chmod
+    // For now, return ENOENT (not implemented)
+    serial_println!("[SYSCALL] sys_chmod: not implemented");
+    -1 // ENOENT
+}
+
+/// sys_chown handler - Change file ownership
+///
+/// # Arguments
+/// * `path_ptr` - Pointer to null-terminated path string
+/// * `uid` - New user ID (-1 to leave unchanged)
+/// * `gid` - New group ID (-1 to leave unchanged)
+///
+/// # Returns
+/// 0 on success, or -1 on error
+fn sys_chown(path_ptr: usize, uid: usize, gid: usize) -> isize {
+    use crate::fs::vfs::inode::SetAttr;
+
+    // Validate path pointer
+    if !validate_user_buffer(path_ptr, 1) {
+        serial_println!("[SYSCALL] sys_chown: invalid path pointer");
+        return -1; // EFAULT
+    }
+
+    // Read path string
+    let path_bytes = unsafe {
+        let mut len = 0;
+        let ptr = path_ptr as *const u8;
+        while len < 4096 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 4096 {
+            serial_println!("[SYSCALL] sys_chown: path too long");
+            return -1; // ENAMETOOLONG
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let path = match core::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_chown: invalid UTF-8 in path");
+            return -1; // EINVAL
+        }
+    };
+
+    serial_println!(
+        "[SYSCALL] sys_chown: path={}, uid={}, gid={}",
+        path,
+        uid,
+        gid
+    );
+
+    // TODO: Implement path resolution and chown
+    // For now, return ENOENT (not implemented)
+    serial_println!("[SYSCALL] sys_chown: not implemented");
+    -1 // ENOENT
+}
+
+/// Timespec structure for utimensat
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct Timespec {
+    tv_sec: i64,
+    tv_nsec: i64,
+}
+
+/// sys_utimensat handler - Change file timestamps with nanosecond precision
+///
+/// # Arguments
+/// * `dirfd` - Directory file descriptor (or AT_FDCWD for current directory)
+/// * `path_ptr` - Pointer to null-terminated path string (or 0 for dirfd itself)
+/// * `times_ptr` - Pointer to array of 2 Timespec structures [atime, mtime] (or 0 for current time)
+///
+/// # Returns
+/// 0 on success, or -1 on error
+///
+/// # Special values
+/// * AT_FDCWD (-100): Use current working directory
+/// * UTIME_NOW (0x3fffffff): Set to current time
+/// * UTIME_OMIT (0x3ffffffe): Don't change this timestamp
+fn sys_utimensat(dirfd: usize, path_ptr: usize, times_ptr: usize) -> isize {
+    use crate::fs::vfs::inode::SetAttr;
+
+    const AT_FDCWD: isize = -100;
+    const UTIME_NOW: i64 = 0x3fffffff;
+    const UTIME_OMIT: i64 = 0x3ffffffe;
+
+    serial_println!(
+        "[SYSCALL] sys_utimensat: dirfd={}, path_ptr={:#x}, times_ptr={:#x}",
+        dirfd,
+        path_ptr,
+        times_ptr
+    );
+
+    // Parse path if provided
+    let path_opt = if path_ptr != 0 {
+        if !validate_user_buffer(path_ptr, 1) {
+            serial_println!("[SYSCALL] sys_utimensat: invalid path pointer");
+            return -1; // EFAULT
+        }
+
+        let path_bytes = unsafe {
+            let mut len = 0;
+            let ptr = path_ptr as *const u8;
+            while len < 4096 && *ptr.add(len) != 0 {
+                len += 1;
+            }
+            if len >= 4096 {
+                serial_println!("[SYSCALL] sys_utimensat: path too long");
+                return -1; // ENAMETOOLONG
+            }
+            core::slice::from_raw_parts(ptr, len)
+        };
+
+        let path = match core::str::from_utf8(path_bytes) {
+            Ok(s) => s,
+            Err(_) => {
+                serial_println!("[SYSCALL] sys_utimensat: invalid UTF-8 in path");
+                return -1; // EINVAL
+            }
+        };
+
+        Some(path)
+    } else {
+        None
+    };
+
+    // Parse times if provided
+    let (atime_opt, mtime_opt) = if times_ptr != 0 {
+        if !validate_user_buffer(times_ptr, core::mem::size_of::<[Timespec; 2]>()) {
+            serial_println!("[SYSCALL] sys_utimensat: invalid times pointer");
+            return -1; // EFAULT
+        }
+
+        let times = unsafe { core::slice::from_raw_parts(times_ptr as *const Timespec, 2) };
+
+        let atime = if times[0].tv_nsec == UTIME_OMIT {
+            None
+        } else if times[0].tv_nsec == UTIME_NOW {
+            // TODO: Get current time
+            Some(0u64) // Placeholder
+        } else {
+            Some((times[0].tv_sec as u64) * 1_000_000_000 + (times[0].tv_nsec as u64))
+        };
+
+        let mtime = if times[1].tv_nsec == UTIME_OMIT {
+            None
+        } else if times[1].tv_nsec == UTIME_NOW {
+            // TODO: Get current time
+            Some(0u64) // Placeholder
+        } else {
+            Some((times[1].tv_sec as u64) * 1_000_000_000 + (times[1].tv_nsec as u64))
+        };
+
+        (atime, mtime)
+    } else {
+        // NULL times means set both to current time
+        // TODO: Get current time
+        (Some(0u64), Some(0u64))
+    };
+
+    serial_println!(
+        "[SYSCALL] sys_utimensat: path={:?}, atime={:?}, mtime={:?}",
+        path_opt,
+        atime_opt,
+        mtime_opt
+    );
+
+    // TODO: Implement path resolution and utimensat
+    // For now, return ENOENT (not implemented)
+    serial_println!("[SYSCALL] sys_utimensat: not implemented");
+    -1 // ENOENT
+}
+
+/// sys_setxattr handler - Set extended attribute
+///
+/// # Arguments
+/// * `path_ptr` - Pointer to null-terminated path string
+/// * `name_ptr` - Pointer to null-terminated attribute name
+/// * `value_ptr` - Pointer to attribute value
+/// * `size` - Size of attribute value
+/// * `flags` - Flags (XATTR_CREATE, XATTR_REPLACE)
+///
+/// # Returns
+/// 0 on success, or -1 on error
+///
+/// # Note
+/// This is a simplified version that takes 3 args instead of 5.
+/// The full signature would be: (path, name, value, size, flags)
+/// For now, we pack value_ptr and size into arg3.
+fn sys_setxattr(path_ptr: usize, name_ptr: usize, value_info: usize) -> isize {
+    // Validate path pointer
+    if !validate_user_buffer(path_ptr, 1) {
+        serial_println!("[SYSCALL] sys_setxattr: invalid path pointer");
+        return -1; // EFAULT
+    }
+
+    // Validate name pointer
+    if !validate_user_buffer(name_ptr, 1) {
+        serial_println!("[SYSCALL] sys_setxattr: invalid name pointer");
+        return -1; // EFAULT
+    }
+
+    // Read path string
+    let path_bytes = unsafe {
+        let mut len = 0;
+        let ptr = path_ptr as *const u8;
+        while len < 4096 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 4096 {
+            serial_println!("[SYSCALL] sys_setxattr: path too long");
+            return -1; // ENAMETOOLONG
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let path = match core::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_setxattr: invalid UTF-8 in path");
+            return -1; // EINVAL
+        }
+    };
+
+    // Read name string
+    let name_bytes = unsafe {
+        let mut len = 0;
+        let ptr = name_ptr as *const u8;
+        while len < 256 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 256 {
+            serial_println!("[SYSCALL] sys_setxattr: name too long (max 255 bytes)");
+            return -1; // ERANGE
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let name = match core::str::from_utf8(name_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_setxattr: invalid UTF-8 in name");
+            return -1; // EINVAL
+        }
+    };
+
+    // Validate namespace (user.* or system.*)
+    if !name.starts_with("user.") && !name.starts_with("system.") {
+        serial_println!("[SYSCALL] sys_setxattr: invalid namespace (must be user.* or system.*)");
+        return -1; // EOPNOTSUPP
+    }
+
+    serial_println!("[SYSCALL] sys_setxattr: path={}, name={}", path, name);
+
+    // TODO: Implement xattr setting
+    // For now, return ENOTSUP (not implemented)
+    serial_println!("[SYSCALL] sys_setxattr: not implemented");
+    -1 // ENOTSUP
+}
+
+/// sys_getxattr handler - Get extended attribute
+///
+/// # Arguments
+/// * `path_ptr` - Pointer to null-terminated path string
+/// * `name_ptr` - Pointer to null-terminated attribute name
+/// * `value_ptr` - Pointer to buffer for attribute value (or 0 to query size)
+/// * `size` - Size of value buffer
+///
+/// # Returns
+/// Size of attribute value on success, or -1 on error
+///
+/// # Note
+/// This is a simplified version that takes 3 args instead of 4.
+/// For now, we pack value_ptr and size into arg3.
+fn sys_getxattr(path_ptr: usize, name_ptr: usize, value_info: usize) -> isize {
+    // Validate path pointer
+    if !validate_user_buffer(path_ptr, 1) {
+        serial_println!("[SYSCALL] sys_getxattr: invalid path pointer");
+        return -1; // EFAULT
+    }
+
+    // Validate name pointer
+    if !validate_user_buffer(name_ptr, 1) {
+        serial_println!("[SYSCALL] sys_getxattr: invalid name pointer");
+        return -1; // EFAULT
+    }
+
+    // Read path string
+    let path_bytes = unsafe {
+        let mut len = 0;
+        let ptr = path_ptr as *const u8;
+        while len < 4096 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 4096 {
+            serial_println!("[SYSCALL] sys_getxattr: path too long");
+            return -1; // ENAMETOOLONG
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let path = match core::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_getxattr: invalid UTF-8 in path");
+            return -1; // EINVAL
+        }
+    };
+
+    // Read name string
+    let name_bytes = unsafe {
+        let mut len = 0;
+        let ptr = name_ptr as *const u8;
+        while len < 256 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 256 {
+            serial_println!("[SYSCALL] sys_getxattr: name too long (max 255 bytes)");
+            return -1; // ERANGE
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let name = match core::str::from_utf8(name_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_getxattr: invalid UTF-8 in name");
+            return -1; // EINVAL
+        }
+    };
+
+    serial_println!("[SYSCALL] sys_getxattr: path={}, name={}", path, name);
+
+    // TODO: Implement xattr getting
+    // For now, return ENODATA (attribute not found)
+    serial_println!("[SYSCALL] sys_getxattr: not implemented");
+    -1 // ENODATA
+}
+
+/// sys_listxattr handler - List extended attribute names
+///
+/// # Arguments
+/// * `path_ptr` - Pointer to null-terminated path string
+/// * `list_ptr` - Pointer to buffer for attribute names (or 0 to query size)
+/// * `size` - Size of list buffer
+///
+/// # Returns
+/// Size of attribute name list on success, or -1 on error
+///
+/// # Note
+/// This is a simplified version that takes 2 args instead of 3.
+/// For now, we pack list_ptr and size into arg2.
+fn sys_listxattr(path_ptr: usize, list_info: usize) -> isize {
+    // Validate path pointer
+    if !validate_user_buffer(path_ptr, 1) {
+        serial_println!("[SYSCALL] sys_listxattr: invalid path pointer");
+        return -1; // EFAULT
+    }
+
+    // Read path string
+    let path_bytes = unsafe {
+        let mut len = 0;
+        let ptr = path_ptr as *const u8;
+        while len < 4096 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 4096 {
+            serial_println!("[SYSCALL] sys_listxattr: path too long");
+            return -1; // ENAMETOOLONG
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let path = match core::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_listxattr: invalid UTF-8 in path");
+            return -1; // EINVAL
+        }
+    };
+
+    serial_println!("[SYSCALL] sys_listxattr: path={}", path);
+
+    // TODO: Implement xattr listing
+    // For now, return 0 (no attributes)
+    serial_println!("[SYSCALL] sys_listxattr: not implemented");
+    0 // No attributes
+}
+
+/// sys_mknod handler - Create a special file node
+///
+/// # Arguments
+/// * `path_ptr` - Pointer to null-terminated path string
+/// * `mode` - File mode (type and permissions)
+/// * `dev` - Device number (major << 32 | minor) for device nodes
+///
+/// # Returns
+/// 0 on success, or -1 on error
+///
+/// # Supported types
+/// * S_IFREG (0o100000): Regular file
+/// * S_IFCHR (0o020000): Character device
+/// * S_IFBLK (0o060000): Block device
+/// * S_IFIFO (0o010000): FIFO (named pipe)
+/// * S_IFSOCK (0o140000): Unix domain socket
+fn sys_mknod(path_ptr: usize, mode: usize, dev: usize) -> isize {
+    use crate::fs::vfs::inode::FileMode;
+
+    // Validate path pointer
+    if !validate_user_buffer(path_ptr, 1) {
+        serial_println!("[SYSCALL] sys_mknod: invalid path pointer");
+        return -1; // EFAULT
+    }
+
+    // Read path string
+    let path_bytes = unsafe {
+        let mut len = 0;
+        let ptr = path_ptr as *const u8;
+        while len < 4096 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 4096 {
+            serial_println!("[SYSCALL] sys_mknod: path too long");
+            return -1; // ENAMETOOLONG
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let path = match core::str::from_utf8(path_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_mknod: invalid UTF-8 in path");
+            return -1; // EINVAL
+        }
+    };
+
+    let file_mode = FileMode::new(mode as u16);
+    let file_type = file_mode.file_type();
+
+    // Extract major and minor device numbers
+    let major = (dev >> 32) as u32;
+    let minor = (dev & 0xFFFFFFFF) as u32;
+
+    serial_println!(
+        "[SYSCALL] sys_mknod: path={}, mode={:#o}, type={:#o}, dev={}:{}",
+        path,
+        mode,
+        file_type,
+        major,
+        minor
+    );
+
+    // Validate file type
+    match file_type {
+        FileMode::S_IFREG => {
+            // Regular file - can be created with mknod
+            serial_println!("[SYSCALL] sys_mknod: creating regular file");
+        }
+        FileMode::S_IFCHR => {
+            // Character device
+            serial_println!(
+                "[SYSCALL] sys_mknod: creating character device {}:{}",
+                major,
+                minor
+            );
+            // TODO: Check permissions (typically requires CAP_MKNOD)
+        }
+        FileMode::S_IFBLK => {
+            // Block device
+            serial_println!(
+                "[SYSCALL] sys_mknod: creating block device {}:{}",
+                major,
+                minor
+            );
+            // TODO: Check permissions (typically requires CAP_MKNOD)
+        }
+        FileMode::S_IFIFO => {
+            // FIFO (named pipe)
+            serial_println!("[SYSCALL] sys_mknod: creating FIFO");
+        }
+        FileMode::S_IFSOCK => {
+            // Unix domain socket
+            serial_println!("[SYSCALL] sys_mknod: creating socket");
+        }
+        _ => {
+            serial_println!("[SYSCALL] sys_mknod: invalid file type {:#o}", file_type);
+            return -1; // EINVAL
+        }
+    }
+
+    // TODO: Implement mknod
+    // For now, return EPERM (not implemented)
+    serial_println!("[SYSCALL] sys_mknod: not implemented");
+    -1 // EPERM
+}
+
+/// sys_sync handler - Sync all filesystems
+///
+/// # Returns
+/// Always returns 0
+///
+/// # Description
+/// Commits all pending writes to disk for all mounted filesystems.
+/// This triggers TxG commit for mfs_disk and flushes the page cache.
+fn sys_sync() -> isize {
+    serial_println!("[SYSCALL] sys_sync: syncing all filesystems");
+
+    // TODO: Implement filesystem sync
+    // This should:
+    // 1. Flush page cache for all filesystems
+    // 2. Trigger TxG commit for mfs_disk
+    // 3. Wait for all I/O to complete
+
+    serial_println!("[SYSCALL] sys_sync: not implemented");
+    0 // Always succeeds (even if not implemented)
+}
+
+/// sys_fsync handler - Sync a specific file
+///
+/// # Arguments
+/// * `fd` - File descriptor to sync
+///
+/// # Returns
+/// 0 on success, or -1 on error
+///
+/// # Description
+/// Commits all pending writes for the specified file to disk,
+/// including both data and metadata.
+fn sys_fsync(fd: usize) -> isize {
+    serial_println!("[SYSCALL] sys_fsync: fd={}", fd);
+
+    // Validate file descriptor
+    let fd_table = FD_TABLE.lock();
+    let fd_entry = match fd_table.get(fd) {
+        Some(entry) => entry,
+        None => {
+            serial_println!("[SYSCALL] sys_fsync: invalid FD {}", fd);
+            return -1; // EBADF
+        }
+    };
+    drop(fd_table);
+
+    // TODO: Implement fsync for file descriptors
+    // This should:
+    // 1. Flush dirty pages for this file
+    // 2. Update inode metadata
+    // 3. Trigger TxG commit if needed
+    // 4. Wait for I/O to complete
+
+    serial_println!("[SYSCALL] sys_fsync: not implemented");
+    0 // Pretend success for now
+}
+
+/// sys_fdatasync handler - Sync file data only (not metadata)
+///
+/// # Arguments
+/// * `fd` - File descriptor to sync
+///
+/// # Returns
+/// 0 on success, or -1 on error
+///
+/// # Description
+/// Commits all pending data writes for the specified file to disk,
+/// but does not necessarily sync metadata (like timestamps).
+/// This is faster than fsync when metadata changes are not critical.
+fn sys_fdatasync(fd: usize) -> isize {
+    serial_println!("[SYSCALL] sys_fdatasync: fd={}", fd);
+
+    // Validate file descriptor
+    let fd_table = FD_TABLE.lock();
+    let fd_entry = match fd_table.get(fd) {
+        Some(entry) => entry,
+        None => {
+            serial_println!("[SYSCALL] sys_fdatasync: invalid FD {}", fd);
+            return -1; // EBADF
+        }
+    };
+    drop(fd_table);
+
+    // TODO: Implement fdatasync for file descriptors
+    // This should:
+    // 1. Flush dirty data pages for this file
+    // 2. Skip metadata updates unless required for data integrity
+    // 3. Wait for I/O to complete
+
+    serial_println!("[SYSCALL] sys_fdatasync: not implemented");
+    0 // Pretend success for now
+}
+
+/// sys_mount handler - Mount a filesystem
+///
+/// # Arguments
+/// * `source_ptr` - Pointer to null-terminated device path (e.g., "/dev/sda1")
+/// * `target_ptr` - Pointer to null-terminated mount point path (e.g., "/mnt")
+/// * `fstype_ptr` - Pointer to null-terminated filesystem type (e.g., "mfs_disk", "mfs_ram")
+/// * `flags` - Mount flags (MS_RDONLY, MS_NOATIME, etc.)
+/// * `data_ptr` - Pointer to filesystem-specific options string
+///
+/// # Returns
+/// 0 on success, or -1 on error
+///
+/// # Note
+/// This is a simplified version that takes 3 args instead of 5.
+/// For now, we pack flags and data_ptr into arg3.
+///
+/// # Mount options (parsed from data string)
+/// * noatime: Don't update access times
+/// * relatime: Update access times relatively
+/// * compress=lz4: Use LZ4 compression
+/// * compress=zstd: Use Zstd compression
+/// * checksums: Enable data checksums
+/// * cow: Enable copy-on-write
+/// * trim: Enable TRIM support
+fn sys_mount(source_ptr: usize, target_ptr: usize, fstype_ptr: usize) -> isize {
+    // Validate pointers
+    if !validate_user_buffer(source_ptr, 1) {
+        serial_println!("[SYSCALL] sys_mount: invalid source pointer");
+        return -1; // EFAULT
+    }
+    if !validate_user_buffer(target_ptr, 1) {
+        serial_println!("[SYSCALL] sys_mount: invalid target pointer");
+        return -1; // EFAULT
+    }
+    if !validate_user_buffer(fstype_ptr, 1) {
+        serial_println!("[SYSCALL] sys_mount: invalid fstype pointer");
+        return -1; // EFAULT
+    }
+
+    // Read source string
+    let source_bytes = unsafe {
+        let mut len = 0;
+        let ptr = source_ptr as *const u8;
+        while len < 4096 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 4096 {
+            serial_println!("[SYSCALL] sys_mount: source path too long");
+            return -1; // ENAMETOOLONG
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let source = match core::str::from_utf8(source_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_mount: invalid UTF-8 in source");
+            return -1; // EINVAL
+        }
+    };
+
+    // Read target string
+    let target_bytes = unsafe {
+        let mut len = 0;
+        let ptr = target_ptr as *const u8;
+        while len < 4096 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 4096 {
+            serial_println!("[SYSCALL] sys_mount: target path too long");
+            return -1; // ENAMETOOLONG
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let target = match core::str::from_utf8(target_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_mount: invalid UTF-8 in target");
+            return -1; // EINVAL
+        }
+    };
+
+    // Read fstype string
+    let fstype_bytes = unsafe {
+        let mut len = 0;
+        let ptr = fstype_ptr as *const u8;
+        while len < 256 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 256 {
+            serial_println!("[SYSCALL] sys_mount: fstype too long");
+            return -1; // EINVAL
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let fstype = match core::str::from_utf8(fstype_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_mount: invalid UTF-8 in fstype");
+            return -1; // EINVAL
+        }
+    };
+
+    serial_println!(
+        "[SYSCALL] sys_mount: source={}, target={}, fstype={}",
+        source,
+        target,
+        fstype
+    );
+
+    // Validate filesystem type
+    match fstype {
+        "mfs_ram" | "mfs_disk" => {
+            serial_println!("[SYSCALL] sys_mount: valid filesystem type");
+        }
+        _ => {
+            serial_println!("[SYSCALL] sys_mount: unsupported filesystem type");
+            return -1; // ENODEV
+        }
+    }
+
+    // TODO: Implement mount
+    // This should:
+    // 1. Parse mount options from data string
+    // 2. Open the source device (if needed)
+    // 3. Create superblock for the filesystem
+    // 4. Add mount point to mount table
+    // 5. Update dentry cache
+
+    serial_println!("[SYSCALL] sys_mount: not implemented");
+    -1 // EPERM
+}
+
+/// sys_umount handler - Unmount a filesystem
+///
+/// # Arguments
+/// * `target_ptr` - Pointer to null-terminated mount point path
+/// * `flags` - Unmount flags (MNT_FORCE, MNT_DETACH, etc.)
+///
+/// # Returns
+/// 0 on success, or -1 on error
+///
+/// # Flags
+/// * MNT_FORCE (0x1): Force unmount even if busy
+/// * MNT_DETACH (0x2): Lazy unmount (detach from namespace)
+/// * MNT_EXPIRE (0x4): Mark for expiration
+fn sys_umount(target_ptr: usize, flags: usize) -> isize {
+    // Validate pointer
+    if !validate_user_buffer(target_ptr, 1) {
+        serial_println!("[SYSCALL] sys_umount: invalid target pointer");
+        return -1; // EFAULT
+    }
+
+    // Read target string
+    let target_bytes = unsafe {
+        let mut len = 0;
+        let ptr = target_ptr as *const u8;
+        while len < 4096 && *ptr.add(len) != 0 {
+            len += 1;
+        }
+        if len >= 4096 {
+            serial_println!("[SYSCALL] sys_umount: target path too long");
+            return -1; // ENAMETOOLONG
+        }
+        core::slice::from_raw_parts(ptr, len)
+    };
+
+    let target = match core::str::from_utf8(target_bytes) {
+        Ok(s) => s,
+        Err(_) => {
+            serial_println!("[SYSCALL] sys_umount: invalid UTF-8 in target");
+            return -1; // EINVAL
+        }
+    };
+
+    const MNT_FORCE: usize = 0x1;
+    const MNT_DETACH: usize = 0x2;
+    const MNT_EXPIRE: usize = 0x4;
+
+    let force = (flags & MNT_FORCE) != 0;
+    let detach = (flags & MNT_DETACH) != 0;
+    let expire = (flags & MNT_EXPIRE) != 0;
+
+    serial_println!(
+        "[SYSCALL] sys_umount: target={}, force={}, detach={}, expire={}",
+        target,
+        force,
+        detach,
+        expire
+    );
+
+    // TODO: Implement umount
+    // This should:
+    // 1. Find mount point in mount table
+    // 2. Check if filesystem is busy (open files, processes in directory)
+    // 3. If force flag, forcibly close all references
+    // 4. Sync filesystem (flush dirty data)
+    // 5. Remove from mount table
+    // 6. Invalidate dentries
+
+    serial_println!("[SYSCALL] sys_umount: not implemented");
+    -1 // EPERM
 }

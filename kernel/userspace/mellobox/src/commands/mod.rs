@@ -14,3 +14,7 @@ pub mod echo;
 pub mod pwd;
 pub mod true_cmd;
 pub mod false_cmd;
+pub mod stat;
+pub mod df;
+pub mod mount;
+pub mod umount;

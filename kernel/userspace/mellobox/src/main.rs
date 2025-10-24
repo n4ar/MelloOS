@@ -41,6 +41,10 @@ const APPLETS: &[Applet] = &[
     Applet { name: "pwd", func: commands::pwd::main },
     Applet { name: "true", func: commands::true_cmd::main },
     Applet { name: "false", func: commands::false_cmd::main },
+    Applet { name: "stat", func: commands::stat::main },
+    Applet { name: "df", func: commands::df::main },
+    Applet { name: "mount", func: commands::mount::main },
+    Applet { name: "umount", func: commands::umount::main },
 ];
 
 /// Extract program name from argv[0]
