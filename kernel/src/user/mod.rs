@@ -4,7 +4,9 @@
 /// - ELF binary loading and parsing
 /// - Process management
 /// - User-kernel memory management
+/// - exec() system call implementation
 pub mod elf;
+pub mod exec;
 pub mod integration_tests;
 pub mod launch;
 pub mod process;

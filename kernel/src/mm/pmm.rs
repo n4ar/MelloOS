@@ -311,3 +311,37 @@ impl PhysicalMemoryManager {
         None
     }
 }
+
+/// Global Physical Memory Manager instance
+///
+/// This is initialized during kernel boot and provides access to the PMM
+/// from anywhere in the kernel, including syscall handlers.
+///
+/// # Safety
+/// This must be initialized before any code tries to access it.
+/// The initialization happens in mm::init() during kernel boot.
+pub static GLOBAL_PMM: crate::sync::SpinLock<Option<PhysicalMemoryManager>> = 
+    crate::sync::SpinLock::new(None);
+
+/// Initialize the global PMM instance
+///
+/// This should be called once during kernel initialization after creating
+/// the PMM instance.
+///
+/// # Arguments
+/// * `pmm` - The initialized Physical Memory Manager
+pub fn init_global_pmm(pmm: PhysicalMemoryManager) {
+    let mut global = GLOBAL_PMM.lock();
+    *global = Some(pmm);
+}
+
+/// Get a reference to the global PMM
+///
+/// # Returns
+/// A locked reference to the global PMM, or panics if not initialized
+///
+/// # Panics
+/// Panics if the global PMM has not been initialized
+pub fn get_global_pmm() -> crate::sync::SpinLockGuard<'static, Option<PhysicalMemoryManager>> {
+    GLOBAL_PMM.lock()
+}

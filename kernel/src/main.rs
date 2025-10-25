@@ -698,6 +698,134 @@ fn smp_test_task_d() -> ! {
     }
 }
 
+/// Extract embedded userspace binaries to the filesystem
+///
+/// This function creates the /bin directory and extracts the embedded
+/// mello-sh and mellobox binaries, making them available for exec().
+fn extract_binaries_to_fs() {
+    use fs::vfs::inode::FileMode;
+    use fs::vfs::path;
+
+    // Embedded binaries from build script
+    #[cfg(not(test))]
+    const MELLO_SH_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mello_sh_binary.bin"));
+    #[cfg(test)]
+    const MELLO_SH_BINARY: &[u8] = &[];
+
+    #[cfg(not(test))]
+    const MELLOBOX_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mellobox_binary.bin"));
+    #[cfg(test)]
+    const MELLOBOX_BINARY: &[u8] = &[];
+
+    // Get root inode
+    let root = match path::resolve_path("/", None) {
+        Ok(inode) => inode,
+        Err(e) => {
+            serial_println!("[KERNEL] Error: Could not get root inode: {:?}", e);
+            return;
+        }
+    };
+
+    // Create /bin directory
+    serial_println!("[KERNEL] Creating /bin directory...");
+    if let Err(e) = root.create("bin", FileMode::new(FileMode::S_IFDIR | 0o755), 0, 0) {
+        serial_println!("[KERNEL] Warning: Could not create /bin: {:?}", e);
+        return;
+    }
+    serial_println!("[KERNEL] ✓ Created /bin directory");
+
+    // Get /bin directory inode
+    let bin_dir = match path::resolve_path("/bin", None) {
+        Ok(inode) => inode,
+        Err(e) => {
+            serial_println!("[KERNEL] Error: Could not resolve /bin: {:?}", e);
+            return;
+        }
+    };
+
+    // Extract mello-sh to /bin/sh
+    if !MELLO_SH_BINARY.is_empty() {
+        serial_println!("[KERNEL] Extracting mello-sh to /bin/sh ({} bytes)...", MELLO_SH_BINARY.len());
+        
+        // Create the file
+        match bin_dir.create("sh", FileMode::new(FileMode::S_IFREG | 0o755), 0, 0) {
+            Ok(sh_inode) => {
+                // Write the binary data
+                match sh_inode.write_at(0, MELLO_SH_BINARY) {
+                    Ok(written) => {
+                        if written == MELLO_SH_BINARY.len() {
+                            serial_println!("[KERNEL] ✓ Extracted /bin/sh ({} bytes)", written);
+                        } else {
+                            serial_println!("[KERNEL] Warning: Partial write to /bin/sh ({}/{})", written, MELLO_SH_BINARY.len());
+                        }
+                    }
+                    Err(e) => {
+                        serial_println!("[KERNEL] Error: Could not write /bin/sh: {:?}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                serial_println!("[KERNEL] Error: Could not create /bin/sh: {:?}", e);
+            }
+        }
+    } else {
+        serial_println!("[KERNEL] Warning: mello-sh binary is empty, skipping");
+    }
+
+    // Extract mellobox to /bin/mellobox
+    if !MELLOBOX_BINARY.is_empty() {
+        serial_println!("[KERNEL] Extracting mellobox to /bin/mellobox ({} bytes)...", MELLOBOX_BINARY.len());
+        
+        // Create the file
+        match bin_dir.create("mellobox", FileMode::new(FileMode::S_IFREG | 0o755), 0, 0) {
+            Ok(mellobox_inode) => {
+                // Write the binary data
+                match mellobox_inode.write_at(0, MELLOBOX_BINARY) {
+                    Ok(written) => {
+                        if written == MELLOBOX_BINARY.len() {
+                            serial_println!("[KERNEL] ✓ Extracted /bin/mellobox ({} bytes)", written);
+                        } else {
+                            serial_println!("[KERNEL] Warning: Partial write to /bin/mellobox ({}/{})", written, MELLOBOX_BINARY.len());
+                        }
+                    }
+                    Err(e) => {
+                        serial_println!("[KERNEL] Error: Could not write /bin/mellobox: {:?}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                serial_println!("[KERNEL] Error: Could not create /bin/mellobox: {:?}", e);
+            }
+        }
+    } else {
+        serial_println!("[KERNEL] Warning: mellobox binary is empty, skipping");
+    }
+
+    // Create symlinks for mellobox commands
+    serial_println!("[KERNEL] Creating symlinks for mellobox commands...");
+    
+    let commands = [
+        "ls", "cat", "echo", "ps", "pwd", "mkdir", "rm", "cp", "mv",
+        "touch", "grep", "mount", "umount", "df", "stat", "kill",
+        "true", "false",
+    ];
+
+    let mut symlink_count = 0;
+    for cmd in &commands {
+        match bin_dir.symlink(cmd, "mellobox") {
+            Ok(_) => {
+                symlink_count += 1;
+            }
+            Err(e) => {
+                serial_println!("[KERNEL] Warning: Could not create symlink /bin/{}: {:?}", cmd, e);
+            }
+        }
+    }
+    
+    serial_println!("[KERNEL] ✓ Created {} symlinks for mellobox commands", symlink_count);
+    serial_println!("[KERNEL] Binary extraction complete!");
+}
+
 /// Print test results after a delay to allow tests to complete
 fn print_test_results_delayed() -> ! {
     // Helper function to invoke sys_sleep syscall
@@ -880,6 +1008,10 @@ pub extern "C" fn _start() -> ! {
     fs::init();
     // Initialize mfs_disk filesystem type (Phase 8 - Task 9.1)
     fs::mfs::disk::init();
+
+    serial_println!("[KERNEL] Extracting userspace binaries to filesystem...");
+    // Extract embedded binaries to /bin directory (Phase 6 - exec/shell launch)
+    extract_binaries_to_fs();
 
     serial_println!("[KERNEL] Initializing scheduler...");
     // Initialize the task scheduler

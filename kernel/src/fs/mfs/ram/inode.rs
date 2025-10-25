@@ -268,8 +268,39 @@ impl Inode for RamInode {
     }
     
     fn symlink(&self, name: &str, target: &str) -> Result<Arc<dyn Inode>, FsError> {
-        // Need superblock reference - return NotSupported for now
-        Err(FsError::NotSupported)
+        // Validate this is a directory
+        let data = self.data.lock();
+        if !data.mode.is_dir() {
+            return Err(FsError::NotADirectory);
+        }
+        drop(data);
+        
+        // Validate name
+        if name.is_empty() || name == "." || name == ".." {
+            return Err(FsError::InvalidArgument);
+        }
+        if name.contains('/') || name.contains('\0') {
+            return Err(FsError::InvalidArgument);
+        }
+        if name.len() > 255 {
+            return Err(FsError::NameTooLong);
+        }
+        
+        // Check if entry already exists
+        if self.lookup(name).is_ok() {
+            return Err(FsError::AlreadyExists);
+        }
+        
+        // Allocate new inode number
+        let ino = Self::alloc_ino();
+        
+        // Create symlink inode
+        let symlink_inode = Self::new_symlink(ino, String::from(target), 0, 0)?;
+        
+        // Link into directory using internal method
+        self.dir_link_internal(name, symlink_inode.clone())?;
+        
+        Ok(symlink_inode)
     }
     
     fn readdir(&self, cookie: &mut DirCookie, entries: &mut Vec<DirEnt>) 

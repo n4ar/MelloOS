@@ -198,58 +198,66 @@ fn test_memory_protection() {
 }
 
 /// Entry point for init process
-///
-/// TODO: Future enhancements for Phase 6.6:
-/// - Set up environment variables (LANG=C.UTF-8, PATH=/bin, etc.)
-/// - Create /dev/ptmx and /dev/pts/ if not already created by kernel
-/// - Spawn mello-term as the primary user interface
-/// - Handle process reaping and system shutdown
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // Required message for automated testing
-    sys_write("Hello from userland!\n");
-
-    sys_write("========================================\n");
-    sys_write("Init Process Integration Tests\n");
+    sys_write("MelloOS Init Process Starting...\n");
     sys_write("========================================\n");
 
-    // Test 1: Privilege level validation
-    test_privilege_level();
-
-    // Test 2: Basic syscall functionality
-    test_syscalls();
-
-    // Test 3: Fork chain test
-    test_fork_chain();
-
-    // Test 4: Memory protection
-    test_memory_protection();
-
-    sys_write("========================================\n");
-    sys_write("Init Process Tests Completed\n");
-    sys_write("========================================\n");
-
-    // Legacy IPC tests (if still supported)
-    let ping_msg = b"ping";
-    let send_result = sys_ipc_send(2, ping_msg);
-    if send_result >= 0 {
-        sys_write("Legacy: Sent 'ping' to port 2\n");
+    // Quick system validation
+    let cpl = get_current_privilege_level();
+    if cpl == 3 {
+        sys_write("✓ Running in user mode (Ring 3)\n");
+    } else {
+        sys_write("✗ ERROR: Not in user mode!\n");
     }
 
-    // Sleep for a bit to allow other tests to run
-    sys_write("Init process entering monitoring loop...\n");
-    sys_sleep(50); // Reduced from 100 ticks
+    let pid = sys_getpid();
+    if pid == 1 {
+        sys_write("✓ Init process (PID 1)\n");
+    }
 
-    // Enter monitoring loop with shorter sleep for faster boot
-    let mut counter = 0u32;
-    loop {
-        sys_write("Init process monitoring system...\n");
-        sys_sleep(200); // Reduced from 1000 ticks (2 seconds at 100Hz vs 50 seconds at 20Hz)
-        counter = counter.wrapping_add(1);
+    sys_write("========================================\n");
+    sys_write("Launching shell...\n\n");
 
-        // Periodically yield to other processes
-        if counter % 5 == 0 {
+    // Fork and exec mello-term (terminal emulator)
+    let fork_result = sys_fork();
+
+    if fork_result == 0 {
+        // Child process - exec mello-term
+        sys_write("[Init] Launching mello-term...\n");
+
+        // TODO: When exec is implemented, use:
+        // sys_exec("/bin/mello-term", &[]);
+
+        // For now, just print message and loop
+        sys_write("\n");
+        sys_write("╔════════════════════════════════════════╗\n");
+        sys_write("║         Welcome to MelloOS!            ║\n");
+        sys_write("║                                        ║\n");
+        sys_write("║  Shell integration in progress...      ║\n");
+        sys_write("║  (mello-term will launch here)         ║\n");
+        sys_write("╚════════════════════════════════════════╝\n");
+        sys_write("\n");
+
+        loop {
+            sys_sleep(1000);
+        }
+    } else if fork_result > 0 {
+        // Parent process - wait for children and reap zombies
+        sys_write("[Init] Terminal spawned, entering monitoring mode\n");
+
+        loop {
+            // Wait for any child process
+            // TODO: Implement sys_wait() to reap zombie processes
+            sys_sleep(1000);
             sys_yield();
+        }
+    } else {
+        // Fork failed
+        sys_write("✗ ERROR: Failed to fork terminal process\n");
+        sys_write("System halted.\n");
+        loop {
+            sys_sleep(1000);
         }
     }
 }

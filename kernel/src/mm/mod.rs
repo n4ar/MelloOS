@@ -382,6 +382,12 @@ pub fn init_memory() {
 
     let _total_mb = pmm.total_memory_mb();
     let _free_mb = pmm.free_memory_mb();
+    
+    // Initialize global PMM for syscall access
+    // Note: We create a second PMM instance for global access
+    // This is a temporary solution until we refactor to use a single global PMM
+    let global_pmm = pmm::PhysicalMemoryManager::init(memory_map_response, kernel_start, kernel_end);
+    pmm::init_global_pmm(global_pmm);
 
     // Initialize paging system
     let mut mapper = paging::PageMapper::new();

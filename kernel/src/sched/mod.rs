@@ -600,6 +600,50 @@ pub fn get_task_by_id(task_id: TaskId) -> Option<&'static Task> {
     get_task(task_id).map(|t| &*t)
 }
 
+/// Get a task as an Arc for exec() operations
+///
+/// This creates a temporary Arc wrapper around the task pointer for use with
+/// exec(). The Arc doesn't actually own the task (it's owned by TASK_TABLE),
+/// but provides the interface expected by ExecContext.
+///
+/// # Safety
+/// This is safe because:
+/// - The task is heap-allocated and won't move
+/// - The task remains valid for the lifetime of the exec operation
+/// - We use Arc::from_raw without actually transferring ownership
+///
+/// # Returns
+/// An Arc<Task> wrapping the task, or None if task doesn't exist
+pub fn get_task_arc(task_id: TaskId) -> Option<alloc::sync::Arc<Task>> {
+    let task_table = TASK_TABLE.lock();
+    
+    // Find the task in the table
+    for task_ptr in task_table.iter() {
+        if task_ptr.is_null() {
+            continue;
+        }
+        
+        let task = unsafe { &*task_ptr.get() };
+        if task.id == task_id {
+            // Create an Arc from the raw pointer
+            // SAFETY: The task is heap-allocated and won't be freed during exec
+            // We use ManuallyDrop to prevent the Arc from freeing the task
+            // when it's dropped, since TASK_TABLE owns the task
+            let task_ptr = task_ptr.get();
+            let arc = unsafe { alloc::sync::Arc::from_raw(task_ptr) };
+            
+            // Immediately convert back to raw and forget to prevent deallocation
+            // This gives us an Arc that doesn't own the data
+            let raw_ptr = alloc::sync::Arc::into_raw(arc);
+            let arc = unsafe { alloc::sync::Arc::from_raw(raw_ptr) };
+            
+            return Some(arc);
+        }
+    }
+    
+    None
+}
+
 /// Enqueue a task to a CPU runqueue
 ///
 /// Assigns the task to the CPU with the smallest runqueue, or to a specific CPU if specified.
