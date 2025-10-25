@@ -226,46 +226,35 @@ impl Inode for RamInode {
     
     fn create(&self, name: &str, mode: FileMode, uid: u32, gid: u32) 
         -> Result<Arc<dyn Inode>, FsError> {
-        use crate::serial_println;
-        
-        serial_println!("[MFS_RAM] create() called: name='{}', mode={:#o} [VERSION: create-v2-fixed]", name, mode.0);
-        
         // Check if this is a directory
         let data = self.data.lock();
         if !data.mode.is_dir() {
-            serial_println!("[MFS_RAM] create() failed: not a directory");
             return Err(FsError::NotADirectory);
         }
         drop(data);
         
         // Check if entry already exists
         if self.lookup(name).is_ok() {
-            serial_println!("[MFS_RAM] create() failed: already exists");
             return Err(FsError::AlreadyExists);
         }
         
         // Allocate new inode number
         let ino = Self::alloc_ino();
-        serial_println!("[MFS_RAM] allocated inode number: {}", ino);
         
         // Create new inode based on mode
         let new_inode: Arc<RamInode> = if mode.is_dir() {
-            serial_println!("[MFS_RAM] creating directory inode");
             Self::new_dir(ino, mode, uid, gid)?
         } else if mode.is_symlink() {
             // For symlink, we need target - return error for now
-            serial_println!("[MFS_RAM] symlink not supported yet");
             return Err(FsError::NotSupported);
         } else {
             // Regular file
-            serial_println!("[MFS_RAM] creating file inode");
             Self::new_file(ino, mode, uid, gid)?
         };
         
         // Link the new inode into this directory using internal method
         // (avoids the downcast issue with dir_link)
         self.dir_link_internal(name, new_inode.clone())?;
-        serial_println!("[MFS_RAM] create() success: '{}' created with ino {}", name, ino);
         
         Ok(new_inode)
     }
