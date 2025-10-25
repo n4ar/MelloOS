@@ -354,3 +354,27 @@ impl MfsSuperblock {
 }
 
 
+
+
+impl MfsSuperblock {
+    /// Parse superblock from bytes
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
+        if bytes.len() < Self::SIZE {
+            return Err("Buffer too small for superblock");
+        }
+        
+        // Parse superblock structure
+        // For now, use unsafe to cast bytes to struct
+        // In production, should use proper deserialization
+        let sb = unsafe {
+            core::ptr::read(bytes.as_ptr() as *const Self)
+        };
+        
+        // Verify checksum
+        if !sb.verify_checksum() {
+            return Err("Superblock checksum mismatch");
+        }
+        
+        Ok(sb)
+    }
+}

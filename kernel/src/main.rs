@@ -874,6 +874,8 @@ pub extern "C" fn _start() -> ! {
     drivers::init_drivers();
 
     serial_println!("[KERNEL] Initializing VFS and mounting root filesystem...");
+    // Initialize block device subsystem (Phase 8 - Task 8.9)
+    fs::block_dev::init_block_devices();
     // Initialize VFS and mount mfs_ram as root (Phase 8)
     fs::init();
 

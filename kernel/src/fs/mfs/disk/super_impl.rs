@@ -10,6 +10,7 @@ use super::allocator::{SpaceAllocator, AllocStrategy};
 use super::txg::{TxgManager, TxgConfig};
 
 use crate::sync::SpinLock;
+use crate::fs::block_dev::{BlockDevice, BlockError};
 use alloc::sync::Arc;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -45,6 +46,7 @@ impl MfsDiskType {
                 alloc
             }),
             txg_mgr: TxgManager::new(TxgConfig::default()),
+            block_device: None, // No block device in simple mount
         });
         
         Ok(fs)
@@ -63,6 +65,8 @@ pub struct MfsDiskFs {
     allocator: SpinLock<SpaceAllocator>,
     /// Transaction group manager
     txg_mgr: TxgManager,
+    /// Block device (optional for now)
+    block_device: Option<Arc<dyn BlockDevice>>,
 }
 
 impl MfsDiskFs {
@@ -134,3 +138,85 @@ impl MfsDiskFs {
 }
 
 // Tests would go here but are omitted for kernel code
+
+
+impl MfsDiskType {
+    /// Mount a MelloFS disk filesystem from a block device
+    pub fn mount_from_device(
+        device: Arc<dyn BlockDevice>,
+    ) -> Result<Arc<MfsDiskFs>, &'static str> {
+        // Read superblock from device
+        let mut sb_buffer = [0u8; 4096]; // Assume 4K block size
+        device.read_sectors(0, 8, &mut sb_buffer)
+            .map_err(|_| "Failed to read superblock")?;
+        
+        // Parse superblock
+        let sb = MfsSuperblock::from_bytes(&sb_buffer)?;
+        
+        // Validate
+        sb.validate()?;
+        
+        crate::serial_println!("[MFS_DISK] Mounted filesystem from device '{}'", device.name());
+        crate::serial_println!("[MFS_DISK]   Block size: {} bytes", sb.block_size);
+        crate::serial_println!("[MFS_DISK]   Total blocks: {}", sb.total_blocks);
+        crate::serial_println!("[MFS_DISK]   Free blocks: {}", sb.free_blocks);
+        
+        // Create filesystem instance
+        let fs = Arc::new(MfsDiskFs {
+            superblock: SpinLock::new(sb.clone()),
+            btree_ops: BtreeOps::new(sb.block_size),
+            extent_mgr: SpinLock::new(ExtentManager::new(sb.block_size)),
+            allocator: SpinLock::new({
+                let mut alloc = SpaceAllocator::new(AllocStrategy::BestFit);
+                alloc.init(32, sb.total_blocks);
+                alloc
+            }),
+            txg_mgr: TxgManager::new(TxgConfig::default()),
+            block_device: Some(device),
+        });
+        
+        Ok(fs)
+    }
+}
+
+impl MfsDiskFs {
+    /// Get the block device
+    pub fn block_device(&self) -> Option<Arc<dyn BlockDevice>> {
+        self.block_device.clone()
+    }
+    
+    /// Read block from device
+    pub fn read_block(&self, block_num: u64, buffer: &mut [u8]) -> Result<(), BlockError> {
+        if let Some(ref device) = self.block_device {
+            let sb = self.superblock.lock();
+            let sectors_per_block = sb.block_size / device.sector_size();
+            let start_sector = block_num * sectors_per_block as u64;
+            
+            device.read_sectors(start_sector, sectors_per_block, buffer)
+        } else {
+            Err(BlockError::DeviceNotReady)
+        }
+    }
+    
+    /// Write block to device
+    pub fn write_block(&self, block_num: u64, buffer: &[u8]) -> Result<(), BlockError> {
+        if let Some(ref device) = self.block_device {
+            let sb = self.superblock.lock();
+            let sectors_per_block = sb.block_size / device.sector_size();
+            let start_sector = block_num * sectors_per_block as u64;
+            
+            device.write_sectors(start_sector, sectors_per_block, buffer)
+        } else {
+            Err(BlockError::DeviceNotReady)
+        }
+    }
+    
+    /// Sync filesystem to device (flush)
+    pub fn flush_device(&self) -> Result<(), BlockError> {
+        if let Some(ref device) = self.block_device {
+            device.flush()
+        } else {
+            Ok(())
+        }
+    }
+}

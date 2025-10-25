@@ -2,6 +2,7 @@
 //!
 //! This module contains filesystem implementations and the Virtual File System (VFS) layer.
 
+pub mod block_dev;
 pub mod cache;
 pub mod mfs;
 pub mod proc;
