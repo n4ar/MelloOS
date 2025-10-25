@@ -123,65 +123,76 @@ impl RamInode {
     
     /// Create a hard link (internal version with Arc<RamInode>)
     pub fn dir_link_internal(&self, name: &str, target: Arc<RamInode>) -> Result<(), FsError> {
+        use crate::serial_println;
+        
+        serial_println!("[MFS_RAM] dir_link_internal() called: name='{}', target_ino={}", name, target.ino);
+        
         // Validate name
         Self::validate_name(name)?;
+        serial_println!("[MFS_RAM] name validated");
         
-        // Don't allow hardlinks to directories
-        if target.mode().is_dir() {
-            return Err(FsError::NotSupported);
-        }
-        
-        // Lock directory
+        // Lock directory first to check if entry exists
         let mut data = self.data.lock();
         let entries = match &mut data.data {
             InodeKind::Directory(dir) => &mut dir.entries,
-            _ => return Err(FsError::NotADirectory),
+            _ => {
+                serial_println!("[MFS_RAM] not a directory");
+                return Err(FsError::NotADirectory);
+            }
         };
         
         // Check if name already exists
         if entries.contains_key(name) {
+            serial_println!("[MFS_RAM] name already exists");
             return Err(FsError::AlreadyExists);
+        }
+        
+        // For directories, we allow linking during create() but not for hardlinks
+        // We can detect this by checking if the directory is empty (new)
+        let is_new_dir = if target.mode().is_dir() {
+            let target_data = target.data.lock();
+            if let InodeKind::Directory(dir) = &target_data.data {
+                dir.entries.is_empty()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        
+        serial_println!("[MFS_RAM] target check: is_dir={}, is_new_dir={}", target.mode().is_dir(), is_new_dir);
+        
+        // Don't allow hardlinks to existing directories
+        if target.mode().is_dir() && !is_new_dir {
+            serial_println!("[MFS_RAM] rejecting hardlink to existing directory");
+            return Err(FsError::NotSupported);
         }
         
         // Insert the same Arc (this is a true hardlink)
         entries.insert(String::from(name), target.clone());
+        serial_println!("[MFS_RAM] inserted into directory");
         
         // Increment target nlink
         target.nlink.fetch_add(1, Ordering::SeqCst);
+        serial_println!("[MFS_RAM] incremented nlink to {}", target.nlink.load(Ordering::SeqCst));
         
         // Update directory mtime
         data.mtime = Self::current_time();
         
+        serial_println!("[MFS_RAM] dir_link_internal() success");
         Ok(())
     }
     
     /// Create a hard link (trait version - tries to downcast)
     pub fn dir_link(&self, name: &str, target: Arc<dyn Inode>) -> Result<(), FsError> {
-        // Try to downcast to RamInode
-        // This is a workaround since we can't directly get Arc<RamInode> from Arc<dyn Inode>
-        let target_ino = target.ino();
+        use crate::serial_println;
         
-        // Lock directory to search for existing inode with same ino
-        let data = self.data.lock();
-        let entries = match &data.data {
-            InodeKind::Directory(dir) => &dir.entries,
-            _ => return Err(FsError::NotADirectory),
-        };
+        serial_println!("[MFS_RAM] dir_link() called: name='{}', target_ino={}", name, target.ino());
         
-        // Find an existing entry with the same inode number
-        let existing = entries.values()
-            .find(|inode| inode.ino == target_ino)
-            .cloned();
-        
-        drop(data);
-        
-        if let Some(existing_inode) = existing {
-            // Use the existing Arc<RamInode>
-            self.dir_link_internal(name, existing_inode)
-        } else {
-            // Can't create hardlink to inode from different filesystem
-            Err(FsError::NotSupported)
-        }
+        // For now, return NotSupported since we can't safely downcast Arc<dyn Inode> to Arc<RamInode>
+        // This method is only used for hardlinks, not for create()
+        serial_println!("[MFS_RAM] dir_link() returning NotSupported (hardlinks not supported yet)");
+        Err(FsError::NotSupported)
     }
     
     /// Create a symbolic link

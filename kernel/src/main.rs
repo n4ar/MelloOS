@@ -873,6 +873,10 @@ pub extern "C" fn _start() -> ! {
     // Initialize device drivers and I/O subsystem (Phase 7)
     drivers::init_drivers();
 
+    serial_println!("[KERNEL] Initializing VFS and mounting root filesystem...");
+    // Initialize VFS and mount mfs_ram as root (Phase 8)
+    fs::init();
+
     serial_println!("[KERNEL] Initializing scheduler...");
     // Initialize the task scheduler
     init_scheduler();

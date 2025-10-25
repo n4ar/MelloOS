@@ -559,6 +559,25 @@ pub fn get_current_task_info() -> Option<(TaskId, TaskPriority)> {
     Some((task.id, task.priority))
 }
 
+/// Get current task from per-CPU state
+///
+/// Returns the currently executing task on this CPU, or None if idle.
+/// This uses the per-CPU current_task field which is updated during context switches.
+///
+/// # Returns
+/// A reference to the current task, or None if no task is running.
+///
+/// # Note
+/// Tasks are stored as raw pointers in TASK_TABLE and managed manually.
+/// This function returns a static reference that's valid as long as the task exists.
+pub fn current_task() -> Option<&'static Task> {
+    let percpu = percpu_current();
+    let current_id = percpu.current_task?;
+    
+    // Get task from task table
+    get_task(current_id).map(|t| &*t)
+}
+
 /// Get task priority by ID
 ///
 /// Returns the task's ID and priority, or None if task doesn't exist

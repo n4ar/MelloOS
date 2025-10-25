@@ -464,6 +464,43 @@ fn sys_write(fd: usize, buf_ptr: usize, len: usize) -> isize {
             serial_println!("[SYSCALL] sys_write: cannot write to pipe read end");
             -1 // EBADF
         }
+        FdType::VfsFile { ref inode, ref offset, flags } => {
+            // Write to VFS file
+            use core::sync::atomic::Ordering;
+            
+            // Check if file is opened for writing
+            let o_accmode = flags & 0x3; // O_RDONLY=0, O_WRONLY=1, O_RDWR=2
+            if o_accmode == 0 { // O_RDONLY
+                serial_println!("[SYSCALL] sys_write: file not opened for writing");
+                return -1; // EBADF
+            }
+            
+            let current_offset = if (flags & 0x400) != 0 { // O_APPEND
+                // Append mode: write at end of file
+                inode.size()
+            } else {
+                offset.load(Ordering::SeqCst)
+            };
+            
+            match inode.write_at(current_offset, buffer) {
+                Ok(bytes_written) => {
+                    // Update offset
+                    offset.store(current_offset + bytes_written as u64, Ordering::SeqCst);
+                    bytes_written as isize
+                }
+                Err(err) => {
+                    serial_println!("[SYSCALL] sys_write: VFS write failed: {:?}", err);
+                    // Map VFS errors to errno
+                    match err {
+                        crate::fs::vfs::superblock::FsError::IoError => -5, // EIO
+                        crate::fs::vfs::superblock::FsError::NoSpace => -28, // ENOSPC
+                        crate::fs::vfs::superblock::FsError::IsADirectory => -21, // EISDIR
+                        crate::fs::vfs::superblock::FsError::ReadOnlyFilesystem => -30, // EROFS
+                        _ => -1, // Generic error
+                    }
+                }
+            }
+        }
         FdType::Invalid => {
             serial_println!("[SYSCALL] sys_write: invalid FD type");
             -1 // EBADF
@@ -640,6 +677,8 @@ fn sys_yield() -> isize {
 }
 
 fn sys_fork() -> isize {
+    // TODO: Clone FD table when we have access to current task
+    // For now, just return a fake PID
     let child_pid = NEXT_FAKE_PID.fetch_add(1, AtomicOrdering::Relaxed);
     serial_println!("Child process created in fork chain");
     child_pid as isize
@@ -651,12 +690,12 @@ fn sys_wait(_child_pid: usize) -> isize {
 }
 
 fn sys_exec(_elf_ptr: usize, _len: usize) -> isize {
+    // TODO: Close CLOEXEC FDs when we have access to current task
     serial_println!("[SYSCALL] SYS_EXEC: not implemented");
     -1
 }
 
 /// File descriptor type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FdType {
     /// Invalid/closed FD
     Invalid,
@@ -668,7 +707,71 @@ pub enum FdType {
     PipeRead(u32),
     /// Pipe write end
     PipeWrite(u32),
+    /// VFS file (regular file, directory, etc.)
+    VfsFile {
+        inode: alloc::sync::Arc<dyn crate::fs::vfs::inode::Inode>,
+        offset: core::sync::atomic::AtomicU64,
+        flags: u32, // O_RDONLY, O_WRONLY, O_RDWR, O_APPEND, etc.
+    },
 }
+
+// Manual Clone implementation since AtomicU64 doesn't implement Clone
+impl Clone for FdType {
+    fn clone(&self) -> Self {
+        match self {
+            FdType::Invalid => FdType::Invalid,
+            FdType::PtyMaster(n) => FdType::PtyMaster(*n),
+            FdType::PtySlave(n) => FdType::PtySlave(*n),
+            FdType::PipeRead(n) => FdType::PipeRead(*n),
+            FdType::PipeWrite(n) => FdType::PipeWrite(*n),
+            FdType::VfsFile { inode, offset, flags } => {
+                use core::sync::atomic::Ordering;
+                FdType::VfsFile {
+                    inode: inode.clone(),
+                    offset: core::sync::atomic::AtomicU64::new(offset.load(Ordering::SeqCst)),
+                    flags: *flags,
+                }
+            }
+        }
+    }
+}
+
+// Manual Debug implementation since dyn Inode doesn't implement Debug
+impl core::fmt::Debug for FdType {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            FdType::Invalid => write!(f, "Invalid"),
+            FdType::PtyMaster(n) => write!(f, "PtyMaster({})", n),
+            FdType::PtySlave(n) => write!(f, "PtySlave({})", n),
+            FdType::PipeRead(n) => write!(f, "PipeRead({})", n),
+            FdType::PipeWrite(n) => write!(f, "PipeWrite({})", n),
+            FdType::VfsFile { inode, offset, flags } => {
+                use core::sync::atomic::Ordering;
+                write!(f, "VfsFile {{ ino: {}, offset: {}, flags: {:#x} }}", 
+                    inode.ino(), offset.load(Ordering::SeqCst), flags)
+            }
+        }
+    }
+}
+
+// Manual PartialEq implementation since Arc doesn't implement Copy
+impl PartialEq for FdType {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (FdType::Invalid, FdType::Invalid) => true,
+            (FdType::PtyMaster(a), FdType::PtyMaster(b)) => a == b,
+            (FdType::PtySlave(a), FdType::PtySlave(b)) => a == b,
+            (FdType::PipeRead(a), FdType::PipeRead(b)) => a == b,
+            (FdType::PipeWrite(a), FdType::PipeWrite(b)) => a == b,
+            (FdType::VfsFile { inode: a, .. }, FdType::VfsFile { inode: b, .. }) => {
+                alloc::sync::Arc::ptr_eq(a, b)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for FdType {}
 
 /// File descriptor flags (FD_CLOEXEC)
 const FD_CLOEXEC: u32 = 1;
@@ -678,7 +781,7 @@ const O_NONBLOCK: u32 = 0x800;
 const O_APPEND: u32 = 0x400;
 
 /// File descriptor table entry
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct FileDescriptor {
     /// Type of file descriptor
     fd_type: FdType,
@@ -893,21 +996,21 @@ pub fn close_fds_with_cloexec() {
 /// For now, we use a simple global table. In a full implementation,
 /// this would be per-task.
 struct FdTable {
-    fds: [FileDescriptor; MAX_FDS],
+    fds: [Option<FileDescriptor>; MAX_FDS],
 }
 
 impl FdTable {
     const fn new() -> Self {
         Self {
-            fds: [FileDescriptor::new(); MAX_FDS],
+            fds: [const { None }; MAX_FDS],
         }
     }
 
     fn allocate(&mut self, fd_type: FdType) -> Option<usize> {
         // Start from FD 3 (after stdin/stdout/stderr)
         for i in 3..MAX_FDS {
-            if matches!(self.fds[i].fd_type, FdType::Invalid) {
-                self.fds[i] = FileDescriptor::with_type(fd_type);
+            if self.fds[i].is_none() {
+                self.fds[i] = Some(FileDescriptor::with_type(fd_type));
                 return Some(i);
             }
         }
@@ -922,8 +1025,8 @@ impl FdTable {
     ) -> Option<usize> {
         // Start from FD 3 (after stdin/stdout/stderr)
         for i in 3..MAX_FDS {
-            if matches!(self.fds[i].fd_type, FdType::Invalid) {
-                self.fds[i] = FileDescriptor::with_flags(fd_type, fd_flags, status_flags);
+            if self.fds[i].is_none() {
+                self.fds[i] = Some(FileDescriptor::with_flags(fd_type, fd_flags, status_flags));
                 return Some(i);
             }
         }
@@ -941,34 +1044,32 @@ impl FdTable {
             return false;
         }
         // Close existing FD if open
-        if !matches!(self.fds[fd].fd_type, FdType::Invalid) {
+        if self.fds[fd].is_some() {
             self.close(fd);
         }
-        self.fds[fd] = FileDescriptor::with_flags(fd_type, fd_flags, status_flags);
+        self.fds[fd] = Some(FileDescriptor::with_flags(fd_type, fd_flags, status_flags));
         true
     }
 
     fn get_mut(&mut self, fd: usize) -> Option<&mut FileDescriptor> {
-        if fd < MAX_FDS && !matches!(self.fds[fd].fd_type, FdType::Invalid) {
-            Some(&mut self.fds[fd])
+        if fd < MAX_FDS {
+            self.fds[fd].as_mut()
         } else {
             None
         }
     }
 
     fn get(&self, fd: usize) -> Option<FileDescriptor> {
-        if fd < MAX_FDS && !matches!(self.fds[fd].fd_type, FdType::Invalid) {
-            Some(self.fds[fd])
+        if fd < MAX_FDS {
+            self.fds[fd].clone()
         } else {
             None
         }
     }
 
     fn close(&mut self, fd: usize) -> Option<FileDescriptor> {
-        if fd < MAX_FDS && !matches!(self.fds[fd].fd_type, FdType::Invalid) {
-            let old = self.fds[fd];
-            self.fds[fd] = FileDescriptor::new();
-            Some(old)
+        if fd < MAX_FDS {
+            self.fds[fd].take()
         } else {
             None
         }
@@ -985,14 +1086,13 @@ static FD_TABLE: SpinLock<FdTable> = SpinLock::new(FdTable::new());
 ///
 /// # Returns
 /// File descriptor on success, or -1 on error
-fn sys_open(path_ptr: usize, _flags: usize) -> isize {
+fn sys_open(path_ptr: usize, flags: usize) -> isize {
     // Validate path pointer
     if !validate_user_buffer(path_ptr, 1) {
         return -1;
     }
 
-    // Read path string (simplified - just check for /dev/ptmx)
-    // In a full implementation, we'd properly parse the path
+    // Read path string
     let path_bytes = unsafe {
         let mut len = 0;
         let ptr = path_ptr as *const u8;
@@ -1003,9 +1103,9 @@ fn sys_open(path_ptr: usize, _flags: usize) -> isize {
     };
 
     let path = core::str::from_utf8(path_bytes).unwrap_or("");
-    serial_println!("[SYSCALL] sys_open: path={}", path);
+    serial_println!("[SYSCALL] sys_open: path={}, flags={:#x}", path, flags);
 
-    // Check if opening /dev/ptmx
+    // Special case: PTY devices (not yet in VFS)
     if path == "/dev/ptmx" {
         // Allocate a new PTY pair
         match crate::dev::pty::allocate_pty() {
@@ -1065,8 +1165,46 @@ fn sys_open(path_ptr: usize, _flags: usize) -> isize {
             -1 // EINVAL
         }
     } else {
-        serial_println!("[SYSCALL] sys_open: unsupported path");
-        -1 // ENOENT - file not found
+        // Use VFS path resolution for regular files
+        use crate::fs::vfs::path;
+        use core::sync::atomic::AtomicU64;
+        
+        // Resolve path to inode
+        match path::resolve_path(path, None) {
+            Ok(inode) => {
+                // Allocate file descriptor
+                let mut fd_table = FD_TABLE.lock();
+                let fd_type = FdType::VfsFile {
+                    inode,
+                    offset: AtomicU64::new(0),
+                    flags: flags as u32,
+                };
+                
+                match fd_table.allocate(fd_type) {
+                    Some(fd) => {
+                        serial_println!("[SYSCALL] sys_open: opened {} as FD {}", path, fd);
+                        fd as isize
+                    }
+                    None => {
+                        serial_println!("[SYSCALL] sys_open: no FDs available");
+                        -1 // EMFILE - too many open files
+                    }
+                }
+            }
+            Err(err) => {
+                serial_println!("[SYSCALL] sys_open: path resolution failed: {:?}", err);
+                // Map VFS errors to errno
+                match err {
+                    crate::fs::vfs::superblock::FsError::NotFound => -2, // ENOENT
+                    crate::fs::vfs::superblock::FsError::PermissionDenied => -13, // EACCES
+                    crate::fs::vfs::superblock::FsError::NotADirectory => -20, // ENOTDIR
+                    crate::fs::vfs::superblock::FsError::IsADirectory => -21, // EISDIR
+                    crate::fs::vfs::superblock::FsError::TooManySymlinks => -40, // ELOOP
+                    crate::fs::vfs::superblock::FsError::NameTooLong => -36, // ENAMETOOLONG
+                    _ => -1, // Generic error
+                }
+            }
+        }
     }
 }
 
@@ -1137,6 +1275,28 @@ fn sys_read(fd: usize, buf_ptr: usize, len: usize) -> isize {
             serial_println!("[SYSCALL] sys_read: cannot read from pipe write end");
             -1 // EBADF
         }
+        FdType::VfsFile { ref inode, ref offset, .. } => {
+            // Read from VFS file
+            use core::sync::atomic::Ordering;
+            let current_offset = offset.load(Ordering::SeqCst);
+            
+            match inode.read_at(current_offset, buffer) {
+                Ok(bytes_read) => {
+                    // Update offset
+                    offset.store(current_offset + bytes_read as u64, Ordering::SeqCst);
+                    bytes_read as isize
+                }
+                Err(err) => {
+                    serial_println!("[SYSCALL] sys_read: VFS read failed: {:?}", err);
+                    // Map VFS errors to errno
+                    match err {
+                        crate::fs::vfs::superblock::FsError::IoError => -5, // EIO
+                        crate::fs::vfs::superblock::FsError::IsADirectory => -21, // EISDIR
+                        _ => -1, // Generic error
+                    }
+                }
+            }
+        }
         FdType::Invalid => {
             serial_println!("[SYSCALL] sys_read: invalid FD type");
             -1 // EBADF
@@ -1177,6 +1337,10 @@ fn sys_close(fd: usize) -> isize {
                     // Close pipe write end
                     let mut pipe_table = PIPE_TABLE.lock();
                     pipe_table.close_writer(pipe_id);
+                }
+                FdType::VfsFile { .. } => {
+                    // VFS file - Arc will handle cleanup automatically
+                    // No explicit cleanup needed
                 }
                 FdType::Invalid => {
                     // Should never happen

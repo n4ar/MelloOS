@@ -194,6 +194,9 @@ pub struct Task {
 
     /// Last syscall number executed (for debugging/panic dumps)
     pub last_syscall: Option<usize>,
+
+    /// File descriptor table (per-process)
+    pub fd_table: alloc::sync::Arc<crate::sync::SpinLock<crate::fs::vfs::file::FdTable>>,
 }
 
 impl Task {
@@ -277,6 +280,12 @@ impl Task {
         // Initialize signal handlers with defaults
         let signal_handlers = Self::init_default_signal_handlers();
 
+        // Create empty FD table
+        use alloc::sync::Arc;
+        use crate::sync::SpinLock;
+        use crate::fs::vfs::file::FdTable;
+        let fd_table = Arc::new(SpinLock::new(FdTable::new()));
+
         Ok(Self {
             id,
             name,
@@ -298,6 +307,7 @@ impl Task {
             sid: id,        // Initially, sid = pid (for init process)
             tty: None,      // No controlling terminal initially
             last_syscall: None, // No syscall executed yet
+            fd_table,       // Empty FD table
         })
     }
 

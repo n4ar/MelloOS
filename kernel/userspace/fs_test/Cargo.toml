@@ -1,0 +1,16 @@
+[package]
+name = "fs_test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = "s"
+
+[[bin]]
+name = "fs_test"
+path = "src/main.rs"
