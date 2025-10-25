@@ -11,4 +11,8 @@ pub mod file;
 pub mod inode;
 pub mod mount;
 pub mod path;
+pub mod registry;
 pub mod superblock;
+
+// Re-export commonly used items
+pub use registry::{register_filesystem, lookup_filesystem};

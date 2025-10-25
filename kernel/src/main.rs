@@ -878,6 +878,8 @@ pub extern "C" fn _start() -> ! {
     fs::block_dev::init_block_devices();
     // Initialize VFS and mount mfs_ram as root (Phase 8)
     fs::init();
+    // Initialize mfs_disk filesystem type (Phase 8 - Task 9.1)
+    fs::mfs::disk::init();
 
     serial_println!("[KERNEL] Initializing scheduler...");
     // Initialize the task scheduler

@@ -128,6 +128,8 @@ pub enum FsError {
     NameTooLong,
     /// Read-only filesystem
     ReadOnlyFilesystem,
+    /// Device not found
+    DeviceNotFound,
     /// Too many open files
     TooManyOpenFiles,
     /// Not supported
