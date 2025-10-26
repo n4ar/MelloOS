@@ -1,0 +1,213 @@
+# Implementation Plan
+
+- [x] 1. Create project structure and configuration
+  - Create directory structure: `kernel/src/arch/x86_64/acpi/`, `kernel/src/arch/x86_64/apic/`, `kernel/src/arch/x86_64/smp/`, `kernel/src/sync/`
+  - Add configuration constants in `kernel/src/config.rs` (SCHED_HZ, MAX_CPUS)
+  - Update `kernel/src/main.rs` to include new module declarations
+  - _Requirements: 1.1, 1.2, 1.3_
+
+- [x] 2. Implement ACPI MADT parser
+  - [x] 2.1 Create ACPI table structures and parser
+    - Define RSDP, RSDT, XSDT, and MADT structures in `kernel/src/arch/x86_64/acpi/mod.rs`
+    - Implement checksum validation for ACPI tables
+    - Implement MADT entry parsing (Type 0: Local APIC, Type 1: I/O APIC)
+    - Create `parse_madt()` function that returns `MadtInfo` with CPU list and APIC addresses
+    - _Requirements: 1.1, 1.2, 1.3_
+  - [x] 2.2 Integrate MADT parser into boot sequence
+    - Call `parse_madt()` from `kernel_main()` after memory initialization
+    - Log detected CPUs with format "[SMP] CPUs detected: N (apic_ids=[...])"
+    - Store MADT info in global static for later use
+    - _Requirements: 1.4, 1.5_
+
+- [x] 3. Implement Local APIC management
+  - [x] 3.1 Create Local APIC driver structure
+    - Define APIC register offsets and constants in `kernel/src/arch/x86_64/apic/mod.rs`
+    - Implement `LocalApic` struct with memory-mapped I/O accessors
+    - Implement `init()`, `id()`, and `eoi()` methods
+    - _Requirements: 2.1, 2.2, 2.3, 2.4_
+  - [x] 3.2 Implement IPI sending functions
+    - Implement `send_ipi()` using ICR registers
+    - Implement `send_init_ipi()` for INIT sequence
+    - Implement `send_sipi()` for SIPI sequence
+    - Add delivery status polling with timeout
+    - _Requirements: 3.2, 3.3, 3.4, 7.1, 7.2_
+  - [x] 3.3 Initialize BSP Local APIC
+    - Initialize BSP LAPIC in `kernel_main()` after MADT parsing
+    - Set spurious interrupt vector to 0xFF and enable LAPIC
+    - Verify LAPIC ID matches BSP APIC ID from MADT
+    - Log "[SMP] BSP online (apic_id=N)"
+    - _Requirements: 2.5, 3.1_
+
+- [x] 4. Implement synchronization primitives
+  - [x] 4.1 Create SpinLock implementation
+    - Implement `SpinLock<T>` using `AtomicBool` in `kernel/src/sync/spin.rs`
+    - Implement `lock()` with exponential backoff using `core::hint::spin_loop()`
+    - Implement `try_lock()` for non-blocking acquisition
+    - Implement `SpinLockGuard` with automatic unlock on drop
+    - Use Acquire/Release memory ordering
+    - _Requirements: 8.1, 8.2, 8.4_
+  - [x] 4.2 Create IRQ-safe SpinLock variant
+    - Implement `IrqSpinLock<T>` wrapper around `SpinLock<T>`
+    - Save RFLAGS and disable interrupts (cli) in `lock()`
+    - Restore RFLAGS in `IrqSpinLockGuard::drop()`
+    - _Requirements: 8.3, 8.5_
+
+- [x] 5. Implement per-CPU data structures
+  - [x] 5.1 Create PerCpu structure and accessors
+    - Define `PerCpu` struct with cache line alignment (64 bytes) in `kernel/src/arch/x86_64/smp/percpu.rs`
+    - Include fields: id, apic_id, node_id, runqueue, current_task, idle_task, lapic_timer_hz, ticks, in_interrupt
+    - Create static `PERCPU_ARRAY: [PerCpu; MAX_CPUS]`
+    - Implement `init_percpu()` to initialize a PerCpu instance
+    - _Requirements: 4.1, 4.2_
+  - [x] 5.2 Implement GS.BASE setup for per-CPU access
+    - Implement `percpu_current()` using GS.BASE MSR (0xC0000101)
+    - Implement `percpu_for(cpu_id)` for accessing other CPUs' data
+    - Configure BSP GS.BASE in early initialization using `wrmsr`
+    - _Requirements: 4.3, 4.4, 4.5, 4.6_
+
+- [x] 6. Create AP trampoline code
+  - [x] 6.1 Write AP boot assembly code
+    - Create `kernel/src/arch/x86_64/smp/boot_ap.S` with 16-bit real mode entry
+    - Implement real mode to protected mode transition (enable A20, load GDT32, set CR0.PE)
+    - Implement protected mode to long mode transition (load GDT64, set CR4.PAE, load CR3, set EFER.LME, set CR0.PG)
+    - Jump to 64-bit entry point `ap_entry64`
+    - _Requirements: 3.5, 3.6_
+  - [x] 6.2 Implement AP initialization in Rust
+    - Create `ap_entry64()` function in `kernel/src/arch/x86_64/smp/mod.rs`
+    - Read CPU ID from trampoline structure
+    - Initialize AP's PerCpu structure
+    - Configure AP's GS.BASE MSR
+    - Initialize AP's Local APIC
+    - Signal BSP that AP is online using atomic flag
+    - Log "[SMP] AP#N online"
+    - Enter idle loop (call scheduler)
+    - _Requirements: 3.7, 3.8_
+  - [x] 6.3 Setup trampoline memory and identity mapping
+    - Copy trampoline code to physical address 0x8000 in `init_smp()`
+    - Identity map 0x0000-0x9FFF with present + executable + writable flags
+    - Allocate 16KB stacks for each AP using boot allocator
+    - Write stack pointers, entry point, CR3, and CPU IDs to trampoline structure
+    - _Requirements: 3.1_
+
+- [x] 7. Implement SMP bootstrap orchestration
+  - [x] 7.1 Create SMP initialization function
+    - Implement `init_smp()` in `kernel/src/arch/x86_64/smp/mod.rs`
+    - Setup trampoline code and identity mapping
+    - Iterate through APs from MADT info
+    - For each AP: send INIT IPI, wait 10ms, send SIPI twice with 200μs delay
+    - Wait up to 100ms for each AP to signal online
+    - Log success or timeout for each AP
+    - Return total number of online CPUs
+    - _Requirements: 3.2, 3.3, 3.4, 3.5_
+  - [x] 7.2 Integrate SMP initialization into boot sequence
+    - Call `init_smp()` from `kernel_main()` after BSP LAPIC initialization
+    - Handle errors gracefully (continue with available CPUs if some APs fail)
+    - Store CPU count in global variable
+    - _Requirements: 10.1_
+
+- [x] 8. Implement APIC timer calibration and initialization
+  - [x] 8.1 Implement timer calibration using PIT
+    - Create `calibrate_timer()` in `kernel/src/arch/x86_64/apic/mod.rs`
+    - Program PIT channel 2 for 10ms one-shot
+    - Set LAPIC timer to maximum count (0xFFFFFFFF)
+    - Wait for PIT interrupt
+    - Calculate LAPIC frequency from remaining count
+    - Return calibrated frequency in Hz
+    - _Requirements: 6.2_
+  - [x] 8.2 Initialize APIC timer on each core
+    - Implement `init_timer()` in `LocalApic` to configure periodic mode
+    - Set timer divide value to 16
+    - Calculate initial count based on SCHED_HZ (100 Hz)
+    - Set timer vector to 0x20
+    - Enable timer interrupts
+    - Store calibrated frequency in PerCpu structure
+    - Log "[APIC] coreN timer @XHz"
+    - _Requirements: 6.1, 6.3, 6.5, 6.6_
+  - [x] 8.3 Implement timer interrupt handler
+    - Create `timer_interrupt_handler()` in `kernel/src/sched/timer.rs`
+    - Increment per-CPU tick counter
+    - Call scheduler tick function for current core
+    - Send EOI to LAPIC
+    - _Requirements: 6.4_
+
+- [x] 9. Extend scheduler for per-core runqueues
+  - [x] 9.1 Modify scheduler to use per-core runqueues
+    - Move runqueue from global scheduler to PerCpu structure
+    - Implement `schedule_on_core(cpu_id)` that operates on specific core's runqueue
+    - Protect runqueue access with per-CPU spinlocks
+    - Update `yield()` syscall to use current core's runqueue
+    - _Requirements: 5.1, 5.5, 5.6_
+  - [x] 9.2 Implement task assignment and load balancing
+    - Implement `enqueue_task()` that assigns tasks to CPU with smallest runqueue
+    - Implement `dequeue_task()` for removing tasks from runqueue
+    - Create idle task for each CPU (infinite loop with `hlt`)
+    - _Requirements: 5.2, 5.3_
+  - [x] 9.3 Implement periodic load rebalancing
+    - Create `balance_load()` function that checks runqueue sizes
+    - Migrate tasks from busy CPUs to idle CPUs if imbalance > 2 tasks
+    - Implement `migrate_task()` with proper lock ordering (lower CPU ID first)
+    - Call `balance_load()` every 100ms from timer interrupt
+    - _Requirements: 5.4, 5.5_
+
+- [x] 10. Implement Inter-Processor Interrupts
+  - [x] 10.1 Create IPI utility functions
+    - Implement `send_ipi(apic_id, vector)` in `kernel/src/arch/x86_64/apic/ipi.rs`
+    - Implement `broadcast_ipi(vector, exclude_self)` using CPU_STATES bitmask
+    - Implement `send_reschedule_ipi(cpu_id)` wrapper
+    - Log IPI sends with format "[SCHED] send RESCHED IPI → coreN"
+    - _Requirements: 7.1, 7.2, 7.5_
+  - [x] 10.2 Implement RESCHEDULE_IPI handler
+    - Define RESCHEDULE_IPI vector (0x30) in IDT
+    - Create interrupt handler that calls `schedule_on_core(current_cpu_id())`
+    - Send EOI to LAPIC
+    - Register handler in IDT during initialization
+    - _Requirements: 7.3, 7.4_
+  - [x] 10.3 Integrate IPI into scheduler
+    - Send RESCHEDULE_IPI when enqueueing task to remote CPU
+    - Send RESCHEDULE_IPI after task migration during load balancing
+    - _Requirements: 7.4, 7.5_
+
+- [x] 11. Make Phase 4 features SMP-safe
+  - [x] 11.1 Update syscall infrastructure for SMP
+    - Verify syscall handler uses per-object locks (no global lock needed)
+    - Update `sys_yield()` to use current core's runqueue
+    - Ensure task locks are held during task state modifications
+    - _Requirements: 10.2_
+  - [x] 11.2 Update IPC system for SMP
+    - Verify port queues use spinlocks for protection
+    - Handle cross-core IPC (sender and receiver on different CPUs)
+    - Send RESCHEDULE_IPI to receiver's CPU when message arrives
+    - _Requirements: 10.4_
+  - [x] 11.3 Document lock ordering and add assertions
+    - Document lock ordering rules in code comments
+    - Add debug assertions to verify lock ordering
+    - Test for deadlocks with multiple concurrent syscalls
+    - _Requirements: 8.5, 10.3_
+
+- [-] 12. Create test tasks and verification
+  - [x] 12.1 Create multi-core test tasks
+    - Create 4 test tasks (A, B, C, D) with different priorities in `kernel_main()`
+    - Assign tasks to different cores using scheduler
+    - Each task logs with format "[SCHED][coreN] run TASKNAME"
+    - Tasks perform simple work (loop with yield)
+    - _Requirements: 9.1, 9.2, 9.3_
+  - [x] 12.2 Verify SMP functionality
+    - Verify all CPUs come online (check logs)
+    - Verify tasks execute on multiple cores (check core IDs in logs)
+    - Verify timer interrupts on all cores (check tick counts)
+    - Verify IPI delivery (check IPI logs)
+    - Verify no panics or deadlocks during 30+ second run
+    - _Requirements: 9.4, 9.5, 10.1, 10.5_
+
+- [x] 13. Update build and test infrastructure
+  - [x] 13.1 Update QEMU test scripts
+    - Modify `tools/qemu.sh` to support `-smp N` parameter
+    - Add test configurations for 2 and 4 CPUs
+    - Add `-enable-kvm` flag for faster testing
+    - _Requirements: 10.5, 10.6_
+  - [x] 13.2 Update documentation
+    - Update `docs/architecture.md` with SMP architecture overview
+    - Create `docs/smp.md` with detailed SMP implementation notes
+    - Update `README.md` with SMP feature description
+    - Document QEMU testing commands
+    - _Requirements: 9.1, 9.2, 9.3, 9.4_

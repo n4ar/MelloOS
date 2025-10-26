@@ -1,0 +1,17 @@
+{
+  "enabled": true,
+  "name": "Auto Version Bump on Commit",
+  "description": "Automatically increments the kernel version in Cargo.toml whenever a commit is made",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      ".git/COMMIT_EDITMSG",
+      ".git/logs/HEAD"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A commit has been made. Please update the version field in kernel/Cargo.toml by incrementing the patch version (e.g., 0.1.0 -> 0.1.1). Read the current version, increment it appropriately, and write the updated version back to the file."
+  }
+}

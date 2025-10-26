@@ -28,9 +28,6 @@ limine/
 # ISO root build directory
 iso_root/
 
-# Kiro
-.kiro/
-
 # PR
 .pr/
 

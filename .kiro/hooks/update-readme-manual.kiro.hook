@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Update README",
+  "description": "Manually triggered hook to update README.md after finishing everything",
+  "version": "1",
+  "when": {
+    "type": "userTriggered",
+    "patterns": [
+      ".kiro/manual-trigger"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Review all project files, code changes, and documentation. Then update README.md to reflect the current state of the project, including any new features, setup instructions, architecture changes, and usage guidelines. Make sure the README is comprehensive and up-to-date with all recent work and doesn't include anything about kiro."
+  }
+}
