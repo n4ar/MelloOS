@@ -42,11 +42,11 @@ use limine::request::{ExecutableAddressRequest, HhdmRequest, MemoryMapRequest};
 use spin::Mutex;
 
 pub mod allocator;
+pub mod mmap;
 pub mod paging;
 pub mod pmm;
 pub mod security;
 pub mod tlb;
-pub mod mmap;
 
 struct MemoryManagerState {
     pmm: pmm::PhysicalMemoryManager,
@@ -82,6 +82,18 @@ pub type PhysAddr = usize;
 
 /// Virtual address type
 pub type VirtAddr = usize;
+
+/// Kernel address space base (higher half)
+/// All kernel code, data, and mappings start from this address
+pub const KERNEL_BASE: VirtAddr = 0xFFFF_8000_0000_0000;
+
+/// User address space base
+/// User processes start mapping from this address
+pub const USER_BASE: VirtAddr = 0x0000_0000_0000_0000;
+
+/// User address space limit
+/// User processes can only access addresses below this limit (512GB)
+pub const USER_LIMIT: VirtAddr = 0x0000_7FFF_FFFF_FFFF;
 
 /// Initialize HHDM offset from Limine bootloader
 /// This MUST be called before using phys_to_virt() or virt_to_phys()
@@ -346,8 +358,6 @@ pub fn run_memory_tests(pmm: &mut pmm::PhysicalMemoryManager, mapper: &mut pagin
 /// This should be called early in kernel initialization, after framebuffer setup
 /// but before any dynamic memory allocation is needed.
 pub fn init_memory() {
-    
-
     // Get HHDM offset from Limine
     let hhdm_response = HHDM_REQUEST
         .get_response()
@@ -382,11 +392,12 @@ pub fn init_memory() {
 
     let _total_mb = pmm.total_memory_mb();
     let _free_mb = pmm.free_memory_mb();
-    
+
     // Initialize global PMM for syscall access
     // Note: We create a second PMM instance for global access
     // This is a temporary solution until we refactor to use a single global PMM
-    let global_pmm = pmm::PhysicalMemoryManager::init(memory_map_response, kernel_start, kernel_end);
+    let global_pmm =
+        pmm::PhysicalMemoryManager::init(memory_map_response, kernel_start, kernel_end);
     pmm::init_global_pmm(global_pmm);
 
     // Initialize paging system

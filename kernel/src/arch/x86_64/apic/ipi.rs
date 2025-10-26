@@ -15,9 +15,9 @@ use crate::serial_println;
 /// This IPI triggers the scheduler on the target core
 pub const RESCHEDULE_IPI_VECTOR: u8 = 0x30;
 
-/// TLB_FLUSH_IPI vector number (future use)
-#[allow(dead_code)]
-pub const TLB_FLUSH_IPI_VECTOR: u8 = 0x31;
+/// TLB_FLUSH_IPI vector number
+/// This IPI triggers TLB shootdown on the target core
+pub const TLB_FLUSH_IPI_VECTOR: u8 = 0xF0;
 
 /// HALT_IPI vector number (future use)
 #[allow(dead_code)]

@@ -525,6 +525,7 @@ pub fn tick() {
                 rbp: 0,
                 rbx: 0,
                 rsp: 0, // Will be filled by context_switch
+                cr3: 0, // Dummy value, will not be used
             };
 
             unsafe {
@@ -1140,6 +1141,7 @@ pub fn tick_with_process_integration() {
                 rbp: 0,
                 rbx: 0,
                 rsp: 0,
+                cr3: 0, // Dummy value, will not be used
             };
 
             unsafe {

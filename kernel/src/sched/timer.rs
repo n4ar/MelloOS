@@ -524,10 +524,14 @@ extern "C" fn apic_timer_interrupt_handler() {
 
     // Also increment global tick counter for compatibility
     let global_ticks = TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
-    
+
     // Debug: Print first few timer interrupts
     if global_ticks < 5 {
-        crate::serial_println!("[TIMER] Timer interrupt #{} on CPU {}", global_ticks, percpu.id);
+        crate::serial_println!(
+            "[TIMER] Timer interrupt #{} on CPU {}",
+            global_ticks,
+            percpu.id
+        );
     }
 
     // Send EOI to Local APIC
@@ -698,6 +702,119 @@ pub unsafe fn init_reschedule_ipi_handler() {
     }
 
     serial_println!("[IPI] RESCHEDULE_IPI handler registered successfully");
+}
+
+// ============================================================================
+// TLB Shootdown IPI Handler (for SMP)
+// ============================================================================
+
+/// TLB_SHOOTDOWN_IPI interrupt handler wrapper
+///
+/// This is a naked function that saves/restores registers and calls the actual handler.
+/// This handler is used for TLB shootdown interrupts (vector 0xF0) in SMP mode.
+#[unsafe(naked)]
+extern "C" fn tlb_shootdown_ipi_handler_wrapper() {
+    core::arch::naked_asm!(
+        // The CPU has already pushed SS, RSP, RFLAGS, CS, RIP
+        // We need to save all other registers
+
+        "push rax",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+
+        // Call the actual handler
+        "call {handler}",
+
+        // Restore registers
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rax",
+
+        // Return from interrupt (pops RIP, CS, RFLAGS, RSP, SS)
+        "iretq",
+
+        handler = sym tlb_shootdown_ipi_handler,
+    )
+}
+
+/// TLB_SHOOTDOWN_IPI interrupt handler
+///
+/// This function is called when a TLB_SHOOTDOWN_IPI (vector 0xF0) is received.
+/// It flushes the TLB entries specified in the shootdown request and acknowledges
+/// the completion.
+///
+/// This IPI is sent when:
+/// - Page table entries are modified on one CPU
+/// - Other CPUs need to invalidate their cached translations
+/// - Memory mappings are changed (mprotect, munmap, etc.)
+///
+/// # Notes
+/// - The CPU automatically disables interrupts (IF=0) when entering this handler
+/// - This handler must be fast to minimize TLB shootdown latency
+/// - The handler acknowledges the request atomically
+extern "C" fn tlb_shootdown_ipi_handler() {
+    use crate::arch::x86_64::acpi::get_madt_info;
+    use crate::arch::x86_64::apic::LocalApic;
+
+    // Handle the TLB shootdown request
+    unsafe {
+        crate::mm::tlb::handle_tlb_shootdown_ipi();
+    }
+
+    // Send EOI to Local APIC
+    unsafe {
+        let madt_info = get_madt_info().expect("MADT info not available");
+        let mut lapic = LocalApic::new(madt_info.lapic_address);
+        lapic.eoi();
+    }
+}
+
+/// Initialize TLB_SHOOTDOWN_IPI interrupt handler in IDT
+///
+/// This function registers the TLB_SHOOTDOWN_IPI interrupt handler at vector 0xF0
+/// in the IDT. It should be called during SMP initialization.
+///
+/// # Safety
+/// This function is unsafe because it modifies the global IDT.
+/// It must be called during kernel initialization.
+pub unsafe fn init_tlb_shootdown_ipi_handler() {
+    use crate::serial_println;
+
+    serial_println!("[IPI] Registering TLB_SHOOTDOWN_IPI handler at vector 0xF0...");
+
+    // Get the code segment selector
+    let code_selector: u16 = 0x28; // Limine sets up GDT with kernel code at 0x28
+
+    // Validate handler address
+    let handler_addr = tlb_shootdown_ipi_handler_wrapper as usize;
+    if handler_addr == 0 {
+        panic!("[IPI] CRITICAL: TLB_SHOOTDOWN_IPI handler address is null");
+    }
+
+    // Set TLB_SHOOTDOWN_IPI handler at vector 0xF0 (240)
+    IDT.entries[0xF0].set_handler(handler_addr, code_selector);
+
+    // Validate IDT setup
+    if IDT.entries[0xF0].offset_low == 0
+        && IDT.entries[0xF0].offset_mid == 0
+        && IDT.entries[0xF0].offset_high == 0
+    {
+        panic!("[IPI] CRITICAL: Failed to set TLB_SHOOTDOWN_IPI handler in IDT");
+    }
+
+    serial_println!("[IPI] TLB_SHOOTDOWN_IPI handler registered successfully");
 }
 
 /// Manual test functions for timer interrupt system

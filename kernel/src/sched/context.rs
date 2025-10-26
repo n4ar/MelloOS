@@ -22,6 +22,9 @@ pub struct CpuContext {
 
     /// Stack pointer - points to the top of the task's stack
     pub rsp: u64,
+
+    /// CR3 register - page table physical address (for per-process page tables)
+    pub cr3: u64,
 }
 
 impl CpuContext {
@@ -35,6 +38,7 @@ impl CpuContext {
             rbp: 0,
             rbx: 0,
             rsp: 0,
+            cr3: 0,
         }
     }
 }
@@ -80,8 +84,21 @@ pub unsafe extern "C" fn context_switch(current: *mut CpuContext, next: *const C
         // RDI contains the pointer to current context (first argument)
         // We need to save RSP at offset 48 (6 registers * 8 bytes)
         "mov [rdi + 48], rsp",
-        // Load next RSP from next.rsp
+        // Save current CR3 to current.cr3
+        // CR3 is at offset 56 (7 registers * 8 bytes)
+        "mov rax, cr3",
+        "mov [rdi + 56], rax",
+        // Load next CR3 from next.cr3
         // RSI contains the pointer to next context (second argument)
+        // Load CR3 from offset 56
+        "mov rax, [rsi + 56]",
+        // Only switch CR3 if it's different (optimization)
+        "mov rbx, cr3",
+        "cmp rax, rbx",
+        "je 1f",        // Skip CR3 write if same
+        "mov cr3, rax", // Switch page tables (automatically flushes TLB)
+        "1:",
+        // Load next RSP from next.rsp
         // Load RSP from offset 48
         "mov rsp, [rsi + 48]",
         // Restore next task's callee-saved registers from its stack

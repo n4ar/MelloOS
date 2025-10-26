@@ -3,8 +3,8 @@
 /// This module implements loading and parsing of ELF64 executables for user-mode execution.
 /// It supports ET_EXEC format with PT_LOAD segments and proper memory protection.
 use crate::mm::paging::{PageMapper, PageTableFlags};
-use crate::mm::pmm::PhysicalMemoryManager;
 use crate::mm::phys_to_virt;
+use crate::mm::pmm::PhysicalMemoryManager;
 use crate::sched::task::{MemoryRegion, MemoryRegionType, Task, USER_LIMIT};
 use crate::serial_println;
 use core::mem;
@@ -115,7 +115,71 @@ impl<'a> ElfLoader<'a> {
         Self { pmm, mapper }
     }
 
-    /// Load an ELF64 binary and set up memory regions for a task
+    /// Load an ELF64 binary and set up memory regions for a process
+    ///
+    /// # Arguments
+    /// * `elf_data` - Raw ELF binary data
+    /// * `process` - Process to load the binary into (uses process-specific page table)
+    ///
+    /// # Returns
+    /// Entry point address and stack top on success, or ElfError on failure
+    pub fn load_elf_for_process(
+        &mut self,
+        elf_data: &[u8],
+        process: &mut crate::user::process::Process,
+    ) -> Result<(u64, u64), ElfError> {
+        serial_println!(
+            "[ELF] Loading ELF binary for process {} ({} bytes)",
+            process.pid,
+            elf_data.len()
+        );
+
+        // 1. Parse and validate ELF header
+        let header = self.parse_elf_header(elf_data)?;
+        serial_println!("[ELF] Entry point: 0x{:x}", header.e_entry);
+
+        // 2. Validate ELF format
+        self.validate_elf(&header)?;
+
+        // 3. Parse program headers
+        let program_headers = self.parse_program_headers(elf_data, &header)?;
+        serial_println!("[ELF] Found {} program headers", program_headers.len());
+
+        // 4. Clear existing memory regions
+        process.clear_memory_regions();
+
+        // 5. Map PT_LOAD segments into process page table
+        for (i, phdr) in program_headers.iter().enumerate() {
+            if phdr.p_type == PT_LOAD {
+                serial_println!(
+                    "[ELF] Mapping segment {}: vaddr=0x{:x}-0x{:x} flags=0x{:x}",
+                    i,
+                    phdr.p_vaddr,
+                    phdr.p_vaddr + phdr.p_memsz,
+                    phdr.p_flags
+                );
+                self.map_segment_for_process(elf_data, phdr, process)?;
+            } else if phdr.p_type == PT_GNU_STACK {
+                serial_println!(
+                    "[ELF] Found GNU_STACK segment (flags: 0x{:x})",
+                    phdr.p_flags
+                );
+            }
+        }
+
+        // 6. Set up user stack in process page table
+        let user_stack_top = self.setup_user_stack_for_process(process)?;
+
+        serial_println!(
+            "[ELF] ELF loading completed for process {} (entry=0x{:x}, stack_top=0x{:x})",
+            process.pid,
+            header.e_entry,
+            user_stack_top
+        );
+        Ok((header.e_entry, user_stack_top))
+    }
+
+    /// Load an ELF64 binary and set up memory regions for a task (legacy interface)
     ///
     /// # Arguments
     /// * `elf_data` - Raw ELF binary data
@@ -389,6 +453,208 @@ impl<'a> ElfLoader<'a> {
         );
 
         Ok(())
+    }
+
+    /// Map a PT_LOAD segment into process memory (process-specific page table)
+    fn map_segment_for_process(
+        &mut self,
+        elf_data: &[u8],
+        phdr: &Elf64ProgramHeader,
+        process: &mut crate::user::process::Process,
+    ) -> Result<(), ElfError> {
+        let vaddr = phdr.p_vaddr as usize;
+        let size = phdr.p_memsz as usize;
+        let file_size = phdr.p_filesz as usize;
+        let file_offset = phdr.p_offset as usize;
+
+        // Validate virtual address is in user space
+        if vaddr >= crate::mm::USER_LIMIT || vaddr + size > crate::mm::USER_LIMIT {
+            return Err(ElfError::InvalidAddress);
+        }
+
+        // Validate file offset and size
+        if file_offset + file_size > elf_data.len() {
+            return Err(ElfError::BufferTooSmall);
+        }
+
+        // Calculate page-aligned range
+        let start_page = vaddr & !0xFFF;
+        let end_page = (vaddr + size + 0xFFF) & !0xFFF;
+
+        // Determine page flags from program header - ensure USER flag is set
+        let mut flags = PageTableFlags::PRESENT | PageTableFlags::USER;
+        if phdr.p_flags & PF_W != 0 {
+            flags |= PageTableFlags::WRITABLE;
+        }
+        if phdr.p_flags & PF_X == 0 {
+            flags |= PageTableFlags::NO_EXECUTE;
+        }
+
+        // Determine memory region type based on flags
+        let region_type = if phdr.p_flags & PF_X != 0 {
+            MemoryRegionType::Code
+        } else if phdr.p_flags & PF_W != 0 {
+            if file_size == 0 {
+                MemoryRegionType::Bss
+            } else {
+                MemoryRegionType::Data
+            }
+        } else {
+            MemoryRegionType::Data // Read-only data
+        };
+
+        // Map pages and copy data into process page table
+        // TODO: When process has its own page table, use process.page_table
+        // For now, we use the global mapper (shared address space)
+        for page_addr in (start_page..end_page).step_by(4096) {
+            let phys_frame = self.pmm.alloc_frame().ok_or(ElfError::OutOfMemory)?;
+
+            // Map page in user space with USER flag
+            self.mapper
+                .map_page(page_addr, phys_frame, flags, self.pmm)
+                .map_err(|_| ElfError::MappingFailed)?;
+
+            // Create temporary kernel mapping for safe data copying
+            let kernel_vaddr = phys_to_virt(phys_frame);
+
+            // Calculate what portion of this page needs data from ELF
+            let page_offset = if page_addr >= vaddr {
+                0
+            } else {
+                vaddr - page_addr
+            };
+            let page_file_start = if page_addr >= vaddr {
+                file_offset + (page_addr - vaddr)
+            } else {
+                file_offset
+            };
+            let page_file_size = core::cmp::min(
+                4096 - page_offset,
+                if file_size > (page_addr.saturating_sub(vaddr)) {
+                    file_size - (page_addr.saturating_sub(vaddr))
+                } else {
+                    0
+                },
+            );
+
+            // Zero the entire page first
+            unsafe {
+                let page_slice = core::slice::from_raw_parts_mut(kernel_vaddr as *mut u8, 4096);
+                page_slice.fill(0);
+            }
+
+            // Copy ELF data to this page if any
+            if page_file_size > 0 && page_file_start < elf_data.len() {
+                let src_start = page_file_start;
+                let src_end = core::cmp::min(src_start + page_file_size, elf_data.len());
+                let src = &elf_data[src_start..src_end];
+
+                unsafe {
+                    let dst = core::slice::from_raw_parts_mut(
+                        (kernel_vaddr + page_offset) as *mut u8,
+                        src.len(),
+                    );
+                    dst.copy_from_slice(src);
+                }
+            }
+
+            // Flush TLB for this page to ensure visibility
+            unsafe {
+                core::arch::asm!("invlpg [{}]", in(reg) page_addr);
+            }
+        }
+
+        // Add memory region to process
+        let region = MemoryRegion::new(start_page, end_page, flags, region_type);
+        process
+            .add_memory_region(region)
+            .map_err(|_| ElfError::MappingFailed)?;
+
+        serial_println!(
+            "[ELF] Mapped segment for process {}: 0x{:x}-0x{:x} ({:?})",
+            process.pid,
+            start_page,
+            end_page,
+            region_type
+        );
+
+        Ok(())
+    }
+
+    /// Set up user stack with guard pages (process-specific page table)
+    fn setup_user_stack_for_process(
+        &mut self,
+        process: &mut crate::user::process::Process,
+    ) -> Result<u64, ElfError> {
+        let stack_top = crate::user::process::USER_STACK_TOP;
+        let stack_size = crate::user::process::USER_STACK_SIZE;
+        let stack_bottom = stack_top - stack_size;
+        let guard_page = stack_bottom - 4096;
+
+        serial_println!(
+            "[ELF] Setting up user stack for process {}: 0x{:x}-0x{:x} (guard @ 0x{:x})",
+            process.pid,
+            stack_bottom,
+            stack_top,
+            guard_page
+        );
+
+        // Map stack pages (RW + NX + USER) into process page table
+        // TODO: When process has its own page table, use process.page_table
+        // For now, we use the global mapper (shared address space)
+        for addr in (stack_bottom..stack_top).step_by(4096) {
+            let phys_frame = self.pmm.alloc_frame().ok_or(ElfError::OutOfMemory)?;
+
+            self.mapper
+                .map_page(
+                    addr,
+                    phys_frame,
+                    PageTableFlags::PRESENT
+                        | PageTableFlags::WRITABLE
+                        | PageTableFlags::USER
+                        | PageTableFlags::NO_EXECUTE,
+                    self.pmm,
+                )
+                .map_err(|_| ElfError::MappingFailed)?;
+
+            // Zero the stack page
+            let kernel_vaddr = phys_to_virt(phys_frame);
+            unsafe {
+                let page_slice = core::slice::from_raw_parts_mut(kernel_vaddr as *mut u8, 4096);
+                page_slice.fill(0);
+            }
+        }
+
+        // Leave guard page unmapped to catch stack overflow
+        // (guard_page is intentionally not mapped)
+
+        // Add memory region for tracking
+        let stack_region = MemoryRegion::new(
+            stack_bottom,
+            stack_top,
+            PageTableFlags::PRESENT
+                | PageTableFlags::WRITABLE
+                | PageTableFlags::USER
+                | PageTableFlags::NO_EXECUTE,
+            MemoryRegionType::Stack,
+        );
+
+        process
+            .add_memory_region(stack_region)
+            .map_err(|_| ElfError::MappingFailed)?;
+
+        let aligned_top = (stack_top & !0xF) as u64;
+        serial_println!(
+            "[ELF] User stack top aligned to 0x{:x} for process {}",
+            aligned_top,
+            process.pid
+        );
+
+        serial_println!(
+            "[ELF] User stack set up successfully for process {}",
+            process.pid
+        );
+        Ok(aligned_top)
     }
 
     /// Set up user stack with guard pages

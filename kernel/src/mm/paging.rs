@@ -5,6 +5,7 @@
 
 use crate::mm::pmm::PhysicalMemoryManager;
 use crate::mm::{phys_to_virt, PhysAddr, VirtAddr};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Page table entry flags
 /// These flags control the behavior and permissions of mapped pages
@@ -77,6 +78,18 @@ pub struct PageTableEntry(u64);
 #[repr(align(4096))]
 pub struct PageTable {
     entries: [PageTableEntry; 512],
+}
+
+/// Page table with reference counting for COW and shared mappings
+///
+/// This wrapper adds atomic reference counting to page tables,
+/// enabling safe sharing between processes (e.g., for fork with COW).
+pub struct PageTableRef {
+    /// Physical address of the page table
+    phys_addr: PhysAddr,
+
+    /// Atomic reference count for safe sharing in SMP
+    refcount: AtomicUsize,
 }
 
 /// Page mapper
@@ -254,7 +267,18 @@ impl PageMapper {
         let pt_virt = phys_to_virt(pt_phys);
         let pt = unsafe { &mut *(pt_virt as *mut PageTable) };
         let entry = pt.get_entry_mut(pt_index);
+
+        // Check if we're remapping an existing page
+        let was_present = entry.is_present();
+
         entry.set(phys_addr, flags);
+
+        // If we remapped an existing page, perform TLB shootdown
+        if was_present {
+            unsafe {
+                crate::mm::tlb::tlb_shootdown(virt_addr, virt_addr + 4096);
+            }
+        }
 
         Ok(())
     }
@@ -326,8 +350,11 @@ impl PageMapper {
         // Clear the entry
         entry.clear();
 
-        // Invalidate TLB
-        invlpg(virt_addr);
+        // Perform TLB shootdown on all CPUs
+        // This ensures all CPUs flush their TLB entries for this page
+        unsafe {
+            crate::mm::tlb::tlb_shootdown(virt_addr, virt_addr + 4096);
+        }
 
         Ok(())
     }
@@ -547,5 +574,420 @@ impl PageMapper {
         }
 
         Ok(())
+    }
+}
+
+/// Page Table Management Functions
+///
+/// These functions provide allocation, deallocation, and cloning of page tables
+/// with proper reference counting for COW and process isolation.
+
+impl PageTableRef {
+    /// Create a new page table reference with refcount 1
+    ///
+    /// # Arguments
+    /// * `phys_addr` - Physical address of the page table
+    ///
+    /// # Returns
+    /// A new PageTableRef with refcount initialized to 1
+    pub fn new(phys_addr: PhysAddr) -> Self {
+        Self {
+            phys_addr,
+            refcount: AtomicUsize::new(1),
+        }
+    }
+
+    /// Get the physical address of this page table
+    pub fn phys_addr(&self) -> PhysAddr {
+        self.phys_addr
+    }
+
+    /// Increment the reference count
+    ///
+    /// Returns the new reference count
+    pub fn inc_ref(&self) -> usize {
+        self.refcount.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Decrement the reference count
+    ///
+    /// Returns the new reference count (0 means the page table should be freed)
+    pub fn dec_ref(&self) -> usize {
+        let old_count = self.refcount.fetch_sub(1, Ordering::AcqRel);
+        if old_count == 0 {
+            panic!("PageTableRef: refcount underflow!");
+        }
+        old_count - 1
+    }
+
+    /// Get the current reference count
+    pub fn refcount(&self) -> usize {
+        self.refcount.load(Ordering::Acquire)
+    }
+}
+
+/// Allocate a new page table
+///
+/// Allocates a physical frame for a page table and zeros it.
+///
+/// # Arguments
+/// * `pmm` - Physical memory manager for frame allocation
+///
+/// # Returns
+/// Ok(phys_addr) with the physical address of the new page table, or an error
+pub fn alloc_page_table(pmm: &mut PhysicalMemoryManager) -> Result<PhysAddr, &'static str> {
+    // Allocate a physical frame
+    let phys_addr = pmm.alloc_frame().ok_or("Out of physical memory")?;
+
+    // Zero the page table
+    let virt_addr = phys_to_virt(phys_addr);
+    let page_table = unsafe { &mut *(virt_addr as *mut PageTable) };
+    page_table.zero();
+
+    crate::serial_println!("[PAGING] Allocated page table at phys={:#x}", phys_addr);
+
+    Ok(phys_addr)
+}
+
+/// Free a page table
+///
+/// Frees the physical frame used by a page table.
+/// Should only be called when the reference count reaches zero.
+///
+/// # Arguments
+/// * `phys_addr` - Physical address of the page table to free
+/// * `pmm` - Physical memory manager for frame deallocation
+///
+/// # Safety
+/// Caller must ensure no references to this page table exist
+pub fn free_page_table(phys_addr: PhysAddr, pmm: &mut PhysicalMemoryManager) {
+    crate::serial_println!("[PAGING] Freeing page table at phys={:#x}", phys_addr);
+    pmm.free_frame(phys_addr);
+}
+
+/// Clone a page table for fork()
+///
+/// Creates a copy of a page table, copying all entries.
+/// For COW implementation, this will mark pages as read-only and increment refcounts.
+///
+/// # Arguments
+/// * `src_phys` - Physical address of the source page table
+/// * `pmm` - Physical memory manager for allocating the new page table
+///
+/// # Returns
+/// Ok(phys_addr) with the physical address of the cloned page table, or an error
+pub fn clone_page_table(
+    src_phys: PhysAddr,
+    pmm: &mut PhysicalMemoryManager,
+) -> Result<PhysAddr, &'static str> {
+    // Allocate new page table
+    let dst_phys = alloc_page_table(pmm)?;
+
+    // Get virtual addresses for source and destination
+    let src_virt = phys_to_virt(src_phys);
+    let dst_virt = phys_to_virt(dst_phys);
+
+    let src_table = unsafe { &*(src_virt as *const PageTable) };
+    let dst_table = unsafe { &mut *(dst_virt as *mut PageTable) };
+
+    // Copy all entries
+    for i in 0..512 {
+        let src_entry = src_table.get_entry(i);
+        let dst_entry = dst_table.get_entry_mut(i);
+
+        // Copy the raw entry value
+        *dst_entry = *src_entry;
+    }
+
+    crate::serial_println!(
+        "[PAGING] Cloned page table: src={:#x} -> dst={:#x}",
+        src_phys,
+        dst_phys
+    );
+
+    Ok(dst_phys)
+}
+
+/// Clone a full 4-level page table hierarchy
+///
+/// Recursively clones PML4, PDPT, PD, and PT levels.
+/// This creates a complete copy of the address space for fork().
+///
+/// # Arguments
+/// * `src_pml4_phys` - Physical address of the source PML4
+/// * `pmm` - Physical memory manager for allocations
+///
+/// # Returns
+/// Ok(phys_addr) with the physical address of the cloned PML4, or an error
+pub fn clone_page_table_hierarchy(
+    src_pml4_phys: PhysAddr,
+    pmm: &mut PhysicalMemoryManager,
+) -> Result<PhysAddr, &'static str> {
+    // Allocate new PML4
+    let dst_pml4_phys = alloc_page_table(pmm)?;
+
+    let src_pml4_virt = phys_to_virt(src_pml4_phys);
+    let dst_pml4_virt = phys_to_virt(dst_pml4_phys);
+
+    let src_pml4 = unsafe { &*(src_pml4_virt as *const PageTable) };
+    let dst_pml4 = unsafe { &mut *(dst_pml4_virt as *mut PageTable) };
+
+    // Clone each PML4 entry (only user space: lower half)
+    for i in 0..256 {
+        // Only clone lower half (user space)
+        let src_entry = src_pml4.get_entry(i);
+
+        if src_entry.is_present() {
+            // Clone PDPT level
+            let src_pdpt_phys = src_entry.addr();
+            let dst_pdpt_phys = clone_pdpt_level(src_pdpt_phys, pmm)?;
+
+            // Set PML4 entry to point to cloned PDPT
+            let dst_entry = dst_pml4.get_entry_mut(i);
+            dst_entry.set(dst_pdpt_phys, PageTableFlags(src_entry.raw() & 0xFFF));
+        }
+    }
+
+    // Copy kernel mappings (upper half) directly without cloning
+    for i in 256..512 {
+        let src_entry = src_pml4.get_entry(i);
+        let dst_entry = dst_pml4.get_entry_mut(i);
+        *dst_entry = *src_entry;
+    }
+
+    crate::serial_println!(
+        "[PAGING] Cloned page table hierarchy: src_pml4={:#x} -> dst_pml4={:#x}",
+        src_pml4_phys,
+        dst_pml4_phys
+    );
+
+    Ok(dst_pml4_phys)
+}
+
+/// Clone PDPT level
+fn clone_pdpt_level(
+    src_pdpt_phys: PhysAddr,
+    pmm: &mut PhysicalMemoryManager,
+) -> Result<PhysAddr, &'static str> {
+    let dst_pdpt_phys = alloc_page_table(pmm)?;
+
+    let src_pdpt_virt = phys_to_virt(src_pdpt_phys);
+    let dst_pdpt_virt = phys_to_virt(dst_pdpt_phys);
+
+    let src_pdpt = unsafe { &*(src_pdpt_virt as *const PageTable) };
+    let dst_pdpt = unsafe { &mut *(dst_pdpt_virt as *mut PageTable) };
+
+    for i in 0..512 {
+        let src_entry = src_pdpt.get_entry(i);
+
+        if src_entry.is_present() {
+            // Check for huge page (1GB)
+            if (src_entry.raw() & PageTableFlags::HUGE.bits()) != 0 {
+                // Copy huge page entry directly
+                let dst_entry = dst_pdpt.get_entry_mut(i);
+                *dst_entry = *src_entry;
+            } else {
+                // Clone PD level
+                let src_pd_phys = src_entry.addr();
+                let dst_pd_phys = clone_pd_level(src_pd_phys, pmm)?;
+
+                let dst_entry = dst_pdpt.get_entry_mut(i);
+                dst_entry.set(dst_pd_phys, PageTableFlags(src_entry.raw() & 0xFFF));
+            }
+        }
+    }
+
+    Ok(dst_pdpt_phys)
+}
+
+/// Clone PD level
+fn clone_pd_level(
+    src_pd_phys: PhysAddr,
+    pmm: &mut PhysicalMemoryManager,
+) -> Result<PhysAddr, &'static str> {
+    let dst_pd_phys = alloc_page_table(pmm)?;
+
+    let src_pd_virt = phys_to_virt(src_pd_phys);
+    let dst_pd_virt = phys_to_virt(dst_pd_phys);
+
+    let src_pd = unsafe { &*(src_pd_virt as *const PageTable) };
+    let dst_pd = unsafe { &mut *(dst_pd_virt as *mut PageTable) };
+
+    for i in 0..512 {
+        let src_entry = src_pd.get_entry(i);
+
+        if src_entry.is_present() {
+            // Check for huge page (2MB)
+            if (src_entry.raw() & PageTableFlags::HUGE.bits()) != 0 {
+                // Copy huge page entry directly
+                let dst_entry = dst_pd.get_entry_mut(i);
+                *dst_entry = *src_entry;
+            } else {
+                // Clone PT level
+                let src_pt_phys = src_entry.addr();
+                let dst_pt_phys = clone_page_table(src_pt_phys, pmm)?;
+
+                let dst_entry = dst_pd.get_entry_mut(i);
+                dst_entry.set(dst_pt_phys, PageTableFlags(src_entry.raw() & 0xFFF));
+            }
+        }
+    }
+
+    Ok(dst_pd_phys)
+}
+
+/// Get the current CR3 value (current page table physical address)
+pub fn get_current_cr3() -> PhysAddr {
+    unsafe {
+        let cr3: u64;
+        core::arch::asm!(
+            "mov {}, cr3",
+            out(reg) cr3,
+            options(nostack, preserves_flags)
+        );
+        (cr3 & 0x000F_FFFF_FFFF_F000) as usize
+    }
+}
+
+/// Set CR3 to switch to a different page table
+///
+/// # Arguments
+/// * `phys_addr` - Physical address of the new page table (PML4)
+///
+/// # Safety
+/// Caller must ensure the page table is valid and properly initialized
+pub unsafe fn set_cr3(phys_addr: PhysAddr) {
+    core::arch::asm!(
+        "mov cr3, {}",
+        in(reg) phys_addr as u64,
+        options(nostack, preserves_flags)
+    );
+}
+
+/// Kernel Page Table Template
+///
+/// This is a template page table that contains all kernel mappings.
+/// New process page tables copy the upper half (kernel space) from this template.
+use spin::Once;
+
+static KERNEL_PAGE_TABLE_TEMPLATE: Once<PhysAddr> = Once::new();
+
+/// Initialize the kernel page table template
+///
+/// This function should be called during kernel initialization to set up
+/// the shared kernel mappings that all processes will inherit.
+///
+/// # Arguments
+/// * `current_cr3` - Physical address of the current (boot) page table
+///
+/// # Returns
+/// Ok(()) if initialization succeeded, or an error
+pub fn init_kernel_template(current_cr3: PhysAddr) -> Result<(), &'static str> {
+    // Store the current page table as the kernel template
+    // All kernel mappings (upper half) are already set up in this table
+    KERNEL_PAGE_TABLE_TEMPLATE.call_once(|| current_cr3);
+
+    crate::serial_println!(
+        "[PAGING] Kernel page table template initialized at phys={:#x}",
+        current_cr3
+    );
+
+    Ok(())
+}
+
+/// Get the kernel page table template physical address
+///
+/// # Returns
+/// Some(phys_addr) if the template has been initialized, None otherwise
+pub fn get_kernel_template() -> Option<PhysAddr> {
+    KERNEL_PAGE_TABLE_TEMPLATE.get().copied()
+}
+
+/// Copy kernel mappings from template to a new page table
+///
+/// Copies the upper half (kernel space) entries from the kernel template
+/// to a new process page table. This ensures all processes share the same
+/// kernel mappings.
+///
+/// # Arguments
+/// * `dest_pml4_phys` - Physical address of the destination PML4
+///
+/// # Returns
+/// Ok(()) if copy succeeded, or an error
+pub fn copy_kernel_mappings(dest_pml4_phys: PhysAddr) -> Result<(), &'static str> {
+    let template_phys = get_kernel_template().ok_or("Kernel template not initialized")?;
+
+    let template_virt = phys_to_virt(template_phys);
+    let dest_virt = phys_to_virt(dest_pml4_phys);
+
+    let template_pml4 = unsafe { &*(template_virt as *const PageTable) };
+    let dest_pml4 = unsafe { &mut *(dest_virt as *mut PageTable) };
+
+    // Copy upper half (kernel space) entries: indices 256-511
+    for i in 256..512 {
+        let template_entry = template_pml4.get_entry(i);
+        let dest_entry = dest_pml4.get_entry_mut(i);
+        *dest_entry = *template_entry;
+    }
+
+    crate::serial_println!(
+        "[PAGING] Copied kernel mappings to PML4 at phys={:#x}",
+        dest_pml4_phys
+    );
+
+    Ok(())
+}
+
+/// Allocate a new page table with kernel mappings
+///
+/// This is a convenience function that allocates a new page table and
+/// automatically copies the kernel mappings from the template.
+///
+/// # Arguments
+/// * `pmm` - Physical memory manager for allocation
+///
+/// # Returns
+/// Ok(phys_addr) with the physical address of the new page table, or an error
+pub fn alloc_page_table_with_kernel_mappings(
+    pmm: &mut PhysicalMemoryManager,
+) -> Result<PhysAddr, &'static str> {
+    // Allocate new PML4
+    let pml4_phys = alloc_page_table(pmm)?;
+
+    // Copy kernel mappings
+    copy_kernel_mappings(pml4_phys)?;
+
+    crate::serial_println!(
+        "[PAGING] Allocated new page table with kernel mappings at phys={:#x}",
+        pml4_phys
+    );
+
+    Ok(pml4_phys)
+}
+
+/// Update PageMapper::new() to use kernel template
+impl PageMapper {
+    /// Create a new page mapper for a process
+    ///
+    /// If a kernel template exists, this creates a new page table with kernel mappings.
+    /// Otherwise, it uses the current page table (for kernel initialization).
+    ///
+    /// # Arguments
+    /// * `pmm` - Physical memory manager for allocation (optional)
+    ///
+    /// # Returns
+    /// A new PageMapper instance
+    pub fn new_for_process(pmm: Option<&mut PhysicalMemoryManager>) -> Result<Self, &'static str> {
+        if let Some(pmm_ref) = pmm {
+            // Allocate new page table with kernel mappings
+            let pml4_phys = alloc_page_table_with_kernel_mappings(pmm_ref)?;
+            let pml4_virt = phys_to_virt(pml4_phys);
+            let pml4 = unsafe { &mut *(pml4_virt as *mut PageTable) };
+
+            Ok(PageMapper { pml4 })
+        } else {
+            // Use current page table (for kernel initialization)
+            Ok(PageMapper::new())
+        }
     }
 }

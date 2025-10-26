@@ -745,8 +745,11 @@ fn extract_binaries_to_fs() {
 
     // Extract mello-sh to /bin/sh
     if !MELLO_SH_BINARY.is_empty() {
-        serial_println!("[KERNEL] Extracting mello-sh to /bin/sh ({} bytes)...", MELLO_SH_BINARY.len());
-        
+        serial_println!(
+            "[KERNEL] Extracting mello-sh to /bin/sh ({} bytes)...",
+            MELLO_SH_BINARY.len()
+        );
+
         // Create the file
         match bin_dir.create("sh", FileMode::new(FileMode::S_IFREG | 0o755), 0, 0) {
             Ok(sh_inode) => {
@@ -756,7 +759,11 @@ fn extract_binaries_to_fs() {
                         if written == MELLO_SH_BINARY.len() {
                             serial_println!("[KERNEL] ✓ Extracted /bin/sh ({} bytes)", written);
                         } else {
-                            serial_println!("[KERNEL] Warning: Partial write to /bin/sh ({}/{})", written, MELLO_SH_BINARY.len());
+                            serial_println!(
+                                "[KERNEL] Warning: Partial write to /bin/sh ({}/{})",
+                                written,
+                                MELLO_SH_BINARY.len()
+                            );
                         }
                     }
                     Err(e) => {
@@ -774,8 +781,11 @@ fn extract_binaries_to_fs() {
 
     // Extract mellobox to /bin/mellobox
     if !MELLOBOX_BINARY.is_empty() {
-        serial_println!("[KERNEL] Extracting mellobox to /bin/mellobox ({} bytes)...", MELLOBOX_BINARY.len());
-        
+        serial_println!(
+            "[KERNEL] Extracting mellobox to /bin/mellobox ({} bytes)...",
+            MELLOBOX_BINARY.len()
+        );
+
         // Create the file
         match bin_dir.create("mellobox", FileMode::new(FileMode::S_IFREG | 0o755), 0, 0) {
             Ok(mellobox_inode) => {
@@ -783,9 +793,16 @@ fn extract_binaries_to_fs() {
                 match mellobox_inode.write_at(0, MELLOBOX_BINARY) {
                     Ok(written) => {
                         if written == MELLOBOX_BINARY.len() {
-                            serial_println!("[KERNEL] ✓ Extracted /bin/mellobox ({} bytes)", written);
+                            serial_println!(
+                                "[KERNEL] ✓ Extracted /bin/mellobox ({} bytes)",
+                                written
+                            );
                         } else {
-                            serial_println!("[KERNEL] Warning: Partial write to /bin/mellobox ({}/{})", written, MELLOBOX_BINARY.len());
+                            serial_println!(
+                                "[KERNEL] Warning: Partial write to /bin/mellobox ({}/{})",
+                                written,
+                                MELLOBOX_BINARY.len()
+                            );
                         }
                     }
                     Err(e) => {
@@ -803,11 +820,10 @@ fn extract_binaries_to_fs() {
 
     // Create symlinks for mellobox commands
     serial_println!("[KERNEL] Creating symlinks for mellobox commands...");
-    
+
     let commands = [
-        "ls", "cat", "echo", "ps", "pwd", "mkdir", "rm", "cp", "mv",
-        "touch", "grep", "mount", "umount", "df", "stat", "kill",
-        "true", "false",
+        "ls", "cat", "echo", "ps", "pwd", "mkdir", "rm", "cp", "mv", "touch", "grep", "mount",
+        "umount", "df", "stat", "kill", "true", "false",
     ];
 
     let mut symlink_count = 0;
@@ -817,12 +833,19 @@ fn extract_binaries_to_fs() {
                 symlink_count += 1;
             }
             Err(e) => {
-                serial_println!("[KERNEL] Warning: Could not create symlink /bin/{}: {:?}", cmd, e);
+                serial_println!(
+                    "[KERNEL] Warning: Could not create symlink /bin/{}: {:?}",
+                    cmd,
+                    e
+                );
             }
         }
     }
-    
-    serial_println!("[KERNEL] ✓ Created {} symlinks for mellobox commands", symlink_count);
+
+    serial_println!(
+        "[KERNEL] ✓ Created {} symlinks for mellobox commands",
+        symlink_count
+    );
     serial_println!("[KERNEL] Binary extraction complete!");
 }
 
@@ -843,12 +866,8 @@ fn print_test_results_delayed() -> ! {
     // Wait for tests to complete
     // In fast boot mode: 3 seconds (300 ticks at 100Hz)
     // In normal mode: 10 seconds (1000 ticks at 100Hz)
-    let wait_ticks = if config::FAST_BOOT_MODE {
-        300
-    } else {
-        1000
-    };
-    
+    let wait_ticks = if config::FAST_BOOT_MODE { 300 } else { 1000 };
+
     unsafe {
         sys_sleep(wait_ticks);
     }
@@ -1023,6 +1042,7 @@ pub extern "C" fn _start() -> ! {
         sched::timer::init_idt();
         sched::timer::init_apic_timer_handler();
         sched::timer::init_reschedule_ipi_handler();
+        sched::timer::init_tlb_shootdown_ipi_handler();
     }
 
     serial_println!("[KERNEL] ========================================");
@@ -1068,7 +1088,7 @@ pub extern "C" fn _start() -> ! {
         .expect("Failed to spawn Stress-Ping");
     spawn_task("Stress-Pong", test_ipc_stress_pong, TaskPriority::Normal)
         .expect("Failed to spawn Stress-Pong");
-    
+
     serial_println!("[KERNEL] ========================================");
     serial_println!("[KERNEL] All Phase 4 test tasks spawned successfully!");
     serial_println!("[KERNEL] ========================================");

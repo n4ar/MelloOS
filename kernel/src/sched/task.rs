@@ -5,9 +5,9 @@
 
 use super::context::CpuContext;
 use super::priority::TaskPriority;
-use super::process_group::{Pid, Pgid, Sid, DeviceId};
+use super::process_group::{DeviceId, Pgid, Pid, Sid};
 use crate::mm::paging::PageTableFlags;
-use crate::signal::{SigAction, signals};
+use crate::signal::{signals, SigAction};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Task identifier type
@@ -275,15 +275,16 @@ impl Task {
             r13: 0,
             r14: 0,
             r15: 0,
+            cr3: 0, // Will be set when process page table is allocated
         };
 
         // Initialize signal handlers with defaults
         let signal_handlers = Self::init_default_signal_handlers();
 
         // Create empty FD table
-        use alloc::sync::Arc;
-        use crate::sync::SpinLock;
         use crate::fs::vfs::file::FdTable;
+        use crate::sync::SpinLock;
+        use alloc::sync::Arc;
         let fd_table = Arc::new(SpinLock::new(FdTable::new()));
 
         Ok(Self {
@@ -301,13 +302,13 @@ impl Task {
             signal_handlers,
             pending_signals: AtomicU64::new(0),
             signal_mask: AtomicU64::new(0),
-            pid: id,        // PID = task ID
-            ppid: 0,        // Will be set by parent
-            pgid: id,       // Initially, pgid = pid
-            sid: id,        // Initially, sid = pid (for init process)
-            tty: None,      // No controlling terminal initially
+            pid: id,            // PID = task ID
+            ppid: 0,            // Will be set by parent
+            pgid: id,           // Initially, pgid = pid
+            sid: id,            // Initially, sid = pid (for init process)
+            tty: None,          // No controlling terminal initially
             last_syscall: None, // No syscall executed yet
-            fd_table,       // Empty FD table
+            fd_table,           // Empty FD table
         })
     }
 
@@ -315,13 +316,14 @@ impl Task {
     ///
     /// Validates the region and ensures no overlaps with existing regions.
     /// All regions must be within user space limits.
+    /// Automatically ensures USER flag is set for user space regions.
     ///
     /// # Arguments
     /// * `region` - The memory region to add
     ///
     /// # Returns
     /// Ok(()) if the region was added successfully, or an error if validation fails
-    pub fn add_memory_region(&mut self, region: MemoryRegion) -> SchedulerResult<()> {
+    pub fn add_memory_region(&mut self, mut region: MemoryRegion) -> SchedulerResult<()> {
         // Validate region bounds
         if region.start >= region.end {
             return Err(SchedulerError::InvalidRegion);
@@ -330,6 +332,12 @@ impl Task {
         // Ensure region is in user space
         if region.start >= USER_LIMIT || region.end > USER_LIMIT {
             return Err(SchedulerError::InvalidUserAddress);
+        }
+
+        // Ensure USER flag is set for user space regions (Requirement 2.8)
+        // This is critical for per-process page tables to work correctly
+        if !region.flags.bits() & PageTableFlags::USER.bits() != 0 {
+            region.flags |= PageTableFlags::USER;
         }
 
         // Check for overlaps with existing regions

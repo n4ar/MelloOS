@@ -5,6 +5,7 @@
 //! SMP safety and atomic PID allocation.
 
 use crate::mm::paging::PageTable;
+use crate::mm::PhysAddr;
 use crate::sched::context::CpuContext;
 use crate::sched::priority::TaskPriority;
 use crate::sched::task::{MemoryRegion, MemoryRegionType};
@@ -161,6 +162,9 @@ pub struct Process {
     /// Block reason (if blocked)
     pub block_reason: Option<BlockReason>,
 
+    /// Physical address of process page table root (CR3 value)
+    pub cr3: PhysAddr,
+
     /// Process page table (for memory isolation)
     pub page_table: Option<PageTable>,
 
@@ -202,6 +206,7 @@ impl Process {
             priority: TaskPriority::Normal,
             wake_tick: None,
             block_reason: None,
+            cr3: 0, // Will be set when page table is allocated
             page_table: None,
             memory_regions: [const { None }; MAX_MEMORY_REGIONS],
             region_count: 0,
@@ -237,13 +242,14 @@ impl Process {
     ///
     /// Validates the region and ensures no overlaps with existing regions.
     /// All regions must be within user space limits.
+    /// Automatically ensures USER flag is set for user space regions.
     ///
     /// # Arguments
     /// * `region` - The memory region to add
     ///
     /// # Returns
     /// Ok(()) if the region was added successfully, or an error if validation fails
-    pub fn add_memory_region(&mut self, region: MemoryRegion) -> ProcessResult<()> {
+    pub fn add_memory_region(&mut self, mut region: MemoryRegion) -> ProcessResult<()> {
         // Validate region bounds
         if region.start >= region.end {
             return Err(ProcessError::InvalidMemoryRegion);
@@ -252,6 +258,13 @@ impl Process {
         // Ensure region is in user space
         if region.start >= USER_LIMIT || region.end > USER_LIMIT {
             return Err(ProcessError::InvalidUserAddress);
+        }
+
+        // Ensure USER flag is set for user space regions (Requirement 2.8)
+        // This is critical for per-process page tables to work correctly
+        use crate::mm::paging::PageTableFlags;
+        if region.flags.bits() & PageTableFlags::USER.bits() == 0 {
+            region.flags |= PageTableFlags::USER;
         }
 
         // Check for overlaps with existing regions
@@ -625,7 +638,12 @@ impl ProcessManager {
     pub fn remove_process(pid: ProcessId) -> ProcessResult<Process> {
         let mut slot = Self::get_process(pid).ok_or(ProcessError::ProcessNotFound)?;
 
-        slot.take().ok_or(ProcessError::ProcessNotFound)
+        let process = slot.take().ok_or(ProcessError::ProcessNotFound)?;
+
+        // Clear TLB tracking for this process on all CPUs
+        crate::mm::tlb::clear_process_tracking(pid);
+
+        Ok(process)
     }
 
     /// Find the first zombie child of a parent process
@@ -1154,6 +1172,10 @@ pub fn prepare_process_context_switch(
     // unsafe {
     //     core::arch::asm!("mov rax, cr3; mov cr3, rax", out("rax") _);
     // }
+
+    // Mark that this CPU has accessed the new process
+    // This is used for optimized TLB shootdowns
+    crate::mm::tlb::mark_process_accessed(new_process_id);
 
     // Update process state to Running
     drop(new_process_guard);
