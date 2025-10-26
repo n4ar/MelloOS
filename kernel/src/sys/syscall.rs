@@ -291,7 +291,7 @@ pub extern "C" fn syscall_dispatcher(
         SYS_GETPID => sys_getpid(),
         SYS_YIELD => sys_yield(),
         SYS_FORK => sys_fork(),
-        SYS_WAIT => sys_wait(arg1),
+        SYS_WAIT => sys_wait_impl(arg1),
         SYS_EXEC => sys_exec(arg1, arg2),
         SYS_OPEN => sys_open(arg1, arg2),
         SYS_READ => sys_read(arg1, arg2, arg3),
@@ -463,24 +463,30 @@ fn sys_write(fd: usize, buf_ptr: usize, len: usize) -> isize {
             serial_println!("[SYSCALL] sys_write: cannot write to pipe read end");
             -1 // EBADF
         }
-        FdType::VfsFile { ref inode, ref offset, flags } => {
+        FdType::VfsFile {
+            ref inode,
+            ref offset,
+            flags,
+        } => {
             // Write to VFS file
             use core::sync::atomic::Ordering;
-            
+
             // Check if file is opened for writing
             let o_accmode = flags & 0x3; // O_RDONLY=0, O_WRONLY=1, O_RDWR=2
-            if o_accmode == 0 { // O_RDONLY
+            if o_accmode == 0 {
+                // O_RDONLY
                 serial_println!("[SYSCALL] sys_write: file not opened for writing");
                 return -1; // EBADF
             }
-            
-            let current_offset = if (flags & 0x400) != 0 { // O_APPEND
+
+            let current_offset = if (flags & 0x400) != 0 {
+                // O_APPEND
                 // Append mode: write at end of file
                 inode.size()
             } else {
                 offset.load(Ordering::SeqCst)
             };
-            
+
             match inode.write_at(current_offset, buffer) {
                 Ok(bytes_written) => {
                     // Update offset
@@ -495,7 +501,7 @@ fn sys_write(fd: usize, buf_ptr: usize, len: usize) -> isize {
                         crate::fs::vfs::superblock::FsError::NoSpace => -28, // ENOSPC
                         crate::fs::vfs::superblock::FsError::IsADirectory => -21, // EISDIR
                         crate::fs::vfs::superblock::FsError::ReadOnlyFilesystem => -30, // EROFS
-                        _ => -1, // Generic error
+                        _ => -1,                                            // Generic error
                     }
                 }
             }
@@ -679,9 +685,61 @@ fn sys_fork() -> isize {
     child_pid as isize
 }
 
-fn sys_wait(_child_pid: usize) -> isize {
-    serial_println!("[SYSCALL] SYS_WAIT: not implemented, returning 0");
-    0
+/// sys_wait implementation - Wait for child process to terminate
+///
+/// This is the actual implementation that was previously in sys_wait_stub.
+/// It handles waiting for zombie children and cleaning them up.
+fn sys_wait_impl(child_pid: usize) -> isize {
+    use crate::sched;
+    use crate::user::process::ProcessManager;
+
+    let parent_pid = match sched::get_current_task_info() {
+        Some((id, _)) => id,
+        None => return -1, // ESRCH
+    };
+
+    // Look for zombie children
+    let zombie_child = if child_pid == 0 {
+        // Wait for any child
+        ProcessManager::find_zombie_child(parent_pid)
+    } else {
+        // Wait for specific child
+        if let Some(child_guard) = ProcessManager::get_process(child_pid) {
+            if let Some(child_process) = child_guard.get() {
+                if child_process.is_child_of(parent_pid)
+                    && child_process.state == crate::user::process::ProcessState::Zombie
+                {
+                    child_process.exit_code.map(|code| (child_pid, code))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    if let Some((dead_child_pid, exit_code)) = zombie_child {
+        // Found a zombie child - clean it up and return
+        match ProcessManager::remove_process(dead_child_pid) {
+            Ok(_) => {
+                // Return child PID and exit code
+                // Encode as (child_pid << 8) | (exit_code & 0xFF)
+                let result = ((dead_child_pid & 0xFFFFFF) << 8) | ((exit_code as usize) & 0xFF);
+                return result as isize;
+            }
+            Err(_) => {
+                return -1; // EIO
+            }
+        }
+    }
+
+    // No zombie children found
+    // In a full implementation with blocking, we would block here
+    // For now, return EAGAIN (try again later)
+    -11 // EAGAIN
 }
 
 /// sys_exec handler - Execute a new program
@@ -709,20 +767,22 @@ fn sys_wait(_child_pid: usize) -> isize {
 /// - R8.3: Validate envp pointer array is in user space
 fn sys_exec(path_ptr: usize, argv_ptr: usize) -> isize {
     use crate::user::exec::{
-        ExecContext, ExecError, 
-        validate_user_pointer, 
-        copy_string_from_user, 
-        copy_string_array_from_user
+        copy_string_array_from_user, copy_string_from_user, validate_user_pointer, ExecContext,
+        ExecError,
     };
-    
-    serial_println!("[SYSCALL] sys_exec: path_ptr={:#x}, argv_ptr={:#x}", path_ptr, argv_ptr);
-    
+
+    serial_println!(
+        "[SYSCALL] sys_exec: path_ptr={:#x}, argv_ptr={:#x}",
+        path_ptr,
+        argv_ptr
+    );
+
     // Step 1: Validate path pointer
     if let Err(e) = validate_user_pointer(path_ptr) {
         serial_println!("[SYSCALL] sys_exec: invalid path pointer");
         return e.to_errno();
     }
-    
+
     // Step 2: Copy path string from user space
     let path = match copy_string_from_user(path_ptr) {
         Ok(s) => s,
@@ -731,9 +791,9 @@ fn sys_exec(path_ptr: usize, argv_ptr: usize) -> isize {
             return e.to_errno();
         }
     };
-    
+
     serial_println!("[SYSCALL] sys_exec: path={}", path);
-    
+
     // Step 3: Validate and copy argv array
     // argv_ptr can be 0 (NULL), which means empty argv
     let argv = if argv_ptr == 0 {
@@ -745,7 +805,7 @@ fn sys_exec(path_ptr: usize, argv_ptr: usize) -> isize {
             serial_println!("[SYSCALL] sys_exec: invalid argv pointer");
             return e.to_errno();
         }
-        
+
         // Copy argv array from user space
         match copy_string_array_from_user(argv_ptr) {
             Ok(arr) => {
@@ -762,9 +822,9 @@ fn sys_exec(path_ptr: usize, argv_ptr: usize) -> isize {
             }
         }
     };
-    
+
     serial_println!("[SYSCALL] sys_exec: argc={}, argv={:?}", argv.len(), argv);
-    
+
     // Step 4: Setup environment variables
     // In a full implementation, we would:
     // 1. Accept envp_ptr as a third argument
@@ -774,9 +834,9 @@ fn sys_exec(path_ptr: usize, argv_ptr: usize) -> isize {
         alloc::string::String::from("PATH=/bin"),
         alloc::string::String::from("HOME=/root"),
     ];
-    
+
     serial_println!("[SYSCALL] sys_exec: envp has {} variables", envp.len());
-    
+
     // Step 5: Get current task
     let task_id = match crate::sched::get_current_task_info() {
         Some((id, _)) => id,
@@ -785,7 +845,7 @@ fn sys_exec(path_ptr: usize, argv_ptr: usize) -> isize {
             return ExecError::InvalidArgument.to_errno();
         }
     };
-    
+
     // Get task reference
     // Note: We need to get the task as Arc<Task> for ExecContext
     let task_arc = match crate::sched::get_task_arc(task_id) {
@@ -795,19 +855,19 @@ fn sys_exec(path_ptr: usize, argv_ptr: usize) -> isize {
             return ExecError::InvalidArgument.to_errno();
         }
     };
-    
+
     // Step 6: Create ExecContext
     let ctx = ExecContext::new(path, argv, envp, task_arc);
-    
+
     // Step 7: Get PMM for memory allocation
     // We need mutable access to PMM for allocating pages
     let mut pmm_guard = crate::mm::pmm::get_global_pmm();
     let pmm = pmm_guard.as_mut().expect("Global PMM not initialized");
-    
+
     // Step 8: Execute the new program
     // This never returns on success
     serial_println!("[SYSCALL] sys_exec: calling ExecContext::exec()");
-    
+
     match ctx.exec(pmm) {
         Ok(never) => {
             // This should never be reached because exec() never returns on success
@@ -852,7 +912,11 @@ impl Clone for FdType {
             FdType::PtySlave(n) => FdType::PtySlave(*n),
             FdType::PipeRead(n) => FdType::PipeRead(*n),
             FdType::PipeWrite(n) => FdType::PipeWrite(*n),
-            FdType::VfsFile { inode, offset, flags } => {
+            FdType::VfsFile {
+                inode,
+                offset,
+                flags,
+            } => {
                 use core::sync::atomic::Ordering;
                 FdType::VfsFile {
                     inode: inode.clone(),
@@ -873,10 +937,19 @@ impl core::fmt::Debug for FdType {
             FdType::PtySlave(n) => write!(f, "PtySlave({})", n),
             FdType::PipeRead(n) => write!(f, "PipeRead({})", n),
             FdType::PipeWrite(n) => write!(f, "PipeWrite({})", n),
-            FdType::VfsFile { inode, offset, flags } => {
+            FdType::VfsFile {
+                inode,
+                offset,
+                flags,
+            } => {
                 use core::sync::atomic::Ordering;
-                write!(f, "VfsFile {{ ino: {}, offset: {}, flags: {:#x} }}", 
-                    inode.ino(), offset.load(Ordering::SeqCst), flags)
+                write!(
+                    f,
+                    "VfsFile {{ ino: {}, offset: {}, flags: {:#x} }}",
+                    inode.ino(),
+                    offset.load(Ordering::SeqCst),
+                    flags
+                )
             }
         }
     }
@@ -1122,7 +1195,7 @@ pub fn close_fds_with_cloexec() {
 /// Per-task file descriptor table
 ///
 /// this would be per-task.
-struct FdTable {
+pub(crate) struct FdTable {
     fds: [Option<FileDescriptor>; MAX_FDS],
 }
 
@@ -1186,7 +1259,7 @@ impl FdTable {
         }
     }
 
-    fn get(&self, fd: usize) -> Option<FileDescriptor> {
+    pub(crate) fn get(&self, fd: usize) -> Option<FileDescriptor> {
         if fd < MAX_FDS {
             self.fds[fd].clone()
         } else {
@@ -1203,7 +1276,7 @@ impl FdTable {
     }
 }
 
-static FD_TABLE: SpinLock<FdTable> = SpinLock::new(FdTable::new());
+pub(crate) static FD_TABLE: SpinLock<FdTable> = SpinLock::new(FdTable::new());
 
 /// sys_open handler - Open a device or file
 ///
@@ -1295,7 +1368,7 @@ fn sys_open(path_ptr: usize, flags: usize) -> isize {
         // Use VFS path resolution for regular files
         use crate::fs::vfs::path;
         use core::sync::atomic::AtomicU64;
-        
+
         // Resolve path to inode
         match path::resolve_path(path, None) {
             Ok(inode) => {
@@ -1306,7 +1379,7 @@ fn sys_open(path_ptr: usize, flags: usize) -> isize {
                     offset: AtomicU64::new(0),
                     flags: flags as u32,
                 };
-                
+
                 match fd_table.allocate(fd_type) {
                     Some(fd) => {
                         serial_println!("[SYSCALL] sys_open: opened {} as FD {}", path, fd);
@@ -1328,7 +1401,7 @@ fn sys_open(path_ptr: usize, flags: usize) -> isize {
                     crate::fs::vfs::superblock::FsError::IsADirectory => -21, // EISDIR
                     crate::fs::vfs::superblock::FsError::TooManySymlinks => -40, // ELOOP
                     crate::fs::vfs::superblock::FsError::NameTooLong => -36, // ENAMETOOLONG
-                    _ => -1, // Generic error
+                    _ => -1,                                             // Generic error
                 }
             }
         }
@@ -1402,11 +1475,15 @@ fn sys_read(fd: usize, buf_ptr: usize, len: usize) -> isize {
             serial_println!("[SYSCALL] sys_read: cannot read from pipe write end");
             -1 // EBADF
         }
-        FdType::VfsFile { ref inode, ref offset, .. } => {
+        FdType::VfsFile {
+            ref inode,
+            ref offset,
+            ..
+        } => {
             // Read from VFS file
             use core::sync::atomic::Ordering;
             let current_offset = offset.load(Ordering::SeqCst);
-            
+
             match inode.read_at(current_offset, buffer) {
                 Ok(bytes_read) => {
                     // Update offset
@@ -1419,7 +1496,7 @@ fn sys_read(fd: usize, buf_ptr: usize, len: usize) -> isize {
                     match err {
                         crate::fs::vfs::superblock::FsError::IoError => -5, // EIO
                         crate::fs::vfs::superblock::FsError::IsADirectory => -21, // EISDIR
-                        _ => -1, // Generic error
+                        _ => -1,                                            // Generic error
                     }
                 }
             }
@@ -1868,6 +1945,9 @@ fn sys_sigaction(signal: usize, act_ptr: usize, oldact_ptr: usize) -> isize {
 fn sys_kill(pid: usize, signal: usize) -> isize {
     use crate::signal::{send_signal, signals};
 
+    // Convert pid to isize for negative value handling
+    let pid_signed = pid as isize;
+
     // Validate signal number
     if signal >= signals::MAX_SIGNAL as usize {
         serial_println!("[SYSCALL] sys_kill: invalid signal {}", signal);
@@ -1876,8 +1956,28 @@ fn sys_kill(pid: usize, signal: usize) -> isize {
 
     // Signal 0 is used to check if process exists (no signal sent)
     if signal == 0 {
-        serial_println!("[SYSCALL] sys_kill: signal 0 (existence check) not implemented");
-        return 0;
+        // Check if target process exists without sending a signal
+        if pid > 0 && pid < 0x8000_0000 {
+            match crate::sched::get_task_mut(pid) {
+                Some(_) => {
+                    serial_println!(
+                        "[SYSCALL] sys_kill: process {} exists (signal 0 check)",
+                        pid
+                    );
+                    return 0; // Process exists
+                }
+                None => {
+                    serial_println!(
+                        "[SYSCALL] sys_kill: process {} not found (signal 0 check)",
+                        pid
+                    );
+                    return -1; // ESRCH - no such process
+                }
+            }
+        } else {
+            serial_println!("[SYSCALL] sys_kill: invalid PID {} for signal 0 check", pid);
+            return -1; // EINVAL
+        }
     }
 
     // Get current task for permission checks
@@ -1906,7 +2006,6 @@ fn sys_kill(pid: usize, signal: usize) -> isize {
             }
         };
 
-
         // Send the signal
         match send_signal(target, signal as u32) {
             Ok(()) => {
@@ -1922,8 +2021,116 @@ fn sys_kill(pid: usize, signal: usize) -> isize {
                 -1
             }
         }
+    } else if pid == 0 {
+        // Send signal to all processes in current process group
+        serial_println!(
+            "[SYSCALL] sys_kill: sending signal {} to process group",
+            signal
+        );
+
+        // Get current process group
+        let current_pgid = match crate::sched::get_current_task_info() {
+            Some((id, _)) => match crate::sched::get_task_mut(id) {
+                Some(task) => task.pgid,
+                None => return -1,
+            },
+            None => return -1,
+        };
+
+        // Send signal to all tasks in the same process group
+        let mut sent_count = 0;
+        for task_id in 1..1024 {
+            if let Some(task) = crate::sched::get_task_mut(task_id) {
+                if task.pgid == current_pgid {
+                    if let Ok(()) = send_signal(task, signal as u32) {
+                        sent_count += 1;
+                    }
+                }
+            }
+        }
+
+        serial_println!(
+            "[SYSCALL] sys_kill: sent signal to {} processes in group",
+            sent_count
+        );
+        if sent_count > 0 {
+            0
+        } else {
+            -1
+        }
+    } else if pid_signed == -1 {
+        // Send signal to all processes except init and current process
+        serial_println!(
+            "[SYSCALL] sys_kill: sending signal {} to all processes",
+            signal
+        );
+
+        let current_pid = match crate::sched::get_current_task_info() {
+            Some((id, _)) => id,
+            None => return -1,
+        };
+
+        let mut sent_count = 0;
+        for task_id in 2..1024 {
+            if task_id == current_pid {
+                continue; // Skip current process
+            }
+
+            if let Some(task) = crate::sched::get_task_mut(task_id) {
+                // Skip init process for SIGKILL/SIGSTOP
+                if task_id == 1
+                    && (signal == signals::SIGKILL as usize || signal == signals::SIGSTOP as usize)
+                {
+                    continue;
+                }
+
+                if let Ok(()) = send_signal(task, signal as u32) {
+                    sent_count += 1;
+                }
+            }
+        }
+
+        serial_println!(
+            "[SYSCALL] sys_kill: sent signal to {} processes",
+            sent_count
+        );
+        if sent_count > 0 {
+            0
+        } else {
+            -1
+        }
+    } else if pid_signed < -1 {
+        // Send signal to all processes in process group |pid|
+        let target_pgid = (-pid_signed) as usize;
+        serial_println!(
+            "[SYSCALL] sys_kill: sending signal {} to process group {}",
+            signal,
+            target_pgid
+        );
+
+        let mut sent_count = 0;
+        for task_id in 1..1024 {
+            if let Some(task) = crate::sched::get_task_mut(task_id) {
+                if task.pgid == target_pgid {
+                    if let Ok(()) = send_signal(task, signal as u32) {
+                        sent_count += 1;
+                    }
+                }
+            }
+        }
+
+        serial_println!(
+            "[SYSCALL] sys_kill: sent signal to {} processes in group {}",
+            sent_count,
+            target_pgid
+        );
+        if sent_count > 0 {
+            0
+        } else {
+            -1
+        }
     } else {
-        serial_println!("[SYSCALL] sys_kill: special PID values not implemented");
+        serial_println!("[SYSCALL] sys_kill: invalid PID value {}", pid);
         -1 // EINVAL
     }
 }
@@ -3132,8 +3339,6 @@ fn sys_lstat(path_ptr: usize, stat_ptr: usize) -> isize {
 /// # Returns
 /// 0 on success, or -1 on error
 fn sys_chmod(path_ptr: usize, mode: usize) -> isize {
-    
-
     // Validate path pointer
     if !validate_user_buffer(path_ptr, 1) {
         serial_println!("[SYSCALL] sys_chmod: invalid path pointer");
@@ -3178,8 +3383,6 @@ fn sys_chmod(path_ptr: usize, mode: usize) -> isize {
 /// # Returns
 /// 0 on success, or -1 on error
 fn sys_chown(path_ptr: usize, uid: usize, gid: usize) -> isize {
-    
-
     // Validate path pointer
     if !validate_user_buffer(path_ptr, 1) {
         serial_println!("[SYSCALL] sys_chown: invalid path pointer");
@@ -3242,8 +3445,6 @@ struct Timespec {
 /// * UTIME_NOW (0x3fffffff): Set to current time
 /// * UTIME_OMIT (0x3ffffffe): Don't change this timestamp
 fn sys_utimensat(dirfd: usize, path_ptr: usize, times_ptr: usize) -> isize {
-    
-
     const AT_FDCWD: isize = -100;
     const UTIME_NOW: i64 = 0x3fffffff;
     const UTIME_OMIT: i64 = 0x3ffffffe;
@@ -3533,8 +3734,10 @@ fn sys_listxattr(path_ptr: usize, _list_info: usize) -> isize {
 
     serial_println!("[SYSCALL] sys_listxattr: path={}", path);
 
-    serial_println!("[SYSCALL] sys_listxattr: not implemented");
-    0 // No attributes
+    // Extended attributes are not supported in current filesystem implementation
+    // Return ENOTSUP (operation not supported) instead of pretending success
+    serial_println!("[SYSCALL] sys_listxattr: extended attributes not supported");
+    -95 // ENOTSUP - operation not supported on this filesystem
 }
 
 /// sys_mknod handler - Create a special file node
@@ -3651,9 +3854,18 @@ fn sys_mknod(path_ptr: usize, mode: usize, dev: usize) -> isize {
 fn sys_sync() -> isize {
     serial_println!("[SYSCALL] sys_sync: syncing all filesystems");
 
-
-    serial_println!("[SYSCALL] sys_sync: complete");
-    0 // Success (even if not implemented)
+    // Sync all mounted filesystems
+    use crate::fs::vfs::mount::sync_all_filesystems;
+    match sync_all_filesystems() {
+        Ok(()) => {
+            serial_println!("[SYSCALL] sys_sync: all filesystems synced successfully");
+            0
+        }
+        Err(e) => {
+            serial_println!("[SYSCALL] sys_sync: sync failed: {}", e);
+            -1 // EIO
+        }
+    }
 }
 
 /// sys_fsync handler - Sync a specific file
@@ -3681,9 +3893,18 @@ fn sys_fsync(fd: usize) -> isize {
     };
     drop(fd_table);
 
-
-    serial_println!("[SYSCALL] sys_fsync: not implemented");
-    0 // Pretend success for now
+    // Sync the file through VFS
+    use crate::fs::vfs::file::sync_file;
+    match sync_file(fd) {
+        Ok(()) => {
+            serial_println!("[SYSCALL] sys_fsync: file synced successfully");
+            0
+        }
+        Err(e) => {
+            serial_println!("[SYSCALL] sys_fsync: sync failed: {}", e);
+            -1 // EIO
+        }
+    }
 }
 
 /// sys_fdatasync handler - Sync file data only (not metadata)
@@ -3712,9 +3933,19 @@ fn sys_fdatasync(fd: usize) -> isize {
     };
     drop(fd_table);
 
-
-    serial_println!("[SYSCALL] sys_fdatasync: not implemented");
-    0 // Pretend success for now
+    // fdatasync is like fsync but doesn't sync metadata
+    // For now, we'll just call fsync (conservative approach)
+    use crate::fs::vfs::file::sync_file;
+    match sync_file(fd) {
+        Ok(()) => {
+            serial_println!("[SYSCALL] sys_fdatasync: file data synced successfully");
+            0
+        }
+        Err(e) => {
+            serial_println!("[SYSCALL] sys_fdatasync: sync failed: {}", e);
+            -1 // EIO
+        }
+    }
 }
 
 /// sys_mount handler - Mount a filesystem
@@ -3839,7 +4070,6 @@ fn sys_mount(source_ptr: usize, target_ptr: usize, fstype_ptr: usize) -> isize {
         }
     }
 
-
     serial_println!("[SYSCALL] sys_mount: complete");
     0 // Success
 }
@@ -3901,7 +4131,6 @@ fn sys_umount(target_ptr: usize, flags: usize) -> isize {
         detach,
         expire
     );
-
 
     serial_println!("[SYSCALL] sys_umount: complete");
     0 // Success

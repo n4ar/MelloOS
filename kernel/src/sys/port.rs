@@ -32,7 +32,8 @@ use crate::sched::task::TaskId;
 use spin::Mutex;
 
 /// Maximum messages per port queue
-const MAX_MESSAGES_PER_PORT: usize = 16;
+/// Reduced from 16 to 4 to avoid stack overflow (each Message is 4KB)
+const MAX_MESSAGES_PER_PORT: usize = 4;
 
 /// Maximum blocked tasks per port
 const MAX_BLOCKED_TASKS: usize = 64;
@@ -231,23 +232,39 @@ impl PortManager {
     /// It does NOT acquire table_lock internally to avoid deadlock.
     pub fn create_port(&mut self, port_id: usize) -> Result<(), IpcError> {
         use crate::serial_println;
-        
+
         serial_println!("[IPC] create_port: Validating port_id {}", port_id);
-        
+
         // Validate port ID
         if port_id >= 256 {
             return Err(IpcError::InvalidPort);
         }
 
-        serial_println!("[IPC] create_port: Calling Port::new({})", port_id);
-        
-        // Create the port on the heap to avoid stack overflow
-        let new_port = alloc::boxed::Box::new(Port::new(port_id));
-        
-        serial_println!("[IPC] create_port: Port::new returned, assigning to array");
-        
+        serial_println!(
+            "[IPC] create_port: Allocating uninitialized Port {} on heap...",
+            port_id
+        );
+
+        // Allocate uninitialized memory on heap first (doesn't require stack space)
+        let mut uninit_port = alloc::boxed::Box::<Port>::new_uninit();
+
+        serial_println!(
+            "[IPC] create_port: Initializing Port {} in-place...",
+            port_id
+        );
+
+        // Initialize the port in-place on the heap
+        let new_port = unsafe {
+            // Write the initialized Port directly into the heap allocation
+            uninit_port.as_mut_ptr().write(Port::new(port_id));
+            // Assume initialization is complete
+            uninit_port.assume_init()
+        };
+
+        serial_println!("[IPC] create_port: Port {} created successfully", port_id);
+
         self.ports[port_id] = Some(new_port);
-        
+
         serial_println!("[IPC] create_port: Port {} assigned successfully", port_id);
 
         Ok(())
@@ -510,7 +527,7 @@ pub fn init_ipc() {
     // Create system ports 0-15
     for port_id in 0..16 {
         serial_println!("[IPC] About to create port {}...", port_id);
-        
+
         // Create port with detailed logging
         match port_mgr.create_port(port_id) {
             Ok(()) => {

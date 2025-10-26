@@ -5,9 +5,9 @@
 //!
 //! Implementation uses static arrays to avoid heap allocation during early boot.
 
-use alloc::sync::Arc;
-use alloc::string::String;
 use crate::fs::vfs::superblock::SuperBlock;
+use alloc::string::String;
+use alloc::sync::Arc;
 use spin::Mutex as SpinLock;
 
 /// Maximum number of mount points supported
@@ -114,7 +114,10 @@ impl MountTable {
                 // "/" matches everything
                 // "/dev" matches "/dev" and "/dev/..." but not "/device"
                 if mount_len > best_len {
-                    if mount.path == "/" || path.len() == mount_len || path.as_bytes()[mount_len] == b'/' {
+                    if mount.path == "/"
+                        || path.len() == mount_len
+                        || path.as_bytes()[mount_len] == b'/'
+                    {
                         best_match = Some(mount);
                         best_len = mount_len;
                     }
@@ -204,3 +207,29 @@ pub fn list_mounts() -> alloc::vec::Vec<MountPoint> {
 }
 
 // Tests will be added in integration test suite once filesystem is operational
+
+/// Sync all mounted filesystems
+///
+/// This function calls sync() on all active mount points,
+/// ensuring all dirty data is written to disk.
+pub fn sync_all_filesystems() -> Result<(), &'static str> {
+    let table = MOUNT_TABLE.lock();
+
+    for mount_opt in &table.mounts {
+        if let Some(mount) = mount_opt {
+            if mount.active {
+                // Call sync on the superblock
+                if let Err(e) = mount.superblock.sync() {
+                    crate::serial_println!(
+                        "[VFS] Failed to sync filesystem at {}: {:?}",
+                        mount.path,
+                        e
+                    );
+                    return Err("Failed to sync filesystem");
+                }
+            }
+        }
+    }
+
+    Ok(())
+}

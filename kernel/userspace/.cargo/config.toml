@@ -1,0 +1,24 @@
+# Shared Cargo configuration for all userspace programs
+# This speeds up compilation significantly
+
+[build]
+target = "x86_64-unknown-none"
+rustc-wrapper = "sccache"
+
+# Fast development builds
+[profile.dev]
+opt-level = 0              # No optimization for fastest compile
+debug = 0                  # No debug symbols to reduce link time
+incremental = true         # Enable incremental compilation
+codegen-units = 256        # Maximum parallelism for fast compile
+panic = "abort"            # Avoid unwinding overhead
+split-debuginfo = "off"    # Disable debug info splitting
+
+# Optimized release builds
+[profile.release]
+opt-level = "z"            # Optimize for size (good for embedded)
+codegen-units = 1          # Single unit for better optimization
+lto = "thin"               # Thin LTO for balance
+panic = "abort"            # Abort on panic
+strip = true               # Strip symbols
+debug = false              # No debug info

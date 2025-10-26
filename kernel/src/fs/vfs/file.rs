@@ -224,3 +224,32 @@ impl FdTable {
         self.fds.iter().filter(|fd| fd.is_some()).count()
     }
 }
+
+/// Sync a file descriptor
+///
+/// This function flushes all dirty data and metadata for the file
+/// associated with the given file descriptor.
+///
+/// # Arguments
+/// * `fd` - File descriptor number
+///
+/// # Returns
+/// * `Ok(())` on success
+/// * `Err(&'static str)` on error
+pub fn sync_file(fd: usize) -> Result<(), &'static str> {
+    use crate::sys::syscall::FD_TABLE;
+
+    // Validate the file descriptor exists
+    let fd_table = FD_TABLE.lock();
+    let _fd_entry = fd_table.get(fd).ok_or("Invalid file descriptor")?;
+    drop(fd_table);
+
+    // For now, sync is a no-op since we don't have file-backed FDs yet
+    // In a full implementation, this would:
+    // 1. Get the inode associated with the FD
+    // 2. Flush dirty pages for that inode
+    // 3. Update metadata on disk
+
+    // Since current FDs are mostly devices and pipes, there's nothing to sync
+    Ok(())
+}

@@ -336,8 +336,6 @@ fn get_task(id: TaskId) -> Option<&'static mut Task> {
 /// # Returns
 /// A tuple of (old_task, new_task) references, or None if no tasks available
 fn schedule_on_core(cpu_id: usize) -> Option<(&'static mut Task, &'static mut Task)> {
-    
-
     // Get the PerCpu structure for this core
     let percpu = unsafe { crate::arch::x86_64::smp::percpu::percpu_for_mut(cpu_id) };
 
@@ -503,6 +501,14 @@ pub fn tick() {
                 first_task.priority
             );
 
+            // Debug: Print task context
+            crate::serial_println!(
+                "[SCHED] Task {} context: RSP=0x{:x}, RBP=0x{:x}",
+                first_task.id,
+                first_task.context.rsp,
+                first_task.context.rbp
+            );
+
             // Validate the task's RSP
             if first_task.context.rsp == 0 {
                 panic!("[SCHED] CRITICAL: First task has null RSP");
@@ -573,7 +579,7 @@ pub fn get_current_task_info() -> Option<(TaskId, TaskPriority)> {
 pub fn current_task() -> Option<&'static Task> {
     let percpu = percpu_current();
     let current_id = percpu.current_task?;
-    
+
     // Get task from task table
     get_task(current_id).map(|t| &*t)
 }
@@ -616,13 +622,13 @@ pub fn get_task_by_id(task_id: TaskId) -> Option<&'static Task> {
 /// An Arc<Task> wrapping the task, or None if task doesn't exist
 pub fn get_task_arc(task_id: TaskId) -> Option<alloc::sync::Arc<Task>> {
     let task_table = TASK_TABLE.lock();
-    
+
     // Find the task in the table
     for task_ptr in task_table.iter() {
         if task_ptr.is_null() {
             continue;
         }
-        
+
         let task = unsafe { &*task_ptr.get() };
         if task.id == task_id {
             // Create an Arc from the raw pointer
@@ -631,16 +637,16 @@ pub fn get_task_arc(task_id: TaskId) -> Option<alloc::sync::Arc<Task>> {
             // when it's dropped, since TASK_TABLE owns the task
             let task_ptr = task_ptr.get();
             let arc = unsafe { alloc::sync::Arc::from_raw(task_ptr) };
-            
+
             // Immediately convert back to raw and forget to prevent deallocation
             // This gives us an Arc that doesn't own the data
             let raw_ptr = alloc::sync::Arc::into_raw(arc);
             let arc = unsafe { alloc::sync::Arc::from_raw(raw_ptr) };
-            
+
             return Some(arc);
         }
     }
-    
+
     None
 }
 
@@ -936,10 +942,6 @@ pub fn yield_now() {
     // Call the scheduler tick function to perform context switch
     tick();
 }
-
-
-
-
 
 /// Initialize the scheduler
 ///

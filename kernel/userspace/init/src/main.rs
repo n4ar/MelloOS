@@ -15,19 +15,17 @@ const SYS_FORK: usize = 7;
 const SYS_WAIT: usize = 8;
 const SYS_EXEC: usize = 9;
 
-/// Raw syscall function using fast syscall instruction
+/// Raw syscall function using legacy int 0x80 interface
 #[inline(always)]
 unsafe fn syscall(id: usize, arg1: usize, arg2: usize, arg3: usize) -> isize {
     let ret: isize;
     asm!(
-        "syscall",
+        "int 0x80",
         inout("rax") id => ret,
         in("rdi") arg1,
         in("rsi") arg2,
         in("rdx") arg3,
-        out("rcx") _,  // Clobbered by syscall
-        out("r11") _,  // Clobbered by syscall
-        options(nostack)
+        options(nostack, preserves_flags)
     );
     ret
 }
@@ -86,11 +84,11 @@ fn sys_exit(code: usize) -> ! {
 }
 
 /// Execute a new program
-/// 
+///
 /// # Arguments
 /// * `path` - Null-terminated path to executable
 /// * `argv` - Null-terminated array of argument pointers
-/// 
+///
 /// # Returns
 /// * Does not return on success
 /// * Negative error code on failure
@@ -235,16 +233,13 @@ pub extern "C" fn _start() -> ! {
     // Try to exec shell directly
     // Prepare argv array: ["/bin/sh", NULL]
     let shell_path = b"/bin/sh\0";
-    let argv: [*const u8; 2] = [
-        shell_path.as_ptr(),
-        core::ptr::null(),
-    ];
+    let argv: [*const u8; 2] = [shell_path.as_ptr(), core::ptr::null()];
 
     sys_write("[Init] Attempting to exec /bin/sh...\n");
-    
+
     // Call exec - this should not return on success
     let exec_result = sys_exec(shell_path.as_ptr(), argv.as_ptr());
-    
+
     // If we reach here, exec failed
     sys_write("\n");
     sys_write("╔════════════════════════════════════════╗\n");
@@ -252,7 +247,7 @@ pub extern "C" fn _start() -> ! {
     sys_write("╚════════════════════════════════════════╝\n");
     sys_write("\n");
     sys_write("ERROR: Failed to exec shell (error code: ");
-    
+
     // Print error code (simple conversion for negative numbers)
     if exec_result < 0 {
         sys_write("-");
@@ -268,20 +263,20 @@ pub extern "C" fn _start() -> ! {
     } else {
         sys_write("0\n");
     }
-    
+
     sys_write("\nFalling back to test mode...\n");
     sys_write("========================================\n\n");
 
     // Run tests as fallback
     test_privilege_level();
     sys_write("\n");
-    
+
     test_syscalls();
     sys_write("\n");
-    
+
     test_fork_chain();
     sys_write("\n");
-    
+
     test_memory_protection();
     sys_write("\n");
 

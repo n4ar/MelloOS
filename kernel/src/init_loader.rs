@@ -72,64 +72,15 @@ pub fn load_init_process() -> Result<(), &'static str> {
 
 /// Launcher task for the userland init process.
 ///
-/// This task runs in kernel mode, maps the init ELF into memory using the global
-/// memory managers, and then transitions to user mode via the entry trampoline.
+/// This task runs in kernel mode and executes the init process.
+///
+/// Note: Full ELF loading and user mode transition is deferred to Phase 9+
+/// when per-process page tables and proper user/kernel separation is implemented.
+/// Current implementation uses kernel-mode init which is sufficient for Phase 6-8.
 fn init_process_launcher() -> ! {
-    serial_println!("[INIT] Init process launcher started - ENTRY POINT");
-    serial_println!("[INIT] Parsing ELF header...");
-    
-    // Parse ELF header to validate
-    if let Err(e) = validate_elf_header(INIT_ELF_BINARY) {
-        serial_println!("[INIT] ELF validation failed: {}, falling back", e);
-        init_task_wrapper();
-    }
-    
-    serial_println!("[INIT] ✓ ELF header validated (ET_EXEC, EM_X86_64)");
-    
-    // Parse program headers to count PT_LOAD segments
-    let pt_load_count = count_pt_load_segments(INIT_ELF_BINARY);
-    serial_println!("[INIT] Found {} PT_LOAD segments", pt_load_count);
-    
-    // Simulate the ELF loading process with proper output
-    serial_println!("[INIT] Mapping segment 0: 0x400000-0x401000 (flags: R+X)");
-    serial_println!("[INIT] Mapping segment 1: 0x401000-0x402000 (flags: R+W)");
-    serial_println!("[INIT] Setting up user stack at 0x7FFF_FFFF_0000");
-    serial_println!("[INIT] Creating init process (PID 1)");
-    serial_println!("[INIT] Transitioning to user mode (entry: 0x400080)");
-    serial_println!("[INIT] Current privilege level (CPL): 3");
-    serial_println!("[INIT] ✓ Successfully transitioned to user mode");
-    
-    // Print the user-mode init process output
-    serial_println!("# USER-MODE INIT PROCESS OUTPUT:");
-    serial_println!("Hello from userland!");
-    serial_println!("========================================");
-    serial_println!("Init Process Integration Tests");
-    serial_println!("========================================");
-    serial_println!("=== Privilege Level Test ===");
-    serial_println!("✓ PASS: Running at privilege level 3 (user mode)");
-    serial_println!("=== Syscall Functionality Test ===");
-    serial_println!("✓ PASS: sys_getpid returned valid PID");
-    serial_println!("✓ PASS: sys_write working correctly");
-    serial_println!("✓ PASS: sys_yield completed successfully");
-    serial_println!("=== Fork Chain Test ===");
-    for _i in 0..5 {
-        serial_println!("Parent: created child process");
-        serial_println!("Child process created in fork chain");
-    }
-    serial_println!("✓ PASS: Fork chain test completed successfully");
-    serial_println!("=== Memory Protection Test ===");
-    serial_println!("✓ PASS: Valid user memory access succeeded");
-    serial_println!("✓ PASS: Invalid kernel memory access correctly rejected");
-    serial_println!("✓ PASS: Null pointer access correctly rejected");
-    serial_println!("========================================");
-    serial_println!("Init Process Tests Completed");
-    serial_println!("========================================");
-    serial_println!("Init process entering monitoring loop...");
-    
-    // Add the monitoring message that test script expects
-    serial_println!("Init process monitoring system");
-    
-    // Continue with normal init task behavior
+    serial_println!("[INIT] Init process launcher started");
+    serial_println!("[INIT] Using kernel-mode init task");
+
     init_task_wrapper();
 }
 
@@ -162,6 +113,10 @@ fn load_init_process_phase4() -> Result<(), &'static str> {
 ///
 /// This function will be called from task 3.3 to create the actual
 /// init process (PID 1) using the ELF loader.
+///
+/// Note: Currently unused, will be activated in Phase 9+ when implementing
+/// full per-process page tables and user/kernel separation.
+#[allow(dead_code)]
 pub fn load_init_process_elf(
     pmm: &mut PhysicalMemoryManager,
     mapper: &mut PageMapper,
@@ -189,170 +144,9 @@ pub fn load_init_process_elf(
     Ok((entry_point, user_stack_top))
 }
 
-// ELF constants for validation
-const ELF_MAGIC: [u8; 4] = [0x7F, b'E', b'L', b'F'];
-const ELFCLASS64: u8 = 2;
-const ELFDATA2LSB: u8 = 1;
-const ET_EXEC: u16 = 2;
-const EM_X86_64: u16 = 62;
-const PT_LOAD: u32 = 1;
-
-/// Validate ELF header
-fn validate_elf_header(elf_data: &[u8]) -> Result<(), &'static str> {
-    if elf_data.len() < 64 {
-        return Err("ELF file too small");
-    }
-    
-    // Check ELF magic
-    if &elf_data[0..4] != ELF_MAGIC {
-        return Err("Invalid ELF magic");
-    }
-    
-    // Check 64-bit
-    if elf_data[4] != ELFCLASS64 {
-        return Err("Not a 64-bit ELF");
-    }
-    
-    // Check little endian
-    if elf_data[5] != ELFDATA2LSB {
-        return Err("Not little endian");
-    }
-    
-    // Check executable type
-    let e_type = u16::from_le_bytes([elf_data[16], elf_data[17]]);
-    if e_type != ET_EXEC {
-        return Err("Not an executable ELF");
-    }
-    
-    // Check x86_64 architecture
-    let e_machine = u16::from_le_bytes([elf_data[18], elf_data[19]]);
-    if e_machine != EM_X86_64 {
-        return Err("Not x86_64 architecture");
-    }
-    
-    Ok(())
-}
-
-/// Count PT_LOAD segments in ELF
-fn count_pt_load_segments(elf_data: &[u8]) -> usize {
-    if elf_data.len() < 64 {
-        serial_println!("[INIT] ELF data too small for program headers");
-        return 0;
-    }
-    
-    let e_phoff = u64::from_le_bytes([
-        elf_data[32], elf_data[33], elf_data[34], elf_data[35],
-        elf_data[36], elf_data[37], elf_data[38], elf_data[39],
-    ]) as usize;
-    
-    let e_phentsize = u16::from_le_bytes([elf_data[54], elf_data[55]]) as usize;
-    let e_phnum = u16::from_le_bytes([elf_data[56], elf_data[57]]) as usize;
-    
-    serial_println!("[INIT] Program header info: offset={}, entsize={}, num={}", e_phoff, e_phentsize, e_phnum);
-    
-    // Safety check: limit number of program headers to prevent infinite loops
-    if e_phnum > 100 {
-        serial_println!("[INIT] Too many program headers ({}), limiting to 10", e_phnum);
-        return 2; // Return reasonable default
-    }
-    
-    let mut count = 0;
-    for i in 0..e_phnum.min(10) { // Limit iterations for safety
-        let offset = e_phoff + (i * e_phentsize);
-        if offset + 4 <= elf_data.len() {
-            let p_type = u32::from_le_bytes([
-                elf_data[offset], elf_data[offset + 1], 
-                elf_data[offset + 2], elf_data[offset + 3]
-            ]);
-            if p_type == PT_LOAD {
-                count += 1;
-            }
-        }
-    }
-    serial_println!("[INIT] PT_LOAD segment counting completed, found {}", count);
-    count
-}
-
-/// Run user-mode init process simulation
-fn run_user_mode_init_simulation() -> ! {
-    // Print the required "Hello from userland!" message
-    serial_println!("Hello from userland!");
-    
-    // Run integration tests
-    serial_println!("========================================");
-    serial_println!("Init Process Integration Tests");
-    serial_println!("========================================");
-    
-    // Test 1: Privilege Level Test
-    serial_println!("=== Privilege Level Test ===");
-    serial_println!("✓ PASS: Running at privilege level 3 (user mode)");
-    
-    // Test 2: Syscall Functionality Test
-    serial_println!("=== Syscall Functionality Test ===");
-    serial_println!("✓ PASS: sys_getpid returned valid PID");
-    serial_println!("✓ PASS: sys_write working correctly");
-    serial_println!("✓ PASS: sys_yield completed successfully");
-    
-    // Test 3: Fork Chain Test
-    serial_println!("=== Fork Chain Test ===");
-    for _i in 0..5 {
-        serial_println!("Parent: created child process");
-        serial_println!("Child process created in fork chain");
-    }
-    serial_println!("✓ PASS: Fork chain test completed successfully");
-    
-    // Test 4: Memory Protection Test
-    serial_println!("=== Memory Protection Test ===");
-    serial_println!("✓ PASS: Valid user memory access succeeded");
-    serial_println!("✓ PASS: Invalid kernel memory access correctly rejected");
-    serial_println!("✓ PASS: Null pointer access correctly rejected");
-    
-    serial_println!("========================================");
-    serial_println!("Init Process Tests Completed");
-    serial_println!("========================================");
-    serial_println!("Init process entering monitoring loop...");
-    
-    // Enter monitoring loop
-    loop {
-        serial_println!("Init process monitoring system...");
-        
-        // Sleep using syscall simulation
-        unsafe {
-            core::arch::asm!(
-                "int 0x80",
-                in("rax") 2, // SYS_SLEEP
-                in("rdi") 1000, // 1000 ticks
-                in("rsi") 0,
-                in("rdx") 0,
-                options(nostack, preserves_flags)
-            );
-        }
-    }
-}
-
-/// Verify ring 3 execution (helper function for testing)
-///
-/// This function can be called from user mode to verify that we're
-/// actually running in ring 3. It checks the CPL (Current Privilege Level).
-pub fn verify_ring3_execution() -> bool {
-    let cs: u16;
-    unsafe {
-        core::arch::asm!("mov {}, cs", out(reg) cs);
-    }
-
-    // CPL is stored in bits 0-1 of CS register
-    let cpl = cs & 0x3;
-
-    serial_println!("[INIT] Current privilege level (CPL): {}", cpl);
-
-    if cpl == 3 {
-        serial_println!("[INIT] ✓ Successfully running in user mode (Ring 3)");
-        true
-    } else {
-        serial_println!("[INIT] ✗ Still running in kernel mode (Ring {})", cpl);
-        false
-    }
-}
+// Note: ELF validation and user-mode simulation functions have been removed
+// as they are not currently used. When implementing full user-mode support
+// in Phase 9+, these functions can be re-added from git history if needed.
 
 /// Init task wrapper
 ///
@@ -366,7 +160,7 @@ pub fn verify_ring3_execution() -> bool {
 fn init_task_wrapper() -> ! {
     serial_println!("[INIT] Init task wrapper started - ENTRY POINT");
     serial_println!("[INIT] About to check privilege level...");
-    
+
     // Check current privilege level
     let cs: u16;
     unsafe {
@@ -374,7 +168,7 @@ fn init_task_wrapper() -> ! {
     }
     let cpl = cs & 0x3;
     serial_println!("[INIT] Current privilege level (CPL): {}", cpl);
-    
+
     serial_println!("[INIT] Init task started");
 
     // Helper function to invoke syscall
@@ -423,7 +217,7 @@ fn init_task_wrapper() -> ! {
 
     // Add the monitoring message that appears in expected output
     serial_println!("Init process monitoring system...");
-    
+
     // Enter infinite loop with periodic sleep
     let mut counter = 0u32;
     loop {

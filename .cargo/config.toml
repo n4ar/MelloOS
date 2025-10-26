@@ -4,6 +4,7 @@ target = "x86_64-unknown-none"
 jobs = 12
 # Enable incremental compilation for faster rebuilds
 incremental = true
+rustc-wrapper = "sccache"
 
 [unstable]
 build-std = ["core", "alloc", "compiler_builtins"]
