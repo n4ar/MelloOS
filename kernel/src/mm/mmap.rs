@@ -51,6 +51,7 @@ impl MmapFlags {
     pub const MAP_PRIVATE: Self = Self { bits: 0x02 };
     pub const MAP_FIXED: Self = Self { bits: 0x10 };
     pub const MAP_ANONYMOUS: Self = Self { bits: 0x20 };
+    pub const MAP_GROWSDOWN: Self = Self { bits: 0x100 };
 
     pub const fn from_bits(bits: u32) -> Self {
         Self { bits }
@@ -66,6 +67,10 @@ impl MmapFlags {
 
     pub const fn is_anonymous(&self) -> bool {
         self.bits & Self::MAP_ANONYMOUS.bits != 0
+    }
+
+    pub const fn is_growsdown(&self) -> bool {
+        self.bits & Self::MAP_GROWSDOWN.bits != 0
     }
 }
 
@@ -135,6 +140,17 @@ impl MemoryMapping {
     pub fn contains(&self, addr: u64) -> bool {
         self.valid && addr >= self.vaddr && addr < self.vaddr + self.length as u64
     }
+
+    /// Check if this is a file-backed mapping
+    pub fn is_file_backed(&self) -> bool {
+        self.fd.is_some() && !self.flags.is_anonymous()
+    }
+
+    /// Get the file offset for a given virtual address
+    pub fn file_offset_for_addr(&self, addr: u64) -> u64 {
+        let page_offset = addr - self.vaddr;
+        self.offset + page_offset
+    }
 }
 
 const MAX_MAPPINGS: usize = 256;
@@ -143,7 +159,7 @@ const MAX_MAPPINGS: usize = 256;
 pub struct MmapTable {
     pid: AtomicU64,
     in_use: AtomicBool,
-    mappings: [RwLock<MemoryMapping>; MAX_MAPPINGS],
+    pub mappings: [RwLock<MemoryMapping>; MAX_MAPPINGS],
     count: AtomicUsize,
 }
 
@@ -537,4 +553,463 @@ pub fn sys_mprotect(addr: u64, length: usize, prot: ProtFlags) -> Result<(), &'s
     );
 
     Ok(())
+}
+
+/// Handle page fault in file-backed mapping
+///
+/// This function handles page faults in file-backed memory mappings by:
+/// 1. Allocating a physical page
+/// 2. Reading file data from the backing file at the correct offset (Requirement 4.7)
+/// 3. For MAP_SHARED: mapping page writable and registering in shared page cache (Requirement 4.5)
+/// 4. For MAP_PRIVATE: mapping page with COW semantics (Requirement 4.6)
+///
+/// # Arguments
+/// * `fault_addr` - Faulting virtual address
+/// * `mapping` - Memory mapping descriptor
+///
+/// # Returns
+/// Ok(()) on success, or an error string
+pub fn handle_file_mapping_fault(
+    fault_addr: u64,
+    mapping: &MemoryMapping,
+) -> Result<(), &'static str> {
+    use crate::fs::cache::page_cache::{get_page_cache, CACHE_PAGE_SIZE};
+    use crate::mm::paging::{get_current_cr3, PageTable, PageTableFlags};
+    use crate::mm::phys_to_virt;
+    use crate::mm::pmm::get_global_pmm;
+    use crate::mm::refcount::PAGE_REFCOUNT;
+    use crate::sys::syscall::FD_TABLE;
+
+    crate::serial_println!(
+        "[MMAP] File-backed fault at addr=0x{:x}, mapping=[0x{:x}-0x{:x}], fd={:?}",
+        fault_addr,
+        mapping.vaddr,
+        mapping.vaddr + mapping.length as u64,
+        mapping.fd
+    );
+
+    // Validate fault address is within mapping
+    if !mapping.contains(fault_addr) {
+        return Err("Fault address outside mapping");
+    }
+
+    // Get file descriptor
+    let fd = mapping.fd.ok_or("No file descriptor")?;
+
+    // Calculate page-aligned address and file offset
+    let page_addr = fault_addr & !(PAGE_SIZE as u64 - 1);
+    let file_offset = mapping.file_offset_for_addr(page_addr);
+    let page_num = file_offset / PAGE_SIZE as u64;
+
+    crate::serial_println!(
+        "[MMAP] Page fault: page_addr=0x{:x}, file_offset=0x{:x}, page_num={}",
+        page_addr,
+        file_offset,
+        page_num
+    );
+
+    // Get the inode from the file descriptor
+    let fd_table = FD_TABLE.lock();
+    let fd_entry = fd_table.get(fd as usize).ok_or("Invalid file descriptor")?;
+
+    // Extract inode from FdType
+    let (inode, inode_id) = match fd_entry.fd_type() {
+        crate::sys::syscall::FdType::VfsFile { inode, .. } => (inode.clone(), inode.ino()),
+        _ => {
+            drop(fd_table);
+            return Err("File descriptor is not a VFS file");
+        }
+    };
+    drop(fd_table);
+
+    // Try to get page from cache first
+    let page_cache = get_page_cache();
+    let cache_idx = page_cache.get_file_cache(inode_id);
+
+    let mut page_data = [0u8; CACHE_PAGE_SIZE];
+    let mut found_in_cache = false;
+
+    if let Some(idx) = cache_idx {
+        if let Some(cache) = page_cache.get_cache(idx) {
+            let timestamp = page_cache.next_timestamp();
+            if let Some(page_idx) = cache.get_page(page_num, timestamp) {
+                // Page found in cache
+                cache.read_page(page_idx, &mut page_data);
+                found_in_cache = true;
+                crate::serial_println!("[MMAP] Page {} found in cache", page_num);
+            }
+        }
+    }
+
+    // If not in cache, read from file (Requirement 4.7)
+    if !found_in_cache {
+        crate::serial_println!("[MMAP] Reading page {} from file", page_num);
+
+        // Read file data at the correct offset
+        match inode.read_at(file_offset, &mut page_data) {
+            Ok(bytes_read) => {
+                crate::serial_println!("[MMAP] Read {} bytes from file", bytes_read);
+
+                // Zero-fill the rest if we read less than a page
+                if bytes_read < CACHE_PAGE_SIZE {
+                    page_data[bytes_read..].fill(0);
+                }
+
+                // Insert into cache for future access
+                if let Some(idx) = cache_idx {
+                    if let Some(cache) = page_cache.get_cache(idx) {
+                        let timestamp = page_cache.next_timestamp();
+                        cache.insert_page(page_num, &page_data, timestamp);
+                    }
+                }
+            }
+            Err(e) => {
+                crate::serial_println!("[MMAP] Failed to read from file: {:?}", e);
+                return Err("Failed to read file data");
+            }
+        }
+    }
+
+    // Allocate physical page
+    let mut pmm_guard = get_global_pmm();
+    let pmm = match pmm_guard.as_mut() {
+        Some(p) => p,
+        None => return Err("PMM not initialized"),
+    };
+
+    let page_phys = match pmm.alloc_frame() {
+        Some(phys) => phys,
+        None => return Err("Out of physical memory"),
+    };
+
+    // Copy data to physical page
+    let page_virt = phys_to_virt(page_phys);
+    unsafe {
+        core::ptr::copy_nonoverlapping(page_data.as_ptr(), page_virt as *mut u8, CACHE_PAGE_SIZE);
+    }
+
+    // Get current page table
+    let pml4_phys = get_current_cr3();
+    let pml4_virt = phys_to_virt(pml4_phys);
+    let pml4 = unsafe { &mut *(pml4_virt as *mut PageTable) };
+
+    // Extract indices from virtual address
+    let page_addr_usize = page_addr as usize;
+    let pml4_index = (page_addr_usize >> 39) & 0x1FF;
+    let pdpt_index = (page_addr_usize >> 30) & 0x1FF;
+    let pd_index = (page_addr_usize >> 21) & 0x1FF;
+    let pt_index = (page_addr_usize >> 12) & 0x1FF;
+
+    // Walk page tables to find the PTE (allocating tables as needed)
+    let pml4_entry = pml4.get_entry_mut(pml4_index);
+    if !pml4_entry.is_present() {
+        let pdpt_phys = pmm.alloc_frame().ok_or("Out of memory for PDPT")?;
+        let pdpt_virt = phys_to_virt(pdpt_phys);
+        unsafe {
+            core::ptr::write_bytes(pdpt_virt as *mut u8, 0, PAGE_SIZE);
+        }
+        pml4_entry.set(
+            pdpt_phys,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER,
+        );
+    }
+
+    let pdpt_phys = pml4_entry.addr();
+    let pdpt_virt = phys_to_virt(pdpt_phys);
+    let pdpt = unsafe { &mut *(pdpt_virt as *mut PageTable) };
+
+    let pdpt_entry = pdpt.get_entry_mut(pdpt_index);
+    if !pdpt_entry.is_present() {
+        let pd_phys = pmm.alloc_frame().ok_or("Out of memory for PD")?;
+        let pd_virt = phys_to_virt(pd_phys);
+        unsafe {
+            core::ptr::write_bytes(pd_virt as *mut u8, 0, PAGE_SIZE);
+        }
+        pdpt_entry.set(
+            pd_phys,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER,
+        );
+    }
+
+    let pd_phys = pdpt_entry.addr();
+    let pd_virt = phys_to_virt(pd_phys);
+    let pd = unsafe { &mut *(pd_virt as *mut PageTable) };
+
+    let pd_entry = pd.get_entry_mut(pd_index);
+    if !pd_entry.is_present() {
+        let pt_phys = pmm.alloc_frame().ok_or("Out of memory for PT")?;
+        let pt_virt = phys_to_virt(pt_phys);
+        unsafe {
+            core::ptr::write_bytes(pt_virt as *mut u8, 0, PAGE_SIZE);
+        }
+        pd_entry.set(
+            pt_phys,
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER,
+        );
+    }
+
+    let pt_phys = pd_entry.addr();
+    let pt_virt = phys_to_virt(pt_phys);
+    let pt = unsafe { &mut *(pt_virt as *mut PageTable) };
+
+    let pt_entry = pt.get_entry_mut(pt_index);
+
+    // Set up page table entry based on mapping type
+    let mut pt_flags = PageTableFlags::PRESENT | PageTableFlags::USER;
+
+    if mapping.flags.is_shared() {
+        // MAP_SHARED: map page writable if allowed (Requirement 4.5)
+        if mapping.prot.is_writable() {
+            pt_flags |= PageTableFlags::WRITABLE;
+        }
+
+        if !mapping.prot.is_executable() {
+            pt_flags |= PageTableFlags::NO_EXECUTE;
+        }
+
+        pt_entry.set(page_phys, pt_flags);
+
+        // Register in shared page cache (Requirement 4.5)
+        if let Some(idx) = cache_idx {
+            if let Some(cache) = page_cache.get_cache(idx) {
+                // Mark as dirty if writable so it gets written back
+                if mapping.prot.is_writable() {
+                    cache.mark_dirty(page_num);
+                }
+            }
+        }
+
+        crate::serial_println!(
+            "[MMAP] MAP_SHARED: mapped page at 0x{:x} (writable={})",
+            page_addr,
+            mapping.prot.is_writable()
+        );
+    } else {
+        // MAP_PRIVATE: use COW semantics (Requirement 4.6)
+        // Map as read-only with COW flag
+        pt_flags |= PageTableFlags::COW;
+
+        if !mapping.prot.is_executable() {
+            pt_flags |= PageTableFlags::NO_EXECUTE;
+        }
+
+        pt_entry.set(page_phys, pt_flags);
+
+        // Increment refcount for COW
+        PAGE_REFCOUNT.inc_refcount(page_phys);
+
+        crate::serial_println!(
+            "[MMAP] MAP_PRIVATE: mapped page at 0x{:x} with COW",
+            page_addr
+        );
+    }
+
+    // Flush TLB for this page
+    unsafe {
+        core::arch::asm!(
+            "invlpg [{}]",
+            in(reg) page_addr_usize,
+            options(nostack, preserves_flags)
+        );
+    }
+
+    crate::serial_println!(
+        "[MMAP] File-backed fault handled successfully at 0x{:x}",
+        page_addr
+    );
+
+    Ok(())
+}
+
+/// Handle MAP_GROWSDOWN stack expansion
+///
+/// This function handles page faults in MAP_GROWSDOWN mappings by automatically
+/// extending the mapping downward (Requirement 4.8).
+///
+/// # Arguments
+/// * `fault_addr` - Faulting virtual address
+/// * `mapping` - Memory mapping descriptor (will be updated)
+///
+/// # Returns
+/// Ok(()) on success, or an error string
+pub fn handle_growsdown_fault(
+    fault_addr: u64,
+    mapping: &mut MemoryMapping,
+) -> Result<(), &'static str> {
+    use crate::mm::paging::{get_current_cr3, PageTable, PageTableFlags};
+    use crate::mm::phys_to_virt;
+    use crate::mm::pmm::get_global_pmm;
+
+    const STACK_GUARD_SIZE: u64 = 4096; // 1 page guard
+
+    crate::serial_println!(
+        "[MMAP] GROWSDOWN fault at addr=0x{:x}, mapping=[0x{:x}-0x{:x}]",
+        fault_addr,
+        mapping.vaddr,
+        mapping.vaddr + mapping.length as u64
+    );
+
+    // Check if fault is within guard page distance
+    if fault_addr < mapping.vaddr && fault_addr >= mapping.vaddr - STACK_GUARD_SIZE {
+        return Err("Stack overflow (guard page)");
+    }
+
+    // Check if we should extend the mapping
+    if fault_addr >= mapping.vaddr {
+        return Err("Fault address not below mapping");
+    }
+
+    // Calculate new start address (page-aligned)
+    let new_start = fault_addr & !(PAGE_SIZE as u64 - 1);
+    let extension_size = (mapping.vaddr - new_start) as usize;
+
+    crate::serial_println!(
+        "[MMAP] Extending stack: new_start=0x{:x}, extension={} bytes",
+        new_start,
+        extension_size
+    );
+
+    // Get current page table
+    let pml4_phys = get_current_cr3();
+    let pml4_virt = phys_to_virt(pml4_phys);
+    let pml4 = unsafe { &mut *(pml4_virt as *mut PageTable) };
+
+    // Allocate and map new pages
+    let mut pmm_guard = get_global_pmm();
+    let pmm = match pmm_guard.as_mut() {
+        Some(p) => p,
+        None => return Err("PMM not initialized"),
+    };
+
+    let mut current_page = new_start;
+    while current_page < mapping.vaddr {
+        // Allocate physical page
+        let page_phys = match pmm.alloc_frame() {
+            Some(phys) => phys,
+            None => return Err("Out of physical memory"),
+        };
+
+        // Zero the page
+        let page_virt = phys_to_virt(page_phys);
+        unsafe {
+            core::ptr::write_bytes(page_virt as *mut u8, 0, PAGE_SIZE);
+        }
+
+        // Extract indices from virtual address
+        let page_addr_usize = current_page as usize;
+        let pml4_index = (page_addr_usize >> 39) & 0x1FF;
+        let pdpt_index = (page_addr_usize >> 30) & 0x1FF;
+        let pd_index = (page_addr_usize >> 21) & 0x1FF;
+        let pt_index = (page_addr_usize >> 12) & 0x1FF;
+
+        // Walk page tables (allocating as needed)
+        let pml4_entry = pml4.get_entry_mut(pml4_index);
+        if !pml4_entry.is_present() {
+            let pdpt_phys = pmm.alloc_frame().ok_or("Out of memory for PDPT")?;
+            let pdpt_virt = phys_to_virt(pdpt_phys);
+            unsafe {
+                core::ptr::write_bytes(pdpt_virt as *mut u8, 0, PAGE_SIZE);
+            }
+            pml4_entry.set(
+                pdpt_phys,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER,
+            );
+        }
+
+        let pdpt_phys = pml4_entry.addr();
+        let pdpt_virt = phys_to_virt(pdpt_phys);
+        let pdpt = unsafe { &mut *(pdpt_virt as *mut PageTable) };
+
+        let pdpt_entry = pdpt.get_entry_mut(pdpt_index);
+        if !pdpt_entry.is_present() {
+            let pd_phys = pmm.alloc_frame().ok_or("Out of memory for PD")?;
+            let pd_virt = phys_to_virt(pd_phys);
+            unsafe {
+                core::ptr::write_bytes(pd_virt as *mut u8, 0, PAGE_SIZE);
+            }
+            pdpt_entry.set(
+                pd_phys,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER,
+            );
+        }
+
+        let pd_phys = pdpt_entry.addr();
+        let pd_virt = phys_to_virt(pd_phys);
+        let pd = unsafe { &mut *(pd_virt as *mut PageTable) };
+
+        let pd_entry = pd.get_entry_mut(pd_index);
+        if !pd_entry.is_present() {
+            let pt_phys = pmm.alloc_frame().ok_or("Out of memory for PT")?;
+            let pt_virt = phys_to_virt(pt_phys);
+            unsafe {
+                core::ptr::write_bytes(pt_virt as *mut u8, 0, PAGE_SIZE);
+            }
+            pd_entry.set(
+                pt_phys,
+                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER,
+            );
+        }
+
+        let pt_phys = pd_entry.addr();
+        let pt_virt = phys_to_virt(pt_phys);
+        let pt = unsafe { &mut *(pt_virt as *mut PageTable) };
+
+        let pt_entry = pt.get_entry_mut(pt_index);
+
+        // Map page with appropriate flags
+        let mut pt_flags = PageTableFlags::PRESENT | PageTableFlags::USER;
+
+        if mapping.prot.is_writable() {
+            pt_flags |= PageTableFlags::WRITABLE;
+        }
+
+        if !mapping.prot.is_executable() {
+            pt_flags |= PageTableFlags::NO_EXECUTE;
+        }
+
+        pt_entry.set(page_phys, pt_flags);
+
+        // Flush TLB for this page
+        unsafe {
+            core::arch::asm!(
+                "invlpg [{}]",
+                in(reg) page_addr_usize,
+                options(nostack, preserves_flags)
+            );
+        }
+
+        current_page += PAGE_SIZE as u64;
+    }
+
+    // Update mapping descriptor
+    mapping.vaddr = new_start;
+    mapping.length += extension_size;
+
+    crate::serial_println!(
+        "[MMAP] Stack extended: new range [0x{:x}-0x{:x}]",
+        mapping.vaddr,
+        mapping.vaddr + mapping.length as u64
+    );
+
+    Ok(())
+}
+
+/// Find memory mapping for a given address
+///
+/// This function searches the current process's mmap table for a mapping
+/// that contains the given address.
+///
+/// # Arguments
+/// * `addr` - Virtual address to search for
+///
+/// # Returns
+/// Some(mapping) if found, None otherwise
+pub fn find_mapping_for_addr(addr: u64) -> Option<MemoryMapping> {
+    let pid = crate::sched::get_current_task_info()
+        .map(|info| info.0 as u64)
+        .unwrap_or(1);
+
+    let manager = get_mmap_manager();
+    let table = manager.get_table(pid)?;
+    table.find_mapping(addr)
 }

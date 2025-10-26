@@ -1268,6 +1268,11 @@ impl FileDescriptor {
             status_flags,
         }
     }
+
+    /// Get a reference to the FD type
+    pub fn fd_type(&self) -> &FdType {
+        &self.fd_type
+    }
 }
 
 /// Maximum number of file descriptors per process

@@ -223,7 +223,11 @@ fn handle_cow_fault(fault_addr: u64) -> Result<(), &'static str> {
 /// Handle page fault in user space
 ///
 /// User space page faults indicate that a user process accessed invalid memory.
-/// This function first checks if it's a COW fault, and if not, terminates the process.
+/// This function checks for:
+/// 1. COW faults (write to present COW page)
+/// 2. File-backed mapping faults (access to unmapped page in file-backed region)
+/// 3. MAP_GROWSDOWN faults (stack expansion)
+/// If none of these, terminates the process.
 ///
 /// # Arguments
 /// * `fault_addr` - Faulting virtual address
@@ -255,7 +259,85 @@ fn handle_user_page_fault(fault_addr: u64, error_code: u64, rip: u64) {
                     cpu_id,
                     e
                 );
-                // Fall through to normal fault handling
+                // Fall through to check other fault types
+            }
+        }
+    }
+
+    // Check if this is a fault in a file-backed mapping (page not present)
+    if !is_present {
+        use crate::mm::mmap::find_mapping_for_addr;
+
+        if let Some(mapping) = find_mapping_for_addr(fault_addr) {
+            serial_println!(
+                "[FAULT][cpu{}] Fault in memory mapping at 0x{:x}",
+                cpu_id,
+                fault_addr
+            );
+
+            // Check if this is a MAP_GROWSDOWN mapping
+            if mapping.flags.is_growsdown() {
+                // Try to handle stack expansion
+                use crate::mm::mmap::handle_growsdown_fault;
+
+                // We need a mutable reference, so we'll need to get it from the table
+                let pid = crate::sched::get_current_task_info()
+                    .map(|info| info.0 as u64)
+                    .unwrap_or(1);
+
+                let manager = crate::mm::mmap::get_mmap_manager();
+                if let Some(table) = manager.get_table(pid) {
+                    // Find the mapping
+                    for lock in table.mappings.iter() {
+                        let mut m = lock.write();
+                        if m.contains(fault_addr)
+                            || (m.flags.is_growsdown() && fault_addr < m.vaddr)
+                        {
+                            match handle_growsdown_fault(fault_addr, &mut m) {
+                                Ok(()) => {
+                                    serial_println!(
+                                        "[FAULT][cpu{}] MAP_GROWSDOWN fault handled at 0x{:x}",
+                                        cpu_id,
+                                        fault_addr
+                                    );
+                                    return;
+                                }
+                                Err(e) => {
+                                    serial_println!(
+                                        "[FAULT][cpu{}] MAP_GROWSDOWN fault failed: {}",
+                                        cpu_id,
+                                        e
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Check if this is a file-backed mapping
+            if mapping.is_file_backed() {
+                use crate::mm::mmap::handle_file_mapping_fault;
+
+                match handle_file_mapping_fault(fault_addr, &mapping) {
+                    Ok(()) => {
+                        serial_println!(
+                            "[FAULT][cpu{}] File-backed mapping fault handled at 0x{:x}",
+                            cpu_id,
+                            fault_addr
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        serial_println!(
+                            "[FAULT][cpu{}] File-backed mapping fault failed: {}",
+                            cpu_id,
+                            e
+                        );
+                        // Fall through to terminate process
+                    }
+                }
             }
         }
     }
