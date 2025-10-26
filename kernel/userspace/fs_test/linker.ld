@@ -16,6 +16,14 @@ SECTIONS
         *(.data .data.*)
     }
 
+    .got : {
+        *(.got .got.*)
+    }
+
+    .got.plt : {
+        *(.got.plt .got.plt.*)
+    }
+
     .bss : {
         *(.bss .bss.*)
         *(COMMON)

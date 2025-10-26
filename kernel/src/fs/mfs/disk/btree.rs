@@ -357,7 +357,7 @@ impl BtreeOps {
     ///
     /// Returns the value if found, or None if not found.
     pub fn search(&self, root: &BtreeNode, key: &[u8]) -> Option<Vec<u8>> {
-        let mut current = root;
+        let current = root;
         
         loop {
             // Binary search for key in current node
@@ -372,7 +372,7 @@ impl BtreeOps {
                         return None;
                     }
                 }
-                Err(index) => {
+                Err(_index) => {
                     // Key not found in this node
                     if current.is_leaf() {
                         return None;

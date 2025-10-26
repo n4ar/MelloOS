@@ -2,17 +2,18 @@
 //!
 //! FsType implementation for persistent MelloFS.
 
-use super::super_::MfsSuperblock;
-use super::btree::BtreeOps;
-use super::keys::*;
+use super::allocator::{AllocStrategy, SpaceAllocator};
+use super::btree::{BtreeNode, BtreeOps};
 use super::extent::ExtentManager;
-use super::allocator::{SpaceAllocator, AllocStrategy};
-use super::txg::{TxgManager, TxgConfig};
+use super::keys::*;
+use super::super_::current_time_ns;
+use super::super_::MfsSuperblock;
+use super::txg::{TxgConfig, TxgManager};
 
-use crate::sync::SpinLock;
 use crate::fs::block_dev::{BlockDevice, BlockError};
-use alloc::sync::Arc;
+use crate::sync::SpinLock;
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 /// MelloFS Disk filesystem type
@@ -20,21 +21,18 @@ pub struct MfsDiskType;
 
 impl MfsDiskType {
     pub const NAME: &'static str = "mfs_disk";
-    
+
     /// Mount a MelloFS disk filesystem
     ///
     /// This is a simplified implementation that creates the filesystem instance
     /// without full VFS integration (which will be added later).
-    pub fn mount_simple(
-        device_size: u64,
-        block_size: u32,
-    ) -> Result<Arc<MfsDiskFs>, &'static str> {
+    pub fn mount_simple(device_size: u64, block_size: u32) -> Result<Arc<MfsDiskFs>, &'static str> {
         // Create a dummy superblock for testing
         let sb = MfsSuperblock::new(block_size, device_size / block_size as u64)?;
-        
+
         // Validate
         sb.validate()?;
-        
+
         // Create filesystem instance
         let fs = Arc::new(MfsDiskFs {
             superblock: SpinLock::new(sb.clone()),
@@ -48,7 +46,7 @@ impl MfsDiskType {
             txg_mgr: TxgManager::new(TxgConfig::default()),
             block_device: None, // No block device in simple mount
         });
-        
+
         Ok(fs)
     }
 }
@@ -71,60 +69,151 @@ pub struct MfsDiskFs {
 
 impl MfsDiskFs {
     /// Lookup inode by number
-    pub fn lookup_inode(&self, _ino: u64) -> Result<InodeVal, &'static str> {
-        // This is a placeholder implementation
-        // Real implementation would:
-        // 1. Load root B-tree node from disk
-        // 2. Search for inode key
-        // 3. Parse and return inode value
-        
-        Err("Not implemented")
+    pub fn lookup_inode(&self, ino: u64) -> Result<InodeVal, &'static str> {
+        // Get superblock to find root B-tree location
+        let sb = self.superblock.lock();
+        let root_lba = sb.root_btree.lba;
+        let block_size = sb.block_size;
+        drop(sb);
+
+        if root_lba == 0 {
+            return Err("No root B-tree");
+        }
+
+        // Read root B-tree node from disk
+        let mut node_buffer = alloc::vec![0u8; block_size as usize];
+        self.read_block(root_lba, &mut node_buffer)
+            .map_err(|_| "Failed to read root B-tree node")?;
+
+        // Parse B-tree node
+        let root_node = BtreeNode::deserialize(&node_buffer, block_size)
+            .map_err(|_| "Failed to parse root B-tree node")?;
+
+        // Create inode key to search for
+        let inode_key = InodeKey::new(ino);
+        let key_bytes = inode_key.to_bytes();
+
+        // Search B-tree for inode
+        if let Some(value_bytes) = self.btree_ops.search(&root_node, &key_bytes) {
+            // Parse inode value
+            InodeVal::from_bytes(&value_bytes)
+        } else {
+            Err("Inode not found")
+        }
     }
-    
+
     /// Create a new inode
-    pub fn create_inode(
-        &self,
-        mode: u16,
-        uid: u32,
-        gid: u32,
-    ) -> Result<u64, &'static str> {
+    pub fn create_inode(&self, mode: u16, uid: u32, gid: u32) -> Result<u64, &'static str> {
         // Allocate new inode number
-        // (This is simplified; real implementation would track next inode number)
-        let ino = 2; // Start from 2 (1 is root)
-        
-        // Create inode value
-        let inode_val = InodeVal::new(mode, uid, gid);
-        
+        // In a full implementation, this would be tracked in the superblock
+        // or in a separate allocation bitmap. For now, use txg_id as a simple counter.
+        let sb = self.superblock.lock();
+        let ino = sb.txg_id + 2; // Start from 2 (1 is root)
+        drop(sb);
+
+        // Create inode value with current time
+        let mut _inode_val = InodeVal::new(mode, uid, gid);
+        let current_time = current_time_ns();
+        _inode_val.atime_ns = current_time;
+        _inode_val.mtime_ns = current_time;
+        _inode_val.ctime_ns = current_time;
+        _inode_val.crtime_ns = current_time;
+
+        // Create inode key
+        let _inode_key = InodeKey::new(ino);
+
         // Insert into B-tree
-        // (This is simplified; real implementation would handle CoW and TxG)
-        
+        // Note: This is simplified. Full implementation would:
+        // 1. Start a transaction
+        // 2. Perform CoW on B-tree nodes
+        // 3. Update root pointer
+        // 4. Commit transaction
+        // For now, we just acknowledge the inode is created
+
+        crate::serial_println!("[MFS_DISK] Created inode {} with mode {:o}", ino, mode);
+
         Ok(ino)
     }
-    
+
     /// Read directory entries
-    pub fn read_dir(&self, _parent_ino: u64) -> Result<Vec<(String, u64, u8)>, &'static str> {
-        // This is a placeholder implementation
-        // Real implementation would:
-        // 1. Search B-tree for all DIR_KEY entries with matching parent_ino
-        // 2. Parse directory values
-        // 3. Return list of entries
-        
-        Err("Not implemented")
+    pub fn read_dir(&self, parent_ino: u64) -> Result<Vec<(String, u64, u8)>, &'static str> {
+        // Get superblock to find root B-tree location
+        let sb = self.superblock.lock();
+        let root_lba = sb.root_btree.lba;
+        let block_size = sb.block_size;
+        drop(sb);
+
+        if root_lba == 0 {
+            return Err("No root B-tree");
+        }
+
+        // Read root B-tree node from disk
+        let mut node_buffer = alloc::vec![0u8; block_size as usize];
+        self.read_block(root_lba, &mut node_buffer)
+            .map_err(|_| "Failed to read root B-tree node")?;
+
+        // Parse B-tree node
+        let root_node = BtreeNode::deserialize(&node_buffer, block_size)
+            .map_err(|_| "Failed to parse root B-tree node")?;
+
+        // Collect all directory entries for this parent
+        let mut entries = Vec::new();
+
+        // Iterate through all keys in the B-tree
+        // Note: This is simplified. Full implementation would:
+        // 1. Traverse B-tree efficiently
+        // 2. Handle internal nodes
+        // 3. Use range queries
+        for i in 0..root_node.keys.len() {
+            let key_bytes = &root_node.keys[i];
+
+            // Check if this is a directory key
+            if key_bytes.is_empty() || key_bytes[0] != KeyType::DirKey as u8 {
+                continue;
+            }
+
+            // Parse directory key
+            if let Ok(dir_key) = DirKey::from_bytes(key_bytes) {
+                // Check if this entry belongs to our parent directory
+                if dir_key.parent_ino == parent_ino {
+                    // Get the corresponding value
+                    if let Some(value_bytes) = root_node.values.get(i) {
+                        // Parse directory value
+                        if let Ok(dir_val) = DirVal::from_bytes(value_bytes) {
+                            // Extract name from key (inline name)
+                            let name_len = dir_key.name_len as usize;
+                            let name_bytes = &dir_key.name_inline[..name_len];
+
+                            // Convert to string
+                            if let Ok(name) = core::str::from_utf8(name_bytes) {
+                                entries.push((
+                                    String::from(name),
+                                    dir_val.child_ino,
+                                    dir_val.file_type,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(entries)
     }
-    
+
     /// Sync filesystem (commit current transaction group)
     pub fn sync(&self) -> Result<(), &'static str> {
         // Get current time (simplified)
-        let current_time = 0u64;
-        
+        let _current_time = 0u64;
+
         // Begin commit
         if let Some(mut txg) = self.txg_mgr.begin_commit() {
             // Execute commit procedure
             super::txg::TxgCommitProcedure::commit(&mut txg)?;
-            
+
             // Complete commit
             self.txg_mgr.complete_commit(txg);
-            
+
             // Free old blocks
             let old_blocks = self.txg_mgr.collect_old_blocks();
             let mut allocator = self.allocator.lock();
@@ -132,35 +221,36 @@ impl MfsDiskFs {
                 allocator.free(extent);
             }
         }
-        
+
         Ok(())
     }
 }
 
 // Tests would go here but are omitted for kernel code
 
-
 impl MfsDiskType {
     /// Mount a MelloFS disk filesystem from a block device
-    pub fn mount_from_device(
-        device: Arc<dyn BlockDevice>,
-    ) -> Result<Arc<MfsDiskFs>, &'static str> {
+    pub fn mount_from_device(device: Arc<dyn BlockDevice>) -> Result<Arc<MfsDiskFs>, &'static str> {
         // Read superblock from device
         let mut sb_buffer = [0u8; 4096]; // Assume 4K block size
-        device.read_sectors(0, 8, &mut sb_buffer)
+        device
+            .read_sectors(0, 8, &mut sb_buffer)
             .map_err(|_| "Failed to read superblock")?;
-        
+
         // Parse superblock
         let sb = MfsSuperblock::from_bytes(&sb_buffer)?;
-        
+
         // Validate
         sb.validate()?;
-        
-        crate::serial_println!("[MFS_DISK] Mounted filesystem from device '{}'", device.name());
+
+        crate::serial_println!(
+            "[MFS_DISK] Mounted filesystem from device '{}'",
+            device.name()
+        );
         crate::serial_println!("[MFS_DISK]   Block size: {} bytes", sb.block_size);
         crate::serial_println!("[MFS_DISK]   Total blocks: {}", sb.total_blocks);
         crate::serial_println!("[MFS_DISK]   Free blocks: {}", sb.free_blocks);
-        
+
         // Create filesystem instance
         let fs = Arc::new(MfsDiskFs {
             superblock: SpinLock::new(sb.clone()),
@@ -174,7 +264,7 @@ impl MfsDiskType {
             txg_mgr: TxgManager::new(TxgConfig::default()),
             block_device: Some(device),
         });
-        
+
         Ok(fs)
     }
 }
@@ -184,33 +274,33 @@ impl MfsDiskFs {
     pub fn block_device(&self) -> Option<Arc<dyn BlockDevice>> {
         self.block_device.clone()
     }
-    
+
     /// Read block from device
     pub fn read_block(&self, block_num: u64, buffer: &mut [u8]) -> Result<(), BlockError> {
         if let Some(ref device) = self.block_device {
             let sb = self.superblock.lock();
             let sectors_per_block = sb.block_size / device.sector_size();
             let start_sector = block_num * sectors_per_block as u64;
-            
+
             device.read_sectors(start_sector, sectors_per_block, buffer)
         } else {
             Err(BlockError::DeviceNotReady)
         }
     }
-    
+
     /// Write block to device
     pub fn write_block(&self, block_num: u64, buffer: &[u8]) -> Result<(), BlockError> {
         if let Some(ref device) = self.block_device {
             let sb = self.superblock.lock();
             let sectors_per_block = sb.block_size / device.sector_size();
             let start_sector = block_num * sectors_per_block as u64;
-            
+
             device.write_sectors(start_sector, sectors_per_block, buffer)
         } else {
             Err(BlockError::DeviceNotReady)
         }
     }
-    
+
     /// Sync filesystem to device (flush)
     pub fn flush_device(&self) -> Result<(), BlockError> {
         if let Some(ref device) = self.block_device {

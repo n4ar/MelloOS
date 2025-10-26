@@ -31,18 +31,24 @@ pub mod signals {
     /// Kill (cannot be caught)
     pub const SIGKILL: Signal = 9;
     /// User-defined signal 1
+    #[allow(dead_code)]
     pub const SIGUSR1: Signal = 10;
     /// Segmentation fault
     pub const SIGSEGV: Signal = 11;
     /// User-defined signal 2
+    #[allow(dead_code)]
     pub const SIGUSR2: Signal = 12;
     /// Broken pipe
+    #[allow(dead_code)]
     pub const SIGPIPE: Signal = 13;
     /// Alarm clock
+    #[allow(dead_code)]
     pub const SIGALRM: Signal = 14;
     /// Termination
+    #[allow(dead_code)]
     pub const SIGTERM: Signal = 15;
     /// Stack fault
+    #[allow(dead_code)]
     pub const SIGSTKFLT: Signal = 16;
     /// Child stopped or terminated
     pub const SIGCHLD: Signal = 17;
@@ -59,18 +65,24 @@ pub mod signals {
     /// Urgent condition on socket
     pub const SIGURG: Signal = 23;
     /// CPU time limit exceeded
+    #[allow(dead_code)]
     pub const SIGXCPU: Signal = 24;
     /// File size limit exceeded
+    #[allow(dead_code)]
     pub const SIGXFSZ: Signal = 25;
     /// Virtual alarm clock
+    #[allow(dead_code)]
     pub const SIGVTALRM: Signal = 26;
     /// Profiling timer expired
+    #[allow(dead_code)]
     pub const SIGPROF: Signal = 27;
     /// Window size change
     pub const SIGWINCH: Signal = 28;
     /// I/O now possible
+    #[allow(dead_code)]
     pub const SIGIO: Signal = 29;
     /// Power failure
+    #[allow(dead_code)]
     pub const SIGPWR: Signal = 30;
     /// Bad system call
     pub const SIGSYS: Signal = 31;
@@ -81,6 +93,7 @@ pub mod signals {
 
 /// Signal handler type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum SigHandler {
     /// Use default signal action
     Default,
@@ -91,6 +104,7 @@ pub enum SigHandler {
 }
 
 /// Signal action flags
+#[allow(dead_code)]
 pub mod sa_flags {
     /// Don't add signal to mask while executing handler
     pub const SA_NODEFER: u32 = 0x4000_0000;
@@ -114,8 +128,10 @@ pub struct SigAction {
     /// Signal handler
     pub handler: SigHandler,
     /// Signals to block while handler executes
+    #[allow(dead_code)]
     pub mask: u64,
     /// Signal action flags
+    #[allow(dead_code)]
     pub flags: u32,
 }
 
@@ -139,6 +155,7 @@ impl SigAction {
     }
 
     /// Create a signal action with a custom handler
+    #[allow(dead_code)]
     pub fn custom(handler_addr: usize, mask: u64, flags: u32) -> Self {
         Self {
             handler: SigHandler::Custom(handler_addr),
@@ -150,6 +167,7 @@ impl SigAction {
 
 /// Default signal actions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum DefaultAction {
     /// Terminate the process
     Terminate,
@@ -164,6 +182,7 @@ pub enum DefaultAction {
 }
 
 /// Get the default action for a signal
+#[allow(dead_code)]
 pub fn default_action(signal: Signal) -> DefaultAction {
     use signals::*;
 
@@ -184,6 +203,7 @@ pub fn is_catchable(signal: Signal) -> bool {
 }
 
 /// Signal mask operations
+#[allow(dead_code)]
 pub mod sigmask {
     /// Block signals (add to mask)
     pub const SIG_BLOCK: i32 = 0;
@@ -214,6 +234,7 @@ pub mod sigmask {
 /// // Send SIGINT to a task
 /// send_signal_to_task(&task, signals::SIGINT);
 /// ```
+#[allow(dead_code)]
 pub fn send_signal_to_task(task: &crate::sched::task::Task, signal: Signal) -> bool {
     // Validate signal number
     if signal == 0 || signal >= signals::MAX_SIGNAL {
@@ -236,6 +257,7 @@ pub fn send_signal_to_task(task: &crate::sched::task::Task, signal: Signal) -> b
 /// # Note
 /// This function requires access to the task table and process group table.
 /// The actual implementation will be in the scheduler module.
+#[allow(dead_code)]
 pub fn send_signal_to_group(pgid: usize, signal: Signal) {
     // This is a placeholder - actual implementation will be in scheduler
     // where we have access to the task table
@@ -297,6 +319,7 @@ pub fn send_signal(task: &mut crate::sched::task::Task, signal: Signal) -> Resul
 /// # Returns
 /// Some(signal_number) if a signal was delivered and needs special handling,
 /// None if no signals were delivered or they were handled normally
+#[allow(dead_code)]
 pub fn deliver_pending_signals(task: &mut crate::sched::task::Task) -> Option<Signal> {
     use signals::*;
 
@@ -377,6 +400,7 @@ pub fn deliver_pending_signals(task: &mut crate::sched::task::Task) -> Option<Si
 ///
 /// # Returns
 /// Ok(()) if the frame was setup successfully, Err if stack setup failed
+#[allow(dead_code)]
 pub fn setup_signal_frame(
     _task: &mut crate::sched::task::Task,
     _signal: Signal,
@@ -388,7 +412,7 @@ pub fn setup_signal_frame(
     // 2. Setup stack to call signal handler
     // 3. Setup return trampoline (sigreturn)
     // 4. Modify task context to jump to handler
-    
+
     // For now, just return Ok - this will be implemented when we have
     // proper user stack management
     Ok(())

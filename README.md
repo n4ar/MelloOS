@@ -1229,6 +1229,7 @@ Comprehensive documentation is available in the `docs/` directory:
 - **[API Guide](docs/development/api-guide.md)**: API usage examples and best practices
 - **[Testing Guide](docs/development/testing.md)**: Testing procedures and verification
 - **[Build System Integration](docs/BUILD_SYSTEM_INTEGRATION.md)**: Build system documentation
+- **[Debugging Guide](docs/development/DEBUGGING_GUIDE.md)**: ⭐ Complete guide to debugging with GDB and VS Code
 
 ### Troubleshooting & Debugging
 - **[Troubleshooting Guide](docs/troubleshooting/troubleshooting.md)**: Common issues and solutions
@@ -1239,6 +1240,7 @@ Comprehensive documentation is available in the `docs/` directory:
 
 ### Tools & Utilities
 - **[Tools Documentation](tools/README.md)**: Development tools reference
+- **[Debug Tools](tools/debug/)**: GDB scripts and debugging utilities
 - **[QEMU Scripts](tools/qemu/)**: Virtualization and testing scripts
 - **[Testing Scripts](tools/testing/)**: Automated test suites
 

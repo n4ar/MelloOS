@@ -10,15 +10,19 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::RwLock;
 
 /// Minimum batch size for write-back (128 KiB)
-pub const MIN_WRITEBACK_BATCH: usize = 128 * 1024;
+#[allow(dead_code)]
+const MIN_WRITEBACK_BATCH: usize = 128 * 1024;
 
 /// Maximum batch size for write-back (1024 KiB = 1 MiB)
-pub const MAX_WRITEBACK_BATCH: usize = 1024 * 1024;
+#[allow(dead_code)]
+const MAX_WRITEBACK_BATCH: usize = 1024 * 1024;
 
 /// Default writeback deadline in milliseconds (30 seconds)
-pub const DEFAULT_WRITEBACK_DEADLINE_MS: u64 = 30_000;
+#[allow(dead_code)]
+const DEFAULT_WRITEBACK_DEADLINE_MS: u64 = 30_000;
 
 /// Writeback configuration
+#[allow(dead_code)]
 pub struct WritebackConfig {
     /// Minimum batch size in bytes
     pub min_batch_size: usize,
@@ -44,6 +48,7 @@ impl WritebackConfig {
 
 /// Dirty page descriptor for writeback
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub struct DirtyPage {
     /// Inode number
     pub inode: u64,
@@ -55,6 +60,7 @@ pub struct DirtyPage {
 
 /// Writeback batch - a group of adjacent dirty pages
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub struct WritebackBatch {
     /// Inode number
     pub inode: u64,
@@ -103,6 +109,7 @@ impl WritebackBatch {
 }
 
 /// Writeback scheduler state
+#[allow(dead_code)]
 pub struct WritebackScheduler {
     /// Configuration
     config: RwLock<WritebackConfig>,
@@ -116,6 +123,7 @@ pub struct WritebackScheduler {
 
 impl WritebackScheduler {
     /// Create a new writeback scheduler
+    #[allow(dead_code)]
     pub const fn new() -> Self {
         Self {
             config: RwLock::new(WritebackConfig::default()),
@@ -126,47 +134,56 @@ impl WritebackScheduler {
     }
 
     /// Start the writeback scheduler
+    #[allow(dead_code)]
     pub fn start(&self) {
         self.running.store(true, Ordering::Release);
         // TODO: Spawn background flusher thread when task scheduler supports it
     }
 
     /// Stop the writeback scheduler
+    #[allow(dead_code)]
     pub fn stop(&self) {
         self.running.store(false, Ordering::Release);
     }
 
     /// Check if scheduler is running
+    #[allow(dead_code)]
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Acquire)
     }
 
     /// Trigger immediate flush (for sync syscall)
+    #[allow(dead_code)]
     pub fn trigger_flush(&self) {
         self.force_flush.store(true, Ordering::Release);
     }
 
     /// Check if immediate flush is requested
+    #[allow(dead_code)]
     pub fn should_flush_now(&self) -> bool {
         self.force_flush.load(Ordering::Acquire)
     }
 
     /// Clear flush flag
+    #[allow(dead_code)]
     pub fn clear_flush_flag(&self) {
         self.force_flush.store(false, Ordering::Release);
     }
 
     /// Update last flush timestamp
+    #[allow(dead_code)]
     pub fn update_last_flush(&self, timestamp: u64) {
         self.last_flush.store(timestamp, Ordering::Release);
     }
 
     /// Get last flush timestamp
+    #[allow(dead_code)]
     pub fn last_flush(&self) -> u64 {
         self.last_flush.load(Ordering::Acquire)
     }
 
     /// Check if deadline has passed
+    #[allow(dead_code)]
     pub fn is_deadline_passed(&self, current_time: u64) -> bool {
         let last = self.last_flush.load(Ordering::Acquire);
         let config = self.config.read();
@@ -174,6 +191,7 @@ impl WritebackScheduler {
     }
 
     /// Get configuration
+    #[allow(dead_code)]
     pub fn config(&self) -> WritebackConfig {
         let config = self.config.read();
         WritebackConfig {
@@ -185,6 +203,7 @@ impl WritebackScheduler {
     }
 
     /// Update configuration
+    #[allow(dead_code)]
     pub fn set_config(&self, config: WritebackConfig) {
         *self.config.write() = config;
     }
@@ -193,9 +212,11 @@ impl WritebackScheduler {
 use spin::Once;
 
 /// Global writeback scheduler
+#[allow(dead_code)]
 static WRITEBACK_SCHEDULER: Once<WritebackScheduler> = Once::new();
 
 /// Get the global writeback scheduler
+#[allow(dead_code)]
 pub fn get_writeback_scheduler() -> &'static WritebackScheduler {
     WRITEBACK_SCHEDULER.call_once(|| WritebackScheduler::new())
 }
@@ -204,6 +225,7 @@ pub fn get_writeback_scheduler() -> &'static WritebackScheduler {
 ///
 /// This function takes a list of dirty pages and groups adjacent pages
 /// into batches for efficient I/O.
+#[allow(dead_code)]
 pub fn coalesce_dirty_pages(
     dirty_pages: &[(u64, u64)], // (inode, page_num)
     page_size: usize,
@@ -225,7 +247,9 @@ pub fn coalesce_dirty_pages(
     for &(inode, page_num) in dirty_pages {
         if let Some(ref mut batch) = current_batch {
             // Try to add to current batch
-            if batch.inode == inode && batch.try_add_page(page_num, page_size, config.max_batch_size) {
+            if batch.inode == inode
+                && batch.try_add_page(page_num, page_size, config.max_batch_size)
+            {
                 continue;
             }
 
@@ -263,6 +287,7 @@ pub fn coalesce_dirty_pages(
 /// Flush dirty pages for a specific inode
 ///
 /// This is called by the background flusher or on explicit sync
+#[allow(dead_code)]
 pub fn flush_inode_pages(_inode: u64) -> Result<(), &'static str> {
     // TODO: Implement actual flushing when filesystem is ready
     // This will:
@@ -276,6 +301,7 @@ pub fn flush_inode_pages(_inode: u64) -> Result<(), &'static str> {
 /// Flush all dirty pages
 ///
 /// This is called on sync syscall
+#[allow(dead_code)]
 pub fn flush_all_pages() -> Result<(), &'static str> {
     // TODO: Implement when filesystem is ready
     Ok(())

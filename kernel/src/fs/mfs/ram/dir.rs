@@ -170,7 +170,7 @@ impl RamInode {
     }
 
     /// Create a hard link (trait version - tries to downcast)
-    pub fn dir_link(&self, name: &str, _target: Arc<dyn Inode>) -> Result<(), FsError> {
+    pub fn dir_link(&self, _name: &str, _target: Arc<dyn Inode>) -> Result<(), FsError> {
         // For now, return NotSupported since we can't safely downcast Arc<dyn Inode> to Arc<RamInode>
         // This method is only used for hardlinks, not for create()
         Err(FsError::NotSupported)

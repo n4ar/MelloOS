@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 /// Compression algorithm types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[allow(dead_code)]
 pub enum CompressionType {
     /// No compression
     None = 0,
@@ -19,6 +20,7 @@ pub enum CompressionType {
 
 impl CompressionType {
     /// Create from u8 value
+    #[allow(dead_code)]
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(CompressionType::None),
@@ -27,8 +29,9 @@ impl CompressionType {
             _ => None,
         }
     }
-    
+
     /// Convert to u8 value
+    #[allow(dead_code)]
     pub fn to_u8(self) -> u8 {
         self as u8
     }
@@ -36,6 +39,7 @@ impl CompressionType {
 
 /// Compression result
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum CompressionResult {
     /// Data was compressed successfully
     Compressed {
@@ -49,6 +53,7 @@ pub enum CompressionResult {
 
 /// Compression error
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum CompressionError {
     /// Compression failed
     CompressionFailed,
@@ -63,7 +68,8 @@ pub enum CompressionError {
 /// Minimum size for compression (4 KiB)
 ///
 /// Extents smaller than this are not compressed to avoid overhead.
-pub const MIN_COMPRESSION_SIZE: usize = 4096;
+#[allow(dead_code)]
+const MIN_COMPRESSION_SIZE: usize = 4096;
 
 /// Compress data using the specified algorithm
 ///
@@ -73,12 +79,16 @@ pub const MIN_COMPRESSION_SIZE: usize = 4096;
 ///
 /// # Returns
 /// CompressionResult indicating success or failure
-pub fn compress(data: &[u8], compression_type: CompressionType) -> Result<CompressionResult, CompressionError> {
+#[allow(dead_code)]
+pub fn compress(
+    data: &[u8],
+    compression_type: CompressionType,
+) -> Result<CompressionResult, CompressionError> {
     // Skip compression for small data
     if data.len() < MIN_COMPRESSION_SIZE {
         return Ok(CompressionResult::Uncompressed);
     }
-    
+
     match compression_type {
         CompressionType::None => Ok(CompressionResult::Uncompressed),
         CompressionType::Lz4 => compress_lz4(data),
@@ -95,6 +105,7 @@ pub fn compress(data: &[u8], compression_type: CompressionType) -> Result<Compre
 ///
 /// # Returns
 /// Decompressed data
+#[allow(dead_code)]
 pub fn decompress(
     compressed_data: &[u8],
     compression_type: CompressionType,
@@ -117,9 +128,9 @@ pub fn decompress(
 fn compress_lz4(data: &[u8]) -> Result<CompressionResult, CompressionError> {
     // For now, implement a simple run-length encoding as a placeholder
     // A real implementation would use proper LZ4 algorithm
-    
+
     let compressed = simple_rle_compress(data);
-    
+
     // Only use compression if it actually reduces size
     if compressed.len() < data.len() {
         Ok(CompressionResult::Compressed {
@@ -133,14 +144,17 @@ fn compress_lz4(data: &[u8]) -> Result<CompressionResult, CompressionError> {
 }
 
 /// LZ4 decompression
-fn decompress_lz4(compressed_data: &[u8], original_size: usize) -> Result<Vec<u8>, CompressionError> {
+fn decompress_lz4(
+    compressed_data: &[u8],
+    original_size: usize,
+) -> Result<Vec<u8>, CompressionError> {
     // Decompress using simple RLE
     let decompressed = simple_rle_decompress(compressed_data, original_size)?;
-    
+
     if decompressed.len() != original_size {
         return Err(CompressionError::DecompressionFailed);
     }
-    
+
     Ok(decompressed)
 }
 
@@ -151,9 +165,9 @@ fn decompress_lz4(compressed_data: &[u8], original_size: usize) -> Result<Vec<u8
 fn compress_zstd(data: &[u8]) -> Result<CompressionResult, CompressionError> {
     // For now, use the same simple RLE as LZ4
     // A real implementation would use proper Zstd algorithm
-    
+
     let compressed = simple_rle_compress(data);
-    
+
     // Zstd typically achieves better compression than LZ4
     // For the placeholder, we just use the same algorithm
     if compressed.len() < data.len() {
@@ -168,14 +182,17 @@ fn compress_zstd(data: &[u8]) -> Result<CompressionResult, CompressionError> {
 }
 
 /// Zstd decompression
-fn decompress_zstd(compressed_data: &[u8], original_size: usize) -> Result<Vec<u8>, CompressionError> {
+fn decompress_zstd(
+    compressed_data: &[u8],
+    original_size: usize,
+) -> Result<Vec<u8>, CompressionError> {
     // Decompress using simple RLE
     let decompressed = simple_rle_decompress(compressed_data, original_size)?;
-    
+
     if decompressed.len() != original_size {
         return Err(CompressionError::DecompressionFailed);
     }
-    
+
     Ok(decompressed)
 }
 
@@ -186,60 +203,60 @@ fn decompress_zstd(compressed_data: &[u8], original_size: usize) -> Result<Vec<u
 /// to demonstrate the compression interface.
 fn simple_rle_compress(data: &[u8]) -> Vec<u8> {
     let mut compressed = Vec::new();
-    
+
     if data.is_empty() {
         return compressed;
     }
-    
+
     let mut i = 0;
     while i < data.len() {
         let byte = data[i];
         let mut count = 1u8;
-        
+
         // Count consecutive identical bytes (max 255)
-        while i + (count as usize) < data.len() 
-            && data[i + (count as usize)] == byte 
-            && count < 255 {
+        while i + (count as usize) < data.len() && data[i + (count as usize)] == byte && count < 255
+        {
             count += 1;
         }
-        
+
         // Write count and byte
         compressed.push(count);
         compressed.push(byte);
-        
+
         i += count as usize;
     }
-    
+
     compressed
 }
 
 /// Simple run-length decoding
 fn simple_rle_decompress(compressed: &[u8], max_size: usize) -> Result<Vec<u8>, CompressionError> {
     let mut decompressed = Vec::new();
-    
+
     let mut i = 0;
     while i + 1 < compressed.len() {
         let count = compressed[i] as usize;
         let byte = compressed[i + 1];
-        
+
         // Check for buffer overflow
         if decompressed.len() + count > max_size {
             return Err(CompressionError::BufferTooSmall);
         }
-        
+
         // Expand run
         for _ in 0..count {
             decompressed.push(byte);
         }
-        
+
         i += 2;
     }
-    
+
     Ok(decompressed)
 }
 
 /// Compression statistics
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct CompressionStats {
     /// Total bytes compressed
     pub bytes_compressed: u64,
@@ -253,6 +270,7 @@ pub struct CompressionStats {
 
 impl CompressionStats {
     /// Create new empty stats
+    #[allow(dead_code)]
     pub const fn new() -> Self {
         Self {
             bytes_compressed: 0,
@@ -261,17 +279,19 @@ impl CompressionStats {
             extents_incompressible: 0,
         }
     }
-    
+
     /// Calculate compression ratio
+    #[allow(dead_code)]
     pub fn compression_ratio(&self) -> f64 {
         if self.bytes_compressed == 0 {
             return 0.0;
         }
-        
+
         (self.bytes_after_compression as f64) / (self.bytes_compressed as f64)
     }
-    
+
     /// Calculate space saved
+    #[allow(dead_code)]
     pub fn space_saved(&self) -> u64 {
         if self.bytes_compressed > self.bytes_after_compression {
             self.bytes_compressed - self.bytes_after_compression
@@ -286,5 +306,3 @@ impl Default for CompressionStats {
         Self::new()
     }
 }
-
-

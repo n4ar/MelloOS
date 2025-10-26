@@ -55,7 +55,7 @@ impl MfsDiskSuperBlock {
 
 impl SuperBlock for MfsDiskSuperBlock {
     fn root(&self) -> Arc<dyn Inode> {
-        let mut root = self.root_inode.lock();
+        let root = self.root_inode.lock();
         
         if let Some(ref inode) = *root {
             return inode.clone();

@@ -1,6 +1,6 @@
 [package]
 name = "mellos-kernel"
-version = "0.8.0-development-p2"
+version = "0.8.0-development-p9"
 edition = "2021"
 
 [dependencies]
@@ -9,8 +9,20 @@ spin = "0.10"
 x86_64 = "0.15"
 bitflags = "2.4"
 
+# Fast development profile - optimized for compile speed
 [profile.dev]
-panic = "abort"
+opt-level = 0              # No optimization for fastest compile
+debug = 0                  # No debug symbols to reduce link time
+incremental = true         # Enable incremental compilation
+codegen-units = 256        # Maximum parallelism (was 32, increased for faster compile)
+panic = "abort"            # Avoid unwinding overhead
+split-debuginfo = "off"    # Disable debug info splitting
 
+# Release profile - optimized for size and performance
 [profile.release]
-panic = "abort"
+opt-level = "z"            # Optimize for size (good for kernel)
+codegen-units = 1          # Single unit for better optimization
+lto = "thin"               # Thin LTO for balance of speed and optimization
+panic = "abort"            # Abort on panic
+strip = true               # Strip symbols in release
+debug = false              # No debug info in release

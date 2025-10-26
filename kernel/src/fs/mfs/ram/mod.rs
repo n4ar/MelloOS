@@ -14,4 +14,4 @@ pub mod dir;
 pub mod file;
 pub mod xattr;
 
-pub use super_impl::{MfsRamType, MfsRamSuperBlock};
+pub use super_impl::MfsRamType;

@@ -191,7 +191,8 @@ fn parse_madt(rsdp_addr: u64) -> Result<MadtInfo, AcpiError> {
     let rsdp = unsafe { &*(rsdp_addr as *const Rsdp) };
 
     // Validate RSDP signature
-    if &rsdp.signature != b"RSD PTR " {
+    let rsdp_sig = unsafe { core::ptr::read_unaligned(&rsdp.signature) };
+    if &rsdp_sig != b"RSD PTR " {
         serial_println!("[ACPI] Invalid RSDP signature");
         return Err(AcpiError::InvalidRsdp);
     }
@@ -206,13 +207,27 @@ fn parse_madt(rsdp_addr: u64) -> Result<MadtInfo, AcpiError> {
     serial_println!("[ACPI] RSDP validated, revision: {}", rsdp.revision);
 
     // Determine which table to use (RSDT or XSDT)
+    serial_println!("[ACPI] Determining table type...");
     let madt_addr = if rsdp.revision >= 2 {
         // ACPI 2.0+: Use XSDT
-        let rsdp_ext = unsafe { &*(rsdp_addr as *const RsdpExtended) };
-        find_madt_in_xsdt(rsdp_ext.xsdt_address)?
+        serial_println!("[ACPI] Using XSDT (ACPI 2.0+)");
+        let xsdt_addr = unsafe {
+            let rsdp_ext_ptr = rsdp_addr as *const RsdpExtended;
+            core::ptr::read_unaligned(core::ptr::addr_of!((*rsdp_ext_ptr).xsdt_address))
+        };
+        serial_println!("[ACPI] XSDT address: 0x{:x}", xsdt_addr);
+        serial_println!("[ACPI] Calling find_madt_in_xsdt...");
+        let addr = find_madt_in_xsdt(xsdt_addr)?;
+        serial_println!("[ACPI] find_madt_in_xsdt returned: 0x{:x}", addr);
+        addr
     } else {
         // ACPI 1.0: Use RSDT
-        find_madt_in_rsdt(rsdp.rsdt_address as u64)?
+        serial_println!("[ACPI] Using RSDT (ACPI 1.0)");
+        let rsdt_addr = unsafe {
+            let rsdp_ptr = rsdp_addr as *const Rsdp;
+            core::ptr::read_unaligned(core::ptr::addr_of!((*rsdp_ptr).rsdt_address))
+        };
+        find_madt_in_rsdt(rsdt_addr as u64)?
     };
 
     serial_println!("[ACPI] MADT found at 0x{:x}", madt_addr);
@@ -226,7 +241,8 @@ fn find_madt_in_rsdt(rsdt_addr: u64) -> Result<u64, AcpiError> {
     let header = unsafe { &*(rsdt_addr as *const SdtHeader) };
 
     // Validate RSDT signature
-    if &header.signature != b"RSDT" {
+    let rsdt_sig = unsafe { core::ptr::read_unaligned(&header.signature) };
+    if &rsdt_sig != b"RSDT" {
         serial_println!("[ACPI] Invalid RSDT signature");
         return Err(AcpiError::InvalidRsdp);
     }
@@ -251,7 +267,8 @@ fn find_madt_in_rsdt(rsdt_addr: u64) -> Result<u64, AcpiError> {
     // Search for MADT
     for &entry_addr in entries {
         let entry_header = unsafe { &*(entry_addr as u64 as *const SdtHeader) };
-        if &entry_header.signature == b"APIC" {
+        let entry_sig = unsafe { core::ptr::read_unaligned(&entry_header.signature) };
+        if &entry_sig == b"APIC" {
             return Ok(entry_addr as u64);
         }
     }
@@ -262,35 +279,53 @@ fn find_madt_in_rsdt(rsdt_addr: u64) -> Result<u64, AcpiError> {
 
 /// Find MADT in XSDT (ACPI 2.0+)
 fn find_madt_in_xsdt(xsdt_addr: u64) -> Result<u64, AcpiError> {
-    let header = unsafe { &*(xsdt_addr as *const SdtHeader) };
+    serial_println!("[ACPI] find_madt_in_xsdt: Reading header at 0x{:x}", xsdt_addr);
 
+    serial_println!("[ACPI] find_madt_in_xsdt: Validating XSDT signature");
     // Validate XSDT signature
-    if &header.signature != b"XSDT" {
+    let signature = unsafe {
+        let header_ptr = xsdt_addr as *const SdtHeader;
+        core::ptr::read_unaligned(core::ptr::addr_of!((*header_ptr).signature))
+    };
+    if &signature != b"XSDT" {
         serial_println!("[ACPI] Invalid XSDT signature");
         return Err(AcpiError::InvalidRsdp);
     }
 
+    let header_length = unsafe {
+        let header_ptr = xsdt_addr as *const SdtHeader;
+        core::ptr::read_unaligned(core::ptr::addr_of!((*header_ptr).length))
+    };
+    serial_println!("[ACPI] find_madt_in_xsdt: XSDT signature valid, length={}", header_length);
+    serial_println!("[ACPI] find_madt_in_xsdt: Validating checksum");
     // Validate checksum
     let xsdt_bytes =
-        unsafe { slice::from_raw_parts(xsdt_addr as *const u8, header.length as usize) };
+        unsafe { slice::from_raw_parts(xsdt_addr as *const u8, header_length as usize) };
     if !validate_checksum(xsdt_bytes) {
         serial_println!("[ACPI] Invalid XSDT checksum");
         return Err(AcpiError::InvalidChecksum);
     }
 
+    serial_println!("[ACPI] find_madt_in_xsdt: Checksum valid");
     // Calculate number of entries
     let entries_offset = core::mem::size_of::<SdtHeader>();
-    let entries_size = header.length as usize - entries_offset;
+    let entries_size = header_length as usize - entries_offset;
     let entry_count = entries_size / 8; // 64-bit pointers
 
+    serial_println!("[ACPI] find_madt_in_xsdt: {} entries to search", entry_count);
     // Get pointer to entries array
     let entries_ptr = unsafe { (xsdt_addr as *const u8).add(entries_offset) as *const u64 };
     let entries = unsafe { slice::from_raw_parts(entries_ptr, entry_count) };
 
     // Search for MADT
-    for &entry_addr in entries {
+    serial_println!("[ACPI] find_madt_in_xsdt: Searching for MADT...");
+    for (i, &entry_addr) in entries.iter().enumerate() {
+        serial_println!("[ACPI] find_madt_in_xsdt: Checking entry {} at 0x{:x}", i, entry_addr);
         let entry_header = unsafe { &*(entry_addr as *const SdtHeader) };
-        if &entry_header.signature == b"APIC" {
+        let entry_sig = unsafe { core::ptr::read_unaligned(&entry_header.signature) };
+        serial_println!("[ACPI] find_madt_in_xsdt: Entry signature: {:?}", core::str::from_utf8(&entry_sig).unwrap_or("???"));
+        if &entry_sig == b"APIC" {
+            serial_println!("[ACPI] find_madt_in_xsdt: Found MADT!");
             return Ok(entry_addr);
         }
     }
@@ -304,7 +339,8 @@ fn parse_madt_table(madt_addr: u64) -> Result<MadtInfo, AcpiError> {
     let madt = unsafe { &*(madt_addr as *const Madt) };
 
     // Validate MADT signature
-    if &madt.header.signature != b"APIC" {
+    let madt_sig = unsafe { core::ptr::read_unaligned(&madt.header.signature) };
+    if &madt_sig != b"APIC" {
         serial_println!("[ACPI] Invalid MADT signature");
         return Err(AcpiError::InvalidMadt);
     }

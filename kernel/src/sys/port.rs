@@ -198,7 +198,8 @@ impl Port {
 /// This allows multiple CPUs to access different ports concurrently.
 pub struct PortManager {
     /// Array of optional ports (256 max)
-    pub ports: [Option<Port>; 256],
+    /// Using Box to avoid stack overflow from large Port structures
+    pub ports: [Option<alloc::boxed::Box<Port>>; 256],
 
     /// Lock for port creation/deletion
     pub table_lock: Mutex<()>,
@@ -207,7 +208,7 @@ pub struct PortManager {
 impl PortManager {
     /// Create a new PortManager with no ports initialized
     pub const fn new() -> Self {
-        const NONE_PORT: Option<Port> = None;
+        const NONE_PORT: Option<alloc::boxed::Box<Port>> = None;
         Self {
             ports: [NONE_PORT; 256],
             table_lock: Mutex::new(()),
@@ -224,17 +225,30 @@ impl PortManager {
     ///
     /// # Errors
     /// - `IpcError::InvalidPort` if port_id >= 256
+    ///
+    /// # Note
+    /// This function assumes the caller already holds the PORT_MANAGER lock.
+    /// It does NOT acquire table_lock internally to avoid deadlock.
     pub fn create_port(&mut self, port_id: usize) -> Result<(), IpcError> {
+        use crate::serial_println;
+        
+        serial_println!("[IPC] create_port: Validating port_id {}", port_id);
+        
         // Validate port ID
         if port_id >= 256 {
             return Err(IpcError::InvalidPort);
         }
 
-        // Acquire table lock
-        let _lock = self.table_lock.lock();
-
-        // Create the port
-        self.ports[port_id] = Some(Port::new(port_id));
+        serial_println!("[IPC] create_port: Calling Port::new({})", port_id);
+        
+        // Create the port on the heap to avoid stack overflow
+        let new_port = alloc::boxed::Box::new(Port::new(port_id));
+        
+        serial_println!("[IPC] create_port: Port::new returned, assigning to array");
+        
+        self.ports[port_id] = Some(new_port);
+        
+        serial_println!("[IPC] create_port: Port {} assigned successfully", port_id);
 
         Ok(())
     }
@@ -487,13 +501,24 @@ pub fn init_ipc() {
     use crate::serial_println;
 
     serial_println!("[IPC] Initializing IPC subsystem...");
+    serial_println!("[IPC] Attempting to acquire PORT_MANAGER lock...");
 
     let mut port_mgr = PORT_MANAGER.lock();
 
+    serial_println!("[IPC] PORT_MANAGER lock acquired");
+
     // Create system ports 0-15
     for port_id in 0..16 {
-        if let Err(e) = port_mgr.create_port(port_id) {
-            serial_println!("[IPC] Failed to create port {}: {:?}", port_id, e);
+        serial_println!("[IPC] About to create port {}...", port_id);
+        
+        // Create port with detailed logging
+        match port_mgr.create_port(port_id) {
+            Ok(()) => {
+                serial_println!("[IPC] Port {} created successfully", port_id);
+            }
+            Err(e) => {
+                serial_println!("[IPC] Failed to create port {}: {:?}", port_id, e);
+            }
         }
     }
 

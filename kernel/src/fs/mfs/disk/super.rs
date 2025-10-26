@@ -2,16 +2,67 @@
 //!
 //! Superblock structure and operations for persistent MelloFS.
 
-use crate::drivers::block::BlockDevice;
 use super::checksum::crc32c_u64;
+use crate::drivers::block::BlockDevice;
 use alloc::sync::Arc;
 
 /// Get current time in nanoseconds since Unix epoch
 ///
-/// For now, returns 0. A proper implementation would read from RTC or TSC.
-fn current_time_ns() -> u64 {
-    // TODO: Implement proper time reading
-    0
+/// Uses TSC (Time Stamp Counter) for high-resolution timing.
+/// Falls back to tick count if TSC is not available.
+pub fn current_time_ns() -> u64 {
+    // Try to use TSC for high-resolution timing
+    if let Some(tsc_ns) = get_tsc_time_ns() {
+        return tsc_ns;
+    }
+
+    // Fallback to tick-based timing (less accurate but always available)
+    get_tick_time_ns()
+}
+
+/// Get time from TSC (Time Stamp Counter)
+///
+/// Returns None if TSC is not available or not calibrated.
+fn get_tsc_time_ns() -> Option<u64> {
+    // Read TSC
+    let tsc = unsafe {
+        let mut low: u32;
+        let mut high: u32;
+        core::arch::asm!(
+            "rdtsc",
+            out("eax") low,
+            out("edx") high,
+            options(nomem, nostack)
+        );
+        ((high as u64) << 32) | (low as u64)
+    };
+
+    // TODO: Calibrate TSC frequency on boot
+    // For now, assume 2.4 GHz (common frequency)
+    // This should be calibrated against PIT or HPET
+    const TSC_FREQ_GHZ: u64 = 2400; // 2.4 GHz in MHz
+
+    // Convert TSC ticks to nanoseconds
+    // ns = tsc / (freq_ghz)
+    // To avoid overflow: ns = (tsc * 1000) / freq_mhz
+    let ns = tsc.wrapping_mul(1000) / TSC_FREQ_GHZ;
+
+    Some(ns)
+}
+
+/// Get time from system tick counter
+///
+/// Less accurate than TSC but always available.
+/// Assumes 100 Hz timer (10ms per tick).
+fn get_tick_time_ns() -> u64 {
+    use crate::sched::timer;
+
+    // Get current tick count
+    let ticks = timer::get_tick_count() as u64;
+
+    // Convert to nanoseconds (100 Hz = 10ms per tick = 10,000,000 ns per tick)
+    const NS_PER_TICK: u64 = 10_000_000;
+    ticks * NS_PER_TICK
 }
 
 /// Magic number for MelloFS disk format: "MFSD"
@@ -84,43 +135,43 @@ pub struct MfsSuperblock {
     pub uuid: [u8; 16],
     /// Last committed transaction group ID
     pub txg_id: u64,
-    
+
     /// Root B-tree pointer
     pub root_btree: BtreePtr,
-    
+
     /// Allocator B-tree pointer
     pub alloc_btree: BtreePtr,
-    
+
     /// Feature flags (bitfield)
     pub features: u64,
     /// Block size (4096, 8192, or 16384)
     pub block_size: u32,
     /// Reserved padding
     _reserved3: u32,
-    
+
     /// Total filesystem blocks
     pub total_blocks: u64,
     /// Free blocks count
     pub free_blocks: u64,
-    
+
     /// Creation timestamp (Unix epoch ns)
     pub created_time: u64,
     /// Last modification timestamp
     pub modified_time: u64,
     /// Last mount timestamp
     pub mounted_time: u64,
-    
+
     /// Number of times mounted
     pub mount_count: u32,
     /// Filesystem state
     pub state: u32,
-    
+
     /// Filesystem label (UTF-8, null-terminated)
     pub label: [u8; 64],
-    
+
     /// Reserved for future use
     _reserved4: [u8; 48],
-    
+
     /// CRC32C checksum of bytes 0x0000-0x00FF
     pub checksum: u64,
 }
@@ -128,14 +179,14 @@ pub struct MfsSuperblock {
 impl MfsSuperblock {
     /// Size of superblock structure
     pub const SIZE: usize = 256;
-    
+
     /// Create a new superblock with default values
     pub fn new(block_size: u32, total_blocks: u64) -> Result<Self, &'static str> {
         // Validate block size
         if !Self::is_valid_block_size(block_size) {
             return Err("Invalid block size");
         }
-        
+
         let mut sb = Self {
             magic: MFS_MAGIC,
             version: MFS_VERSION,
@@ -157,98 +208,90 @@ impl MfsSuperblock {
             _reserved4: [0; 48],
             checksum: 0,
         };
-        
+
         // Compute checksum
         sb.checksum = sb.compute_checksum();
-        
+
         Ok(sb)
     }
-    
+
     /// Check if block size is valid
     pub fn is_valid_block_size(size: u32) -> bool {
         matches!(size, BLOCK_SIZE_4K | BLOCK_SIZE_8K | BLOCK_SIZE_16K)
     }
-    
+
     /// Compute CRC32C checksum of superblock
     pub fn compute_checksum(&self) -> u64 {
         // Create a copy with checksum field zeroed
         let mut sb_copy = self.clone();
         sb_copy.checksum = 0;
-        
+
         // Compute CRC32C of first 256 bytes
-        let bytes = unsafe {
-            core::slice::from_raw_parts(
-                &sb_copy as *const _ as *const u8,
-                Self::SIZE,
-            )
-        };
-        
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&sb_copy as *const _ as *const u8, Self::SIZE) };
+
         crc32c_u64(bytes)
     }
-    
+
     /// Verify superblock checksum
     pub fn verify_checksum(&self) -> bool {
         let expected = self.checksum;
         let actual = self.compute_checksum();
         expected == actual
     }
-    
+
     /// Validate superblock structure
     pub fn validate(&self) -> Result<(), &'static str> {
         // Check magic number
         if self.magic != MFS_MAGIC {
             return Err("Invalid magic number");
         }
-        
+
         // Check version
         if self.version != MFS_VERSION {
             return Err("Unsupported version");
         }
-        
+
         // Check block size
         if !Self::is_valid_block_size(self.block_size) {
             return Err("Invalid block size");
         }
-        
+
         // Verify checksum
         if !self.verify_checksum() {
             return Err("Checksum mismatch");
         }
-        
+
         // Check total blocks
         if self.total_blocks == 0 {
             return Err("Invalid total blocks");
         }
-        
+
         // Check free blocks
         if self.free_blocks > self.total_blocks {
             return Err("Invalid free blocks count");
         }
-        
+
         Ok(())
     }
-    
+
     /// Read superblock from block device
-    pub fn read_from_device(
-        device: &Arc<dyn BlockDevice>,
-        lba: u64,
-    ) -> Result<Self, &'static str> {
+    pub fn read_from_device(device: &Arc<dyn BlockDevice>, lba: u64) -> Result<Self, &'static str> {
         // Read superblock blocks
         let mut buffer = alloc::vec![0u8; Self::SIZE];
-        device.read_block(lba, &mut buffer)
+        device
+            .read_block(lba, &mut buffer)
             .map_err(|_| "Failed to read superblock")?;
-        
+
         // Parse superblock
-        let sb = unsafe {
-            core::ptr::read(buffer.as_ptr() as *const MfsSuperblock)
-        };
-        
+        let sb = unsafe { core::ptr::read(buffer.as_ptr() as *const MfsSuperblock) };
+
         // Validate
         sb.validate()?;
-        
+
         Ok(sb)
     }
-    
+
     /// Write superblock to block device
     pub fn write_to_device(
         &mut self,
@@ -257,25 +300,22 @@ impl MfsSuperblock {
     ) -> Result<(), &'static str> {
         // Update timestamps
         self.modified_time = current_time_ns();
-        
+
         // Update checksum
         self.checksum = self.compute_checksum();
-        
+
         // Convert to bytes
-        let bytes = unsafe {
-            core::slice::from_raw_parts(
-                self as *const _ as *const u8,
-                Self::SIZE,
-            )
-        };
-        
+        let bytes =
+            unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, Self::SIZE) };
+
         // Write to device
-        device.write_block(lba, bytes)
+        device
+            .write_block(lba, bytes)
             .map_err(|_| "Failed to write superblock")?;
-        
+
         Ok(())
     }
-    
+
     /// Get secondary superblock LBA
     ///
     /// Secondary superblock is stored at the end of the device
@@ -286,24 +326,21 @@ impl MfsSuperblock {
             0 // Invalid
         }
     }
-    
+
     /// Write both primary and secondary superblocks
-    pub fn write_both(
-        &mut self,
-        device: &Arc<dyn BlockDevice>,
-    ) -> Result<(), &'static str> {
+    pub fn write_both(&mut self, device: &Arc<dyn BlockDevice>) -> Result<(), &'static str> {
         // Write primary superblock
         self.write_to_device(device, PRIMARY_SUPERBLOCK_LBA)?;
-        
+
         // Write secondary superblock
         let secondary_lba = Self::secondary_superblock_lba(self.total_blocks);
         if secondary_lba > 0 {
             self.write_to_device(device, secondary_lba)?;
         }
-        
+
         Ok(())
     }
-    
+
     /// Try to read superblock, falling back to secondary if primary fails
     pub fn read_with_fallback(
         device: &Arc<dyn BlockDevice>,
@@ -319,7 +356,7 @@ impl MfsSuperblock {
                 crate::log_warn!("MFS", "Primary superblock failed: {}, trying secondary", e);
             }
         }
-        
+
         // Try secondary superblock
         let secondary_lba = Self::secondary_superblock_lba(total_blocks);
         if secondary_lba > 0 {
@@ -333,10 +370,10 @@ impl MfsSuperblock {
                 }
             }
         }
-        
+
         Err("Both primary and secondary superblocks failed")
     }
-    
+
     /// Set filesystem label
     pub fn set_label(&mut self, label: &str) {
         let bytes = label.as_bytes();
@@ -344,7 +381,7 @@ impl MfsSuperblock {
         self.label[..len].copy_from_slice(&bytes[..len]);
         self.label[len] = 0; // Null terminator
     }
-    
+
     /// Get filesystem label
     pub fn get_label(&self) -> &str {
         // Find null terminator
@@ -353,28 +390,23 @@ impl MfsSuperblock {
     }
 }
 
-
-
-
 impl MfsSuperblock {
     /// Parse superblock from bytes
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() < Self::SIZE {
             return Err("Buffer too small for superblock");
         }
-        
+
         // Parse superblock structure
         // For now, use unsafe to cast bytes to struct
         // In production, should use proper deserialization
-        let sb = unsafe {
-            core::ptr::read(bytes.as_ptr() as *const Self)
-        };
-        
+        let sb = unsafe { core::ptr::read(bytes.as_ptr() as *const Self) };
+
         // Verify checksum
         if !sb.verify_checksum() {
             return Err("Superblock checksum mismatch");
         }
-        
+
         Ok(sb)
     }
 }

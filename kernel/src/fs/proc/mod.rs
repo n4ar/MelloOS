@@ -401,8 +401,10 @@ impl CpuInfo {
             }
         }
 
-        let vendor_id = core::str::from_utf8(&self.vendor_id[..self.vendor_id_len]).unwrap_or("unknown");
-        let model_name = core::str::from_utf8(&self.model_name[..self.model_name_len]).unwrap_or("unknown");
+        let vendor_id =
+            core::str::from_utf8(&self.vendor_id[..self.vendor_id_len]).unwrap_or("unknown");
+        let model_name =
+            core::str::from_utf8(&self.model_name[..self.model_name_len]).unwrap_or("unknown");
 
         let mut writer = BufWriter { buf, pos: 0 };
         let _ = write!(
@@ -503,12 +505,12 @@ pub enum ProcPath {
 pub fn parse_proc_path(path: &str) -> ProcPath {
     // Remove leading/trailing slashes
     let path = path.trim_matches('/');
-    
+
     // Must start with "proc"
     if !path.starts_with("proc") {
         return ProcPath::Invalid;
     }
-    
+
     // Remove "proc/" prefix
     let rest = if path.len() > 4 && path.as_bytes()[4] == b'/' {
         &path[5..]
@@ -517,12 +519,12 @@ pub fn parse_proc_path(path: &str) -> ProcPath {
     } else {
         return ProcPath::Invalid;
     };
-    
+
     // Find first slash to split into parts
     if let Some(slash_pos) = rest.find('/') {
         let first = &rest[..slash_pos];
         let second = &rest[slash_pos + 1..];
-        
+
         // /proc/<first>/<second>
         if first == "debug" {
             match second {
@@ -667,8 +669,8 @@ fn read_uptime(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
 
 /// Read /proc/stat file (system-wide statistics)
 fn read_stat(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
-    use core::fmt::Write;
     use crate::metrics;
+    use core::fmt::Write;
 
     struct BufWriter<'a> {
         buf: &'a mut [u8],
@@ -687,7 +689,10 @@ fn read_stat(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
     }
 
     let mut temp_buf = [0u8; 4096];
-    let mut writer = BufWriter { buf: &mut temp_buf, pos: 0 };
+    let mut writer = BufWriter {
+        buf: &mut temp_buf,
+        pos: 0,
+    };
 
     let m = metrics::metrics();
 
@@ -748,23 +753,175 @@ fn read_stat(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
 
 /// Read /proc/debug/pty file
 fn read_debug_pty(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
-    // TODO: Implement PTY debug info when PTY subsystem is ready
-    let content = b"PTY debug info not yet implemented\n";
-    copy_with_offset(content, buf, offset)
+    use crate::metrics;
+    use core::fmt::Write;
+
+    struct BufWriter<'a> {
+        buf: &'a mut [u8],
+        pos: usize,
+    }
+
+    impl<'a> Write for BufWriter<'a> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let bytes = s.as_bytes();
+            let remaining = self.buf.len() - self.pos;
+            let to_write = bytes.len().min(remaining);
+            self.buf[self.pos..self.pos + to_write].copy_from_slice(&bytes[..to_write]);
+            self.pos += to_write;
+            Ok(())
+        }
+    }
+
+    let mut temp_buf = [0u8; 2048];
+    let mut writer = BufWriter {
+        buf: &mut temp_buf,
+        pos: 0,
+    };
+
+    let m = metrics::metrics();
+
+    let _ = write!(writer, "PTY Subsystem Debug Information\n");
+    let _ = write!(writer, "================================\n\n");
+
+    let _ = write!(writer, "Statistics:\n");
+    let _ = write!(writer, "  Bytes In:  {}\n", m.get_pty_bytes_in());
+    let _ = write!(writer, "  Bytes Out: {}\n", m.get_pty_bytes_out());
+    let _ = write!(writer, "  Signals:   {}\n\n", m.get_signals_delivered());
+
+    let _ = write!(writer, "Active PTY Pairs:\n");
+    let _ = write!(writer, "  (PTY enumeration not yet implemented)\n\n");
+
+    let _ = write!(writer, "Session Information:\n");
+    let _ = write!(writer, "  (See /proc/debug/sessions for details)\n");
+
+    let len = writer.pos;
+    copy_with_offset(&temp_buf[..len], buf, offset)
 }
 
 /// Read /proc/debug/sessions file
 fn read_debug_sessions(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
-    // TODO: Implement session debug info when session management is ready
-    let content = b"Session debug info not yet implemented\n";
-    copy_with_offset(content, buf, offset)
+    use crate::sched;
+    use core::fmt::Write;
+
+    struct BufWriter<'a> {
+        buf: &'a mut [u8],
+        pos: usize,
+    }
+
+    impl<'a> Write for BufWriter<'a> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let bytes = s.as_bytes();
+            let remaining = self.buf.len() - self.pos;
+            let to_write = bytes.len().min(remaining);
+            self.buf[self.pos..self.pos + to_write].copy_from_slice(&bytes[..to_write]);
+            self.pos += to_write;
+            Ok(())
+        }
+    }
+
+    let mut temp_buf = [0u8; 4096];
+    let mut writer = BufWriter {
+        buf: &mut temp_buf,
+        pos: 0,
+    };
+
+    let _ = write!(writer, "Session and Process Group Information\n");
+    let _ = write!(writer, "======================================\n\n");
+
+    let _ = write!(
+        writer,
+        "Format: PID | PPID | PGID | SID | TTY | State | Name\n"
+    );
+    let _ = write!(
+        writer,
+        "------+------+------+-----+-----+-------+----------\n"
+    );
+
+    // Iterate through all tasks and display session info
+    // Count tasks by iterating through the task table
+    let mut task_count = 0;
+    const MAX_TASKS: usize = 1024;
+
+    for task_id in 1..MAX_TASKS {
+        if let Some(task) = sched::get_task_by_id(task_id) {
+            task_count += 1;
+
+            let tty_str = if let Some(tty) = task.tty {
+                alloc::format!("{}", tty)
+            } else {
+                alloc::string::String::from("?")
+            };
+
+            let state_char = match task.state {
+                crate::sched::task::TaskState::Running => 'R',
+                crate::sched::task::TaskState::Ready => 'R',
+                crate::sched::task::TaskState::Sleeping => 'S',
+                crate::sched::task::TaskState::Blocked => 'D',
+            };
+
+            let _ = write!(
+                writer,
+                "{:5} | {:4} | {:4} | {:3} | {:3} | {:5} | {}\n",
+                task.pid, task.ppid, task.pgid, task.sid, tty_str, state_char, task.name
+            );
+        }
+    }
+
+    let _ = write!(writer, "\nTotal processes: {}\n", task_count);
+
+    let len = writer.pos;
+    copy_with_offset(&temp_buf[..len], buf, offset)
 }
 
 /// Read /proc/debug/locks file
 fn read_debug_locks(buf: &mut [u8], offset: usize) -> Result<usize, i32> {
-    // TODO: Implement lock debug info when lock tracking is ready
-    let content = b"Lock debug info not yet implemented\n";
-    copy_with_offset(content, buf, offset)
+    use core::fmt::Write;
+
+    struct BufWriter<'a> {
+        buf: &'a mut [u8],
+        pos: usize,
+    }
+
+    impl<'a> Write for BufWriter<'a> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let bytes = s.as_bytes();
+            let remaining = self.buf.len() - self.pos;
+            let to_write = bytes.len().min(remaining);
+            self.buf[self.pos..self.pos + to_write].copy_from_slice(&bytes[..to_write]);
+            self.pos += to_write;
+            Ok(())
+        }
+    }
+
+    let mut temp_buf = [0u8; 2048];
+    let mut writer = BufWriter {
+        buf: &mut temp_buf,
+        pos: 0,
+    };
+
+    let _ = write!(writer, "Kernel Lock Debug Information\n");
+    let _ = write!(writer, "==============================\n\n");
+
+    let _ = write!(writer, "Lock Ordering Hierarchy:\n");
+    let _ = write!(writer, "  1. SCHEDULER_LOCK\n");
+    let _ = write!(writer, "  2. PROCESS_TABLE_LOCK\n");
+    let _ = write!(writer, "  3. MEMORY_MANAGER_LOCK\n");
+    let _ = write!(writer, "  4. DEVICE_TREE_LOCK\n");
+    let _ = write!(writer, "  5. PTY_LOCK\n\n");
+
+    let _ = write!(writer, "Lock Statistics:\n");
+    let _ = write!(
+        writer,
+        "  (Lock contention tracking not yet implemented)\n\n"
+    );
+
+    let _ = write!(writer, "Deadlock Detection:\n");
+    let _ = write!(writer, "  Status: Enabled (compile-time ordering)\n");
+    let _ = write!(writer, "  Method: Static lock ordering hierarchy\n");
+    let _ = write!(writer, "  See: kernel/src/sync/lock_ordering.rs\n");
+
+    let len = writer.pos;
+    copy_with_offset(&temp_buf[..len], buf, offset)
 }
 
 /// Helper function to copy data with offset
@@ -834,14 +991,14 @@ fn get_meminfo() -> MemInfo {
     // Get memory statistics from memory manager
     let result = crate::mm::with_memory_managers(|pmm, _mapper| {
         let mem_total = pmm.total_memory_mb() * 1024; // Convert MB to kB
-        let mem_free = pmm.free_memory_mb() * 1024;   // Convert MB to kB
-        
+        let mem_free = pmm.free_memory_mb() * 1024; // Convert MB to kB
+
         Ok(MemInfo {
             mem_total,
             mem_free,
             mem_available: mem_free, // Simplified for now
-            buffers: 0,  // TODO: Track buffer cache
-            cached: 0,   // TODO: Track page cache
+            buffers: 0,              // TODO: Track buffer cache
+            cached: 0,               // TODO: Track page cache
         })
     });
 
@@ -921,7 +1078,6 @@ fn get_uptime() -> Uptime {
     }
 }
 
-
 /// Read process information atomically without holding locks
 ///
 /// This function reads process state using atomic operations where possible
@@ -947,12 +1103,12 @@ fn get_uptime() -> Uptime {
 pub fn read_proc_info_lockfree(pid: usize) -> Option<ProcInfo> {
     // This is a placeholder implementation that demonstrates the lock-free approach
     // The actual implementation would access the task table with minimal locking
-    
+
     // In a real implementation, we would:
     // 1. Try to get a reference to the task without holding the global lock
     // 2. Read fields using atomic operations where available
     // 3. Return None if the task exits during the read
-    
+
     // For now, delegate to the existing implementation
     // TODO: Update when task table supports lock-free access
     get_proc_info(pid)

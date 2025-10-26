@@ -1,0 +1,79 @@
+# GDB Commands Reference for MelloOS
+
+# === Connection ===
+target remote localhost:1234
+
+# === Common Breakpoints ===
+break kernel_main
+break panic_handler
+break page_fault_handler
+break schedule
+break context_switch
+
+# === Boot Debugging ===
+break _start
+info registers rdi    # Limine boot info
+
+# === Memory Debugging ===
+break kmalloc
+break kfree
+break alloc_frame
+break free_frame
+
+# === Scheduler Debugging ===
+break schedule_next
+break task_switch
+print current_task
+print *current_task
+
+# === Interrupt Debugging ===
+break timer_interrupt_handler
+break keyboard_interrupt_handler
+info registers rflags
+
+# === Page Fault Debugging ===
+break page_fault_handler
+info registers cr2    # Faulting address
+info registers cr3    # Page table base
+backtrace
+
+# === Useful Commands ===
+info registers        # Show all registers
+info registers rax rbx rcx rdx rsi rdi
+backtrace            # Show call stack
+list                 # Show source code
+disassemble          # Show assembly
+x/10i $rip           # Show next 10 instructions
+x/10gx $rsp          # Show stack contents
+
+# === Memory Inspection ===
+x/10x 0x100000       # Show 10 bytes at address
+x/10gx 0x100000      # Show 10 qwords at address
+x/10i 0x100000       # Show 10 instructions at address
+x/s 0x100000         # Show string at address
+
+# === Watchpoints ===
+watch some_variable
+watch *0x100000
+rwatch *0x100000     # Read watchpoint
+awatch *0x100000     # Access watchpoint
+
+# === Control Flow ===
+continue             # Continue execution
+step                 # Step into
+next                 # Step over
+finish               # Step out
+until 42             # Run until line 42
+
+# === Breakpoint Management ===
+info breakpoints
+delete 1
+disable 1
+enable 1
+clear kernel_main
+
+# === Advanced ===
+set $rax = 0x1234                    # Modify register
+set {int}0x100000 = 42               # Modify memory
+call some_function(arg1, arg2)       # Call function
+print sizeof(struct task_struct)     # Show size

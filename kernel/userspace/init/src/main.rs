@@ -85,6 +85,19 @@ fn sys_exit(code: usize) -> ! {
     loop {}
 }
 
+/// Execute a new program
+/// 
+/// # Arguments
+/// * `path` - Null-terminated path to executable
+/// * `argv` - Null-terminated array of argument pointers
+/// 
+/// # Returns
+/// * Does not return on success
+/// * Negative error code on failure
+fn sys_exec(path: *const u8, argv: *const *const u8) -> isize {
+    unsafe { syscall(SYS_EXEC, path as usize, argv as usize, 0) }
+}
+
 /// Test privilege level validation
 fn test_privilege_level() {
     let cpl = get_current_privilege_level();
@@ -219,46 +232,67 @@ pub extern "C" fn _start() -> ! {
     sys_write("========================================\n");
     sys_write("Launching shell...\n\n");
 
-    // Fork and exec mello-term (terminal emulator)
-    let fork_result = sys_fork();
+    // Try to exec shell directly
+    // Prepare argv array: ["/bin/sh", NULL]
+    let shell_path = b"/bin/sh\0";
+    let argv: [*const u8; 2] = [
+        shell_path.as_ptr(),
+        core::ptr::null(),
+    ];
 
-    if fork_result == 0 {
-        // Child process - exec mello-term
-        sys_write("[Init] Launching mello-term...\n");
-
-        // TODO: When exec is implemented, use:
-        // sys_exec("/bin/mello-term", &[]);
-
-        // For now, just print message and loop
-        sys_write("\n");
-        sys_write("╔════════════════════════════════════════╗\n");
-        sys_write("║         Welcome to MelloOS!            ║\n");
-        sys_write("║                                        ║\n");
-        sys_write("║  Shell integration in progress...      ║\n");
-        sys_write("║  (mello-term will launch here)         ║\n");
-        sys_write("╚════════════════════════════════════════╝\n");
-        sys_write("\n");
-
-        loop {
-            sys_sleep(1000);
-        }
-    } else if fork_result > 0 {
-        // Parent process - wait for children and reap zombies
-        sys_write("[Init] Terminal spawned, entering monitoring mode\n");
-
-        loop {
-            // Wait for any child process
-            // TODO: Implement sys_wait() to reap zombie processes
-            sys_sleep(1000);
-            sys_yield();
+    sys_write("[Init] Attempting to exec /bin/sh...\n");
+    
+    // Call exec - this should not return on success
+    let exec_result = sys_exec(shell_path.as_ptr(), argv.as_ptr());
+    
+    // If we reach here, exec failed
+    sys_write("\n");
+    sys_write("╔════════════════════════════════════════╗\n");
+    sys_write("║         EXEC FAILED                    ║\n");
+    sys_write("╚════════════════════════════════════════╝\n");
+    sys_write("\n");
+    sys_write("ERROR: Failed to exec shell (error code: ");
+    
+    // Print error code (simple conversion for negative numbers)
+    if exec_result < 0 {
+        sys_write("-");
+        let abs_val = (-exec_result) as usize;
+        if abs_val < 10 {
+            let digit = (b'0' + abs_val as u8) as char;
+            let digit_str = [digit as u8, b'\n', 0];
+            let msg = core::str::from_utf8(&digit_str[..2]).unwrap_or("?\n");
+            sys_write(msg);
+        } else {
+            sys_write("??\n");
         }
     } else {
-        // Fork failed
-        sys_write("✗ ERROR: Failed to fork terminal process\n");
-        sys_write("System halted.\n");
-        loop {
-            sys_sleep(1000);
-        }
+        sys_write("0\n");
+    }
+    
+    sys_write("\nFalling back to test mode...\n");
+    sys_write("========================================\n\n");
+
+    // Run tests as fallback
+    test_privilege_level();
+    sys_write("\n");
+    
+    test_syscalls();
+    sys_write("\n");
+    
+    test_fork_chain();
+    sys_write("\n");
+    
+    test_memory_protection();
+    sys_write("\n");
+
+    sys_write("========================================\n");
+    sys_write("All tests completed. System halted.\n");
+    sys_write("(Shell exec failed - check /bin/sh exists)\n");
+
+    // Hang forever
+    loop {
+        sys_sleep(1000);
+        sys_yield();
     }
 }
 

@@ -11,7 +11,3 @@ pub mod buffer_cache;
 pub mod writeback;
 pub mod throttle;
 
-pub use page_cache::{PageCache, PageCacheEntry, ReadAheadWindow};
-pub use buffer_cache::{BufferCache, BufferEntry};
-pub use writeback::{WritebackConfig, WritebackScheduler, WritebackBatch};
-pub use throttle::{ThrottleConfig, ThrottleManager};

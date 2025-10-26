@@ -1,11 +1,17 @@
 [build]
 target = "x86_64-unknown-none"
+# Use all available CPU cores for parallel compilation (increase if you have more cores)
+jobs = 12
+# Enable incremental compilation for faster rebuilds
+incremental = true
 
 [unstable]
 build-std = ["core", "alloc", "compiler_builtins"]
 build-std-features = ["compiler-builtins-mem"]
 
 [target.x86_64-unknown-none]
+# Use rust-lld linker for faster linking (much faster than system ld)
+linker = "rust-lld"
 rustflags = [
     "-C", "code-model=kernel",
     "-C", "relocation-model=static",

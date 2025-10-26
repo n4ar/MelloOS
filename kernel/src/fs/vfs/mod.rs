@@ -15,4 +15,4 @@ pub mod registry;
 pub mod superblock;
 
 // Re-export commonly used items
-pub use registry::{register_filesystem, lookup_filesystem};
+pub use registry::register_filesystem;

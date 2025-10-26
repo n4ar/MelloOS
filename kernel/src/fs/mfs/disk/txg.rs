@@ -5,7 +5,6 @@
 use super::btree::BtreeNode;
 use super::allocator::FreeExtent;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
 use crate::sync::SpinLock;
 
 /// Transaction group state
@@ -231,7 +230,7 @@ impl TxgManager {
     
     /// Force commit of current transaction group
     pub fn sync(&self, current_time: u64) -> Option<TransactionGroup> {
-        let txg = self.get_current_txg(current_time);
+        let _txg = self.get_current_txg(current_time);
         self.begin_commit()
     }
 }

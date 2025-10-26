@@ -1,11 +1,10 @@
 //! MelloFS RAM File Operations
 
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use alloc::vec;
 use core::sync::atomic::Ordering;
 use crate::fs::vfs::superblock::FsError;
-use crate::fs::mfs::ram::inode::{RamInode, InodeKind, FileData};
+use crate::fs::mfs::ram::inode::{RamInode, InodeKind};
 
 impl RamInode {
     /// Read data from file at offset
