@@ -53,7 +53,7 @@ pub fn is_user_range(ptr: usize, len: usize) -> bool {
     if ptr == 0 {
         return false;
     }
-    
+
     // Check for overflow
     match ptr.checked_add(len) {
         Some(end) => ptr < USER_LIMIT && end <= USER_LIMIT,
@@ -103,10 +103,12 @@ pub fn validate_user_read<T>(ptr: usize, mapper: &PageMapper) -> SecurityResult<
     }
 
     // Check page permissions
-    match mapper.translate(ptr) {
-        Some(_phys) => {
-            // Page is present
-            // TODO: Check if page has USER flag set
+    match mapper.get_page_flags(ptr) {
+        Some(flags) => {
+            // Page is present, verify USER flag is set
+            if (flags.bits() & PageTableFlags::USER.bits()) == 0 {
+                return Err(SecurityError::PermissionDenied);
+            }
             Ok(())
         }
         None => Err(SecurityError::PageNotPresent),
@@ -143,10 +145,15 @@ pub fn validate_user_write<T>(ptr: usize, mapper: &PageMapper) -> SecurityResult
     }
 
     // Check page permissions
-    match mapper.translate(ptr) {
-        Some(_phys) => {
-            // Page is present
-            // TODO: Check if page has USER and WRITABLE flags set
+    match mapper.get_page_flags(ptr) {
+        Some(flags) => {
+            // Page is present, verify USER and WRITABLE flags are set
+            if (flags.bits() & PageTableFlags::USER.bits()) == 0 {
+                return Err(SecurityError::PermissionDenied);
+            }
+            if (flags.bits() & PageTableFlags::WRITABLE.bits()) == 0 {
+                return Err(SecurityError::PermissionDenied);
+            }
             Ok(())
         }
         None => Err(SecurityError::PageNotPresent),
@@ -199,10 +206,12 @@ pub fn copy_from_user(
 
     let mut page = start_page;
     while page < end_page {
-        match mapper.translate(page) {
-            Some(_) => {
-                // Page is present
-                // TODO: Verify USER flag is set
+        match mapper.get_page_flags(page) {
+            Some(flags) => {
+                // Page is present, verify USER flag is set
+                if (flags.bits() & PageTableFlags::USER.bits()) == 0 {
+                    return Err(SecurityError::PermissionDenied);
+                }
             }
             None => return Err(SecurityError::PageNotPresent),
         }
@@ -238,11 +247,7 @@ pub fn copy_from_user(
 ///
 /// # Safety
 /// This function uses unsafe operations but validates all inputs first
-pub fn copy_to_user(
-    dst_ptr: usize,
-    src: &[u8],
-    mapper: &PageMapper,
-) -> SecurityResult<()> {
+pub fn copy_to_user(dst_ptr: usize, src: &[u8], mapper: &PageMapper) -> SecurityResult<()> {
     let len = src.len();
 
     // Validate destination pointer is in user space
@@ -261,10 +266,15 @@ pub fn copy_to_user(
 
     let mut page = start_page;
     while page < end_page {
-        match mapper.translate(page) {
-            Some(_) => {
-                // Page is present
-                // TODO: Verify USER and WRITABLE flags are set
+        match mapper.get_page_flags(page) {
+            Some(flags) => {
+                // Page is present, verify USER and WRITABLE flags are set
+                if (flags.bits() & PageTableFlags::USER.bits()) == 0 {
+                    return Err(SecurityError::PermissionDenied);
+                }
+                if (flags.bits() & PageTableFlags::WRITABLE.bits()) == 0 {
+                    return Err(SecurityError::PermissionDenied);
+                }
             }
             None => return Err(SecurityError::PageNotPresent),
         }
@@ -290,10 +300,7 @@ pub fn copy_to_user(
 ///
 /// # Returns
 /// Ok(value) on success, Err on validation failure
-pub fn copy_from_user_typed<T: Copy>(
-    user_ptr: usize,
-    mapper: &PageMapper,
-) -> SecurityResult<T> {
+pub fn copy_from_user_typed<T: Copy>(user_ptr: usize, mapper: &PageMapper) -> SecurityResult<T> {
     // Validate pointer
     validate_user_read::<T>(user_ptr, mapper)?;
 
@@ -423,7 +430,6 @@ mod tests {
         assert!(!is_aligned::<u64>(0x1004));
     }
 }
-
 
 /// W^X (Write XOR Execute) Memory Protection
 ///
@@ -589,11 +595,13 @@ pub fn map_readonly_page(
 /// # Returns
 /// Ok(()) if page follows W^X, Err otherwise
 pub fn validate_page_wx(mapper: &PageMapper, virt_addr: VirtAddr) -> SecurityResult<()> {
-    // Translate to get page table entry
-    match mapper.translate(virt_addr) {
-        Some(_phys) => {
-            // TODO: Get actual page flags from page table entry
-            // For now, we assume pages are properly configured
+    // Get page flags from page table entry
+    match mapper.get_page_flags(virt_addr) {
+        Some(flags) => {
+            // Verify W^X principle
+            if !validate_wx_flags(flags) {
+                return Err(SecurityError::PermissionDenied);
+            }
             Ok(())
         }
         None => Err(SecurityError::PageNotPresent),
@@ -648,7 +656,7 @@ impl MemoryRegionType {
     /// Get the appropriate page flags for this region type
     pub fn flags(&self, user: bool) -> PageTableFlags {
         let mut flags = PageTableFlags::PRESENT;
-        
+
         if user {
             flags = flags | PageTableFlags::USER;
         }
@@ -693,7 +701,8 @@ mod wx_tests {
         assert!(validate_wx_flags(code_flags));
 
         // Valid: Writable, non-executable (data)
-        let data_flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
+        let data_flags =
+            PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
         assert!(validate_wx_flags(data_flags));
 
         // Valid: Read-only, non-executable (const data)

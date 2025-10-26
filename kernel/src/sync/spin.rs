@@ -31,6 +31,7 @@ pub struct SpinLock<T> {
 /// When the guard is dropped, the lock is automatically released.
 pub struct SpinLockGuard<'a, T> {
     lock: &'a SpinLock<T>,
+    pub(crate) next_inode: u64,
 }
 
 unsafe impl<T: Send> Sync for SpinLock<T> {}
@@ -64,7 +65,10 @@ impl<T> SpinLock<T> {
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
             {
-                return SpinLockGuard { lock: self };
+                return SpinLockGuard {
+                    lock: self,
+                    next_inode: 0,
+                };
             }
 
             // Lock is held by another core, spin with exponential backoff
@@ -93,7 +97,10 @@ impl<T> SpinLock<T> {
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
-            Some(SpinLockGuard { lock: self })
+            Some(SpinLockGuard {
+                lock: self,
+                next_inode: 0,
+            })
         } else {
             None
         }
@@ -126,7 +133,10 @@ impl<T> SpinLock<T> {
                 .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
             {
-                return Some(SpinLockGuard { lock: self });
+                return Some(SpinLockGuard {
+                    lock: self,
+                    next_inode: 0,
+                });
             }
 
             // Check if timeout expired

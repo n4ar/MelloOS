@@ -197,6 +197,14 @@ pub struct Task {
 
     /// File descriptor table (per-process)
     pub fd_table: alloc::sync::Arc<crate::sync::SpinLock<crate::fs::vfs::file::FdTable>>,
+
+    /// Heap start address (for brk/sbrk syscalls)
+    /// This marks the beginning of the process's heap region
+    pub heap_start: usize,
+
+    /// Heap end address (current program break)
+    /// This marks the current end of the heap, grows upward with brk/sbrk
+    pub heap_end: usize,
 }
 
 impl Task {
@@ -309,6 +317,8 @@ impl Task {
             tty: None,          // No controlling terminal initially
             last_syscall: None, // No syscall executed yet
             fd_table,           // Empty FD table
+            heap_start: 0,      // Will be set during exec or process creation
+            heap_end: 0,        // Will be set during exec or process creation
         })
     }
 

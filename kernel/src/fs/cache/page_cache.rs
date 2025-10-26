@@ -400,6 +400,11 @@ impl FilePageCache {
         self.file_size.load(Ordering::Relaxed)
     }
 
+    /// Get inode number for this cache
+    pub fn inode(&self) -> u64 {
+        self.inode.load(Ordering::Acquire)
+    }
+
     /// Invalidate all pages
     pub fn invalidate_all(&self) {
         for page_lock in &self.pages {

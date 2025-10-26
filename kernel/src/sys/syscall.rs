@@ -811,7 +811,22 @@ fn sys_fork() -> isize {
                 "[SYSCALL] sys_fork: Failed to create child process: {:?}",
                 e
             );
-            // TODO: Free the allocated page table
+
+            // Clean up: Free the allocated page table hierarchy
+            use crate::mm::paging::free_page_table_hierarchy;
+            let mut pmm_guard = get_global_pmm();
+            if let Some(pmm) = pmm_guard.as_mut() {
+                free_page_table_hierarchy(child_cr3, pmm);
+                serial_println!(
+                    "[SYSCALL] sys_fork: Freed child page table at CR3={:#x}",
+                    child_cr3
+                );
+            } else {
+                serial_println!(
+                    "[SYSCALL] sys_fork: WARNING: Could not free child page table - PMM unavailable"
+                );
+            }
+
             return -1; // EAGAIN or ENOMEM
         }
     };
@@ -823,6 +838,15 @@ fn sys_fork() -> isize {
         Some(guard) => guard,
         None => {
             serial_println!("[SYSCALL] sys_fork: Failed to get child process");
+
+            // Clean up: Free the allocated page table and remove process
+            use crate::mm::paging::free_page_table_hierarchy;
+            let mut pmm_guard = get_global_pmm();
+            if let Some(pmm) = pmm_guard.as_mut() {
+                free_page_table_hierarchy(child_cr3, pmm);
+            }
+            let _ = ProcessManager::remove_process(child_pid);
+
             return -1; // EIO
         }
     };
@@ -831,6 +855,16 @@ fn sys_fork() -> isize {
         Some(p) => p,
         None => {
             serial_println!("[SYSCALL] sys_fork: Child process slot empty");
+
+            // Clean up: Free the allocated page table and remove process
+            drop(child_guard);
+            use crate::mm::paging::free_page_table_hierarchy;
+            let mut pmm_guard = get_global_pmm();
+            if let Some(pmm) = pmm_guard.as_mut() {
+                free_page_table_hierarchy(child_cr3, pmm);
+            }
+            let _ = ProcessManager::remove_process(child_pid);
+
             return -1; // EIO
         }
     };
@@ -844,6 +878,16 @@ fn sys_fork() -> isize {
         Some(guard) => guard,
         None => {
             serial_println!("[SYSCALL] sys_fork: Parent process disappeared");
+
+            // Clean up: Free the allocated page table and remove child process
+            drop(child_guard);
+            use crate::mm::paging::free_page_table_hierarchy;
+            let mut pmm_guard = get_global_pmm();
+            if let Some(pmm) = pmm_guard.as_mut() {
+                free_page_table_hierarchy(child_cr3, pmm);
+            }
+            let _ = ProcessManager::remove_process(child_pid);
+
             return -1; // ESRCH
         }
     };
@@ -852,6 +896,17 @@ fn sys_fork() -> isize {
         Some(p) => p,
         None => {
             serial_println!("[SYSCALL] sys_fork: Parent process slot empty");
+
+            // Clean up: Free the allocated page table and remove child process
+            drop(parent_guard);
+            drop(child_guard);
+            use crate::mm::paging::free_page_table_hierarchy;
+            let mut pmm_guard = get_global_pmm();
+            if let Some(pmm) = pmm_guard.as_mut() {
+                free_page_table_hierarchy(child_cr3, pmm);
+            }
+            let _ = ProcessManager::remove_process(child_pid);
+
             return -1; // ESRCH
         }
     };
@@ -920,8 +975,15 @@ fn sys_fork() -> isize {
                 "[SYSCALL] sys_fork: Failed to create task for child: {:?}",
                 e
             );
-            // Clean up child process
+
+            // Clean up: Free the allocated page table and remove child process
+            use crate::mm::paging::free_page_table_hierarchy;
+            let mut pmm_guard = get_global_pmm();
+            if let Some(pmm) = pmm_guard.as_mut() {
+                free_page_table_hierarchy(child_cr3, pmm);
+            }
             let _ = ProcessManager::remove_process(child_pid);
+
             return -1; // EAGAIN
         }
     }

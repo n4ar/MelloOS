@@ -204,7 +204,8 @@ impl<'a> ElfLoader<'a> {
         // 4. Clear existing memory regions
         task.clear_memory_regions();
 
-        // 5. Map PT_LOAD segments
+        // 5. Map PT_LOAD segments and track the highest address
+        let mut max_segment_end = 0usize;
         for (i, phdr) in program_headers.iter().enumerate() {
             if phdr.p_type == PT_LOAD {
                 serial_println!(
@@ -215,6 +216,12 @@ impl<'a> ElfLoader<'a> {
                     phdr.p_flags
                 );
                 self.map_segment(elf_data, phdr, task)?;
+
+                // Track the highest segment end address for heap initialization
+                let segment_end = ((phdr.p_vaddr + phdr.p_memsz) as usize + 0xFFF) & !0xFFF; // Page-align up
+                if segment_end > max_segment_end {
+                    max_segment_end = segment_end;
+                }
             } else if phdr.p_type == PT_GNU_STACK {
                 serial_println!(
                     "[ELF] Found GNU_STACK segment (flags: 0x{:x})",
@@ -224,7 +231,21 @@ impl<'a> ElfLoader<'a> {
             }
         }
 
-        // 6. Set up user stack
+        // 6. Initialize heap pointers
+        // The heap starts right after the last loaded segment (page-aligned)
+        // Initially, heap_start == heap_end (empty heap)
+        // The brk/sbrk syscalls will grow the heap as needed
+        if max_segment_end > 0 {
+            task.heap_start = max_segment_end;
+            task.heap_end = max_segment_end;
+            serial_println!(
+                "[ELF] Initialized heap: start=0x{:x}, end=0x{:x}",
+                task.heap_start,
+                task.heap_end
+            );
+        }
+
+        // 7. Set up user stack
         let user_stack_top = self.setup_user_stack(task)?;
 
         serial_println!(

@@ -284,25 +284,190 @@ pub fn coalesce_dirty_pages(
     batches
 }
 
+/// Flush dirty pages to block device
+///
+/// Writes a batch of dirty pages to the underlying block device.
+///
+/// # Arguments
+/// * `device` - Block device to write to
+/// * `inode` - Inode number (for logging)
+/// * `start_page` - Starting page number
+/// * `pages` - Slice of (page_num, data) tuples to write
+///
+/// # Returns
+/// Number of pages successfully written, or error
+fn flush_to_device(
+    device: &dyn crate::fs::block_dev::BlockDevice,
+    inode: u64,
+    pages: &[(u64, [u8; crate::fs::cache::page_cache::CACHE_PAGE_SIZE])],
+) -> Result<usize, &'static str> {
+    use crate::fs::cache::page_cache::CACHE_PAGE_SIZE;
+
+    if pages.is_empty() {
+        return Ok(0);
+    }
+
+    let sector_size = device.sector_size() as usize;
+    let sectors_per_page = CACHE_PAGE_SIZE / sector_size;
+
+    let mut flushed_count = 0;
+
+    for (page_num, data) in pages {
+        // Calculate sector offset for this page
+        let sector = page_num * sectors_per_page as u64;
+
+        // Write page to device
+        match device.write_sectors(sector, sectors_per_page as u32, data) {
+            Ok(()) => {
+                flushed_count += 1;
+            }
+            Err(e) => {
+                crate::serial_println!(
+                    "[WRITEBACK] Error flushing page {} of inode {}: {:?}",
+                    page_num,
+                    inode,
+                    e
+                );
+                // Continue trying to flush other pages
+            }
+        }
+    }
+
+    // Flush device write cache
+    if let Err(e) = device.flush() {
+        crate::serial_println!(
+            "[WRITEBACK] Warning: device flush failed for inode {}: {:?}",
+            inode,
+            e
+        );
+        // Don't fail the entire operation if device flush fails
+    }
+
+    if flushed_count > 0 {
+        crate::serial_println!(
+            "[WRITEBACK] Flushed {} pages for inode {}",
+            flushed_count,
+            inode
+        );
+    }
+
+    Ok(flushed_count)
+}
+
 /// Flush dirty pages for a specific inode
 ///
-/// This is called by the background flusher or on explicit sync
+/// This is called by the background flusher or on explicit sync.
+/// It retrieves dirty pages from the page cache, writes them to the
+/// block device, and marks them as clean.
+///
+/// # Arguments
+/// * `inode` - Inode number to flush
+///
+/// # Returns
+/// Ok(()) on success, Err with description on failure
 #[allow(dead_code)]
-pub fn flush_inode_pages(_inode: u64) -> Result<(), &'static str> {
-    // TODO: Implement actual flushing when filesystem is ready
-    // This will:
-    // 1. Get dirty pages from page cache
-    // 2. Coalesce into batches
-    // 3. Write batches to disk
-    // 4. Mark pages as clean
+pub fn flush_inode_pages(inode: u64) -> Result<(), &'static str> {
+    use crate::fs::block_dev::block_device_manager;
+    use crate::fs::cache::page_cache::get_page_cache;
+
+    // Get the page cache for this inode
+    let page_cache = get_page_cache();
+    let cache_idx = match page_cache.get_file_cache(inode) {
+        Some(idx) => idx,
+        None => {
+            // No cache for this inode, nothing to flush
+            return Ok(());
+        }
+    };
+
+    let file_cache = match page_cache.get_cache(cache_idx) {
+        Some(cache) => cache,
+        None => return Err("Invalid cache index"),
+    };
+
+    // Check if there are any dirty pages
+    let dirty_count = file_cache.dirty_count();
+    if dirty_count == 0 {
+        return Ok(());
+    }
+
+    // Get all dirty pages (we'll flush all of them)
+    let dirty_pages = file_cache.get_dirty_pages(0, u64::MAX);
+    if dirty_pages.is_empty() {
+        return Ok(());
+    }
+
+    // Get the block device (assume first device for now)
+    let device = match block_device_manager().get_device(0) {
+        Some(dev) => dev,
+        None => {
+            crate::serial_println!("[WRITEBACK] No block device available for inode {}", inode);
+            return Err("No block device available");
+        }
+    };
+
+    // Flush pages to device
+    let flushed = flush_to_device(device.as_ref(), inode, &dirty_pages)?;
+
+    // Mark flushed pages as clean in the cache
+    for (page_num, _) in &dirty_pages[..flushed] {
+        file_cache.mark_clean(*page_num);
+    }
+
     Ok(())
 }
 
 /// Flush all dirty pages
 ///
-/// This is called on sync syscall
+/// This is called on sync syscall. It iterates through all file caches
+/// and flushes dirty pages for each inode.
+///
+/// # Returns
+/// Ok(()) on success, Err with description on failure
 #[allow(dead_code)]
 pub fn flush_all_pages() -> Result<(), &'static str> {
-    // TODO: Implement when filesystem is ready
-    Ok(())
+    use crate::fs::cache::page_cache::get_page_cache;
+
+    let page_cache = get_page_cache();
+    let mut total_flushed = 0;
+    let mut errors = 0;
+
+    // Iterate through all file caches
+    for idx in 0..64 {
+        // MAX_CACHED_FILES = 64
+        if let Some(file_cache) = page_cache.get_cache(idx) {
+            if !file_cache.is_in_use() {
+                continue;
+            }
+
+            let inode = file_cache.inode();
+            let dirty_count = file_cache.dirty_count();
+
+            if dirty_count > 0 {
+                match flush_inode_pages(inode) {
+                    Ok(()) => {
+                        total_flushed += dirty_count;
+                    }
+                    Err(e) => {
+                        crate::serial_println!("[WRITEBACK] Error flushing inode {}: {}", inode, e);
+                        errors += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if total_flushed > 0 {
+        crate::serial_println!(
+            "[WRITEBACK] Flushed {} total dirty pages ({} errors)",
+            total_flushed,
+            errors
+        );
+    }
+
+    if errors > 0 {
+        Err("Some pages failed to flush")
+    } else {
+        Ok(())
+    }
 }

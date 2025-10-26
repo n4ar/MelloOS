@@ -465,6 +465,72 @@ impl PageMapper {
         // Return physical address with offset
         Some(pt_entry.addr() + offset)
     }
+
+    /// Get page flags for a virtual address
+    /// Walks the page tables to find the page table entry and extract its flags
+    ///
+    /// # Arguments
+    /// * `virt_addr` - Virtual address to get flags for
+    ///
+    /// # Returns
+    /// * `Some(PageTableFlags)` - Flags if the page is mapped
+    /// * `None` - If the page is not mapped
+    pub fn get_page_flags(&self, virt_addr: VirtAddr) -> Option<PageTableFlags> {
+        // Extract indices from virtual address
+        let pml4_index = (virt_addr >> 39) & 0x1FF;
+        let pdpt_index = (virt_addr >> 30) & 0x1FF;
+        let pd_index = (virt_addr >> 21) & 0x1FF;
+        let pt_index = (virt_addr >> 12) & 0x1FF;
+
+        // Traverse PML4
+        let pml4_entry = self.pml4.get_entry(pml4_index);
+        if !pml4_entry.is_present() {
+            return None;
+        }
+
+        // Traverse PDPT
+        let pdpt_phys = pml4_entry.addr();
+        let pdpt_virt = phys_to_virt(pdpt_phys);
+        let pdpt = unsafe { &*(pdpt_virt as *const PageTable) };
+
+        let pdpt_entry = pdpt.get_entry(pdpt_index);
+        if !pdpt_entry.is_present() {
+            return None;
+        }
+
+        // Check for 1GB huge page
+        if (pdpt_entry.raw() & PageTableFlags::HUGE.bits()) != 0 {
+            return Some(PageTableFlags(pdpt_entry.raw() & 0xFFF));
+        }
+
+        // Traverse PD
+        let pd_phys = pdpt_entry.addr();
+        let pd_virt = phys_to_virt(pd_phys);
+        let pd = unsafe { &*(pd_virt as *const PageTable) };
+
+        let pd_entry = pd.get_entry(pd_index);
+        if !pd_entry.is_present() {
+            return None;
+        }
+
+        // Check for 2MB huge page
+        if (pd_entry.raw() & PageTableFlags::HUGE.bits()) != 0 {
+            return Some(PageTableFlags(pd_entry.raw() & 0xFFF));
+        }
+
+        // Traverse PT
+        let pt_phys = pd_entry.addr();
+        let pt_virt = phys_to_virt(pt_phys);
+        let pt = unsafe { &*(pt_virt as *const PageTable) };
+
+        let pt_entry = pt.get_entry(pt_index);
+        if !pt_entry.is_present() {
+            return None;
+        }
+
+        // Return flags (lower 12 bits of entry)
+        Some(PageTableFlags(pt_entry.raw() & 0xFFF))
+    }
 }
 
 impl PageMapper {
@@ -883,6 +949,97 @@ pub fn get_current_cr3() -> PhysAddr {
         );
         (cr3 & 0x000F_FFFF_FFFF_F000) as usize
     }
+}
+
+/// Free a complete page table hierarchy
+///
+/// Recursively frees all page tables in the hierarchy (PML4, PDPT, PD, PT).
+/// Only frees user space page tables (lower half), as kernel space is shared.
+///
+/// # Arguments
+/// * `pml4_phys` - Physical address of the PML4 (root page table)
+/// * `pmm` - Physical memory manager for frame deallocation
+///
+/// # Safety
+/// Caller must ensure:
+/// - The page table is not currently in use (not loaded in any CPU's CR3)
+/// - No other references to this page table exist
+/// - This is not the kernel's page table
+pub fn free_page_table_hierarchy(pml4_phys: PhysAddr, pmm: &mut PhysicalMemoryManager) {
+    crate::serial_println!(
+        "[PAGING] Freeing page table hierarchy at PML4={:#x}",
+        pml4_phys
+    );
+
+    let pml4_virt = phys_to_virt(pml4_phys);
+    let pml4 = unsafe { &*(pml4_virt as *const PageTable) };
+
+    // Only free user space page tables (lower half: indices 0-255)
+    // Kernel space (upper half: 256-511) is shared and should not be freed
+    for pml4_idx in 0..256 {
+        let pml4_entry = pml4.get_entry(pml4_idx);
+        if !pml4_entry.is_present() {
+            continue;
+        }
+
+        let pdpt_phys = pml4_entry.addr();
+        free_pdpt_level(pdpt_phys, pmm);
+    }
+
+    // Finally, free the PML4 itself
+    free_page_table(pml4_phys, pmm);
+    crate::serial_println!("[PAGING] Freed PML4 at {:#x}", pml4_phys);
+}
+
+/// Free PDPT level and all child page tables
+fn free_pdpt_level(pdpt_phys: PhysAddr, pmm: &mut PhysicalMemoryManager) {
+    let pdpt_virt = phys_to_virt(pdpt_phys);
+    let pdpt = unsafe { &*(pdpt_virt as *const PageTable) };
+
+    for pdpt_idx in 0..512 {
+        let pdpt_entry = pdpt.get_entry(pdpt_idx);
+        if !pdpt_entry.is_present() {
+            continue;
+        }
+
+        // Check for huge page (1GB)
+        if (pdpt_entry.raw() & PageTableFlags::HUGE.bits()) != 0 {
+            // Huge pages don't have child page tables, skip
+            continue;
+        }
+
+        let pd_phys = pdpt_entry.addr();
+        free_pd_level(pd_phys, pmm);
+    }
+
+    // Free the PDPT itself
+    free_page_table(pdpt_phys, pmm);
+}
+
+/// Free PD level and all child page tables
+fn free_pd_level(pd_phys: PhysAddr, pmm: &mut PhysicalMemoryManager) {
+    let pd_virt = phys_to_virt(pd_phys);
+    let pd = unsafe { &*(pd_virt as *const PageTable) };
+
+    for pd_idx in 0..512 {
+        let pd_entry = pd.get_entry(pd_idx);
+        if !pd_entry.is_present() {
+            continue;
+        }
+
+        // Check for huge page (2MB)
+        if (pd_entry.raw() & PageTableFlags::HUGE.bits()) != 0 {
+            // Huge pages don't have child page tables, skip
+            continue;
+        }
+
+        let pt_phys = pd_entry.addr();
+        // Free the PT (no need to recurse further, PT is the lowest level)
+        free_page_table(pt_phys, pmm);
+    }
+
+    // Free the PD itself
+    free_page_table(pd_phys, pmm);
 }
 
 /// Mark all writable user pages as COW in a page table hierarchy

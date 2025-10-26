@@ -1,12 +1,95 @@
-//! Dentry Cache
+//! Dentry Cache and Directory Entry Structure
 //!
-//! This module implements the directory entry cache for fast path resolution.
+//! This module implements:
+//! 1. Dentry structure - represents a directory entry with parent tracking
+//! 2. Dentry cache - hash-based cache for fast path resolution
+//!
 //! The dentry cache stores mappings from (parent_ino, name) to child inodes,
 //! with LRU eviction and support for negative entries.
 
+use crate::fs::vfs::inode::Inode;
 use alloc::string::String;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use spin::Mutex as SpinLock;
+
+/// Dentry - Directory Entry Structure
+///
+/// Represents a directory entry in the VFS layer. Each dentry wraps an inode
+/// and maintains a weak reference to its parent dentry for proper ".." handling.
+///
+/// # Parent Tracking
+/// The parent field uses a Weak reference to avoid circular references:
+/// - Parent holds strong Arc to children (through inode lookup)
+/// - Children hold weak reference to parent
+/// - This prevents memory leaks while enabling upward traversal
+#[derive(Clone)]
+pub struct Dentry {
+    /// The inode this dentry refers to
+    inode: Arc<dyn Inode>,
+
+    /// Parent dentry (None for root, Weak to avoid cycles)
+    parent: Option<Weak<Dentry>>,
+
+    /// Name of this entry in parent directory
+    name: String,
+}
+
+impl Dentry {
+    /// Create a new dentry for the root directory
+    ///
+    /// # Arguments
+    /// * `inode` - Root inode
+    ///
+    /// # Returns
+    /// Arc<Dentry> for the root
+    pub fn new_root(inode: Arc<dyn Inode>) -> Arc<Self> {
+        Arc::new(Self {
+            inode,
+            parent: None,
+            name: String::from("/"),
+        })
+    }
+
+    /// Create a new dentry with a parent
+    ///
+    /// # Arguments
+    /// * `inode` - Inode for this entry
+    /// * `parent` - Parent dentry
+    /// * `name` - Name of this entry in parent directory
+    ///
+    /// # Returns
+    /// Arc<Dentry> for the new entry
+    pub fn new_child(inode: Arc<dyn Inode>, parent: Arc<Dentry>, name: String) -> Arc<Self> {
+        Arc::new(Self {
+            inode,
+            parent: Some(Arc::downgrade(&parent)),
+            name,
+        })
+    }
+
+    /// Get the inode for this dentry
+    pub fn inode(&self) -> &Arc<dyn Inode> {
+        &self.inode
+    }
+
+    /// Get the parent dentry (if any)
+    ///
+    /// Returns None for root or if parent has been dropped
+    pub fn parent(&self) -> Option<Arc<Dentry>> {
+        self.parent.as_ref().and_then(|weak| weak.upgrade())
+    }
+
+    /// Get the name of this entry
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Check if this is the root dentry
+    pub fn is_root(&self) -> bool {
+        self.parent.is_none()
+    }
+}
 
 /// Number of hash buckets in the dentry cache
 const DENTRY_BUCKETS: usize = 256;
@@ -44,7 +127,7 @@ impl DentryBucket {
             access_counter: 0,
         }
     }
-    
+
     /// Lookup an entry in this bucket
     fn lookup(&mut self, parent_ino: u64, name: &str) -> Option<u64> {
         for entry in &mut self.entries {
@@ -52,7 +135,7 @@ impl DentryBucket {
                 // Update access count for LRU
                 self.access_counter += 1;
                 entry.access_count = self.access_counter;
-                
+
                 // Return child ino (0 for negative entry)
                 return if entry.negative {
                     Some(0)
@@ -63,7 +146,7 @@ impl DentryBucket {
         }
         None
     }
-    
+
     /// Insert an entry into this bucket
     fn insert(&mut self, parent_ino: u64, name: String, child_ino: u64, negative: bool) {
         // Check if entry already exists
@@ -77,7 +160,7 @@ impl DentryBucket {
                 return;
             }
         }
-        
+
         // Add new entry
         self.access_counter += 1;
         let new_entry = DentryEntry {
@@ -87,35 +170,35 @@ impl DentryBucket {
             negative,
             access_count: self.access_counter,
         };
-        
+
         self.entries.push(new_entry);
-        
+
         // Evict LRU entry if bucket is full
         if self.entries.len() > MAX_ENTRIES_PER_BUCKET {
             self.evict_lru();
         }
     }
-    
+
     /// Evict the least recently used entry
     fn evict_lru(&mut self) {
         if self.entries.is_empty() {
             return;
         }
-        
+
         // Find entry with lowest access count
         let mut lru_idx = 0;
         let mut lru_count = self.entries[0].access_count;
-        
+
         for (idx, entry) in self.entries.iter().enumerate().skip(1) {
             if entry.access_count < lru_count {
                 lru_idx = idx;
                 lru_count = entry.access_count;
             }
         }
-        
+
         self.entries.remove(lru_idx);
     }
-    
+
     /// Invalidate all entries for a given parent inode
     fn invalidate(&mut self, parent_ino: u64) {
         self.entries.retain(|e| e.parent_ino != parent_ino);
@@ -135,35 +218,35 @@ impl DentryCache {
             entries: Vec::new(),
             access_counter: 0,
         });
-        
+
         Self {
             buckets: [INIT; DENTRY_BUCKETS],
         }
     }
-    
+
     /// Compute hash for (parent_ino, name) pair
     /// Simple FNV-1a hash function
     fn hash(parent_ino: u64, name: &str) -> usize {
         const FNV_OFFSET: u64 = 14695981039346656037;
         const FNV_PRIME: u64 = 1099511628211;
-        
+
         let mut hash = FNV_OFFSET;
-        
+
         // Hash parent_ino
         for byte in parent_ino.to_le_bytes() {
             hash ^= byte as u64;
             hash = hash.wrapping_mul(FNV_PRIME);
         }
-        
+
         // Hash name
         for byte in name.bytes() {
             hash ^= byte as u64;
             hash = hash.wrapping_mul(FNV_PRIME);
         }
-        
+
         (hash as usize) % DENTRY_BUCKETS
     }
-    
+
     /// Lookup an entry in the cache
     ///
     /// Returns:
@@ -175,7 +258,7 @@ impl DentryCache {
         let mut bucket = self.buckets[bucket_idx].lock();
         bucket.lookup(parent_ino, name)
     }
-    
+
     /// Insert an entry into the cache
     ///
     /// # Arguments
@@ -187,12 +270,12 @@ impl DentryCache {
             // Don't cache invalid inode numbers
             return;
         }
-        
+
         let bucket_idx = Self::hash(parent_ino, name);
         let mut bucket = self.buckets[bucket_idx].lock();
         bucket.insert(parent_ino, name.into(), child_ino, false);
     }
-    
+
     /// Insert a negative entry (file not found)
     ///
     /// # Arguments
@@ -203,7 +286,7 @@ impl DentryCache {
         let mut bucket = self.buckets[bucket_idx].lock();
         bucket.insert(parent_ino, name.into(), 0, true);
     }
-    
+
     /// Invalidate all entries for a given parent inode
     ///
     /// This should be called when a directory is modified (create, unlink, rename)
@@ -217,7 +300,7 @@ impl DentryCache {
             b.invalidate(parent_ino);
         }
     }
-    
+
     /// Clear the entire cache
     pub fn clear(&self) {
         for bucket in &self.buckets {
