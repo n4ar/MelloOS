@@ -9,7 +9,7 @@
 //! Note: This is a simplified implementation using static arrays
 //! since the kernel doesn't have the alloc crate yet.
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::RwLock;
 
 /// Size of a page in bytes (4 KiB)
@@ -148,12 +148,12 @@ impl ReadAheadWindow {
     pub fn update(&self, page_num: u64) -> Option<usize> {
         let has_last = self.has_last_page.load(Ordering::Acquire);
         let last = self.last_page.load(Ordering::Acquire);
-        
+
         let is_sequential = has_last && page_num == last + 1;
 
         if is_sequential {
             let count = self.sequential_count.fetch_add(1, Ordering::Relaxed) + 1;
-            
+
             // Grow window if we've seen enough sequential accesses
             if count >= SEQUENTIAL_THRESHOLD {
                 let current_size = self.size.load(Ordering::Relaxed);
@@ -279,7 +279,7 @@ impl FilePageCache {
         // If no invalid entry, evict LRU
         let mut oldest_idx = 0;
         let mut oldest_time = u64::MAX;
-        
+
         for (idx, page_lock) in self.pages.iter().enumerate() {
             let page = page_lock.read();
             let access_time = page.last_access();
@@ -313,9 +313,66 @@ impl FilePageCache {
         false
     }
 
+    /// Mark a page as clean
+    ///
+    /// Marks the specified page as clean (not dirty).
+    /// This should be called after successfully writing a page to disk.
+    ///
+    /// # Arguments
+    /// * `page_num` - Page number to mark as clean
+    ///
+    /// # Returns
+    /// true if the page was found and marked clean, false otherwise
+    pub fn mark_clean(&self, page_num: u64) -> bool {
+        for page_lock in &self.pages {
+            let page = page_lock.read();
+            if page.is_valid() && page.page_num() == page_num {
+                if page.is_dirty() {
+                    page.mark_clean();
+                    self.dirty_count.fetch_sub(1, Ordering::Relaxed);
+                }
+                return true;
+            }
+        }
+        false
+    }
+
     /// Get number of dirty pages
     pub fn dirty_count(&self) -> usize {
         self.dirty_count.load(Ordering::Relaxed)
+    }
+
+    /// Get dirty pages in a range
+    ///
+    /// Returns a vector of (page_num, data) tuples for all dirty pages
+    /// in the specified range.
+    ///
+    /// # Arguments
+    /// * `start_page` - Starting page number (inclusive)
+    /// * `end_page` - Ending page number (exclusive)
+    ///
+    /// # Returns
+    /// Vector of (page_num, page_data) tuples for dirty pages in range
+    pub fn get_dirty_pages(
+        &self,
+        start_page: u64,
+        end_page: u64,
+    ) -> alloc::vec::Vec<(u64, [u8; CACHE_PAGE_SIZE])> {
+        let mut dirty_pages = alloc::vec::Vec::new();
+
+        for page_lock in &self.pages {
+            let page = page_lock.read();
+            if page.is_valid() && page.is_dirty() {
+                let page_num = page.page_num();
+                if page_num >= start_page && page_num < end_page {
+                    let mut data = [0u8; CACHE_PAGE_SIZE];
+                    data.copy_from_slice(page.data());
+                    dirty_pages.push((page_num, data));
+                }
+            }
+        }
+
+        dirty_pages
     }
 
     /// Update read-ahead window and get read-ahead size

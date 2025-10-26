@@ -767,8 +767,41 @@ fn sys_fork() -> isize {
         child_cr3
     );
 
-    // Drop PMM guard before creating process
+    // Drop PMM guard before marking COW pages
     drop(pmm_guard);
+
+    // Mark all writable user pages as COW in both parent and child
+    // This implements Requirement 1.1: fork() marks all writable pages as COW
+    use crate::mm::paging::mark_user_pages_cow;
+
+    match mark_user_pages_cow(parent_cr3) {
+        Ok(count) => {
+            serial_println!(
+                "[SYSCALL] sys_fork: Marked {} pages as COW in parent",
+                count
+            );
+        }
+        Err(e) => {
+            serial_println!(
+                "[SYSCALL] sys_fork: Failed to mark parent pages as COW: {}",
+                e
+            );
+            // Continue anyway - COW is an optimization
+        }
+    }
+
+    match mark_user_pages_cow(child_cr3) {
+        Ok(count) => {
+            serial_println!("[SYSCALL] sys_fork: Marked {} pages as COW in child", count);
+        }
+        Err(e) => {
+            serial_println!(
+                "[SYSCALL] sys_fork: Failed to mark child pages as COW: {}",
+                e
+            );
+            // Continue anyway - COW is an optimization
+        }
+    }
 
     // Create child process
     let child_pid = match ProcessManager::create_process(Some(parent_pid), "forked_child") {

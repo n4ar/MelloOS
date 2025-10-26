@@ -45,6 +45,7 @@ pub mod allocator;
 pub mod mmap;
 pub mod paging;
 pub mod pmm;
+pub mod refcount;
 pub mod security;
 pub mod tlb;
 

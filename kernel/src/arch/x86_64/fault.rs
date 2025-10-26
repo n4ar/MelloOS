@@ -79,10 +79,151 @@ pub extern "C" fn page_fault_handler(error_code: u64, fault_addr: u64, rip: u64)
     }
 }
 
+/// Handle Copy-on-Write page fault
+///
+/// This function handles write faults to COW pages by either:
+/// 1. If refcount == 1: Clear COW flag and make page writable
+/// 2. If refcount > 1: Allocate new page, copy data, update PTE
+///
+/// # Arguments
+/// * `fault_addr` - Faulting virtual address
+///
+/// # Returns
+/// Ok(()) if COW fault was handled successfully, Err otherwise
+fn handle_cow_fault(fault_addr: u64) -> Result<(), &'static str> {
+    use crate::mm::paging::{get_current_cr3, PageTable, PageTableFlags};
+    use crate::mm::phys_to_virt;
+    use crate::mm::pmm::get_global_pmm;
+    use crate::mm::refcount::PAGE_REFCOUNT;
+
+    let fault_addr_usize = fault_addr as usize;
+
+    // Get current page table
+    let pml4_phys = get_current_cr3();
+    let pml4_virt = phys_to_virt(pml4_phys);
+    let pml4 = unsafe { &mut *(pml4_virt as *mut PageTable) };
+
+    // Extract indices from virtual address
+    let pml4_index = (fault_addr_usize >> 39) & 0x1FF;
+    let pdpt_index = (fault_addr_usize >> 30) & 0x1FF;
+    let pd_index = (fault_addr_usize >> 21) & 0x1FF;
+    let pt_index = (fault_addr_usize >> 12) & 0x1FF;
+
+    // Walk page tables to find the PTE
+    let pml4_entry = pml4.get_entry(pml4_index);
+    if !pml4_entry.is_present() {
+        return Err("PML4 entry not present");
+    }
+
+    let pdpt_phys = pml4_entry.addr();
+    let pdpt_virt = phys_to_virt(pdpt_phys);
+    let pdpt = unsafe { &mut *(pdpt_virt as *mut PageTable) };
+
+    let pdpt_entry = pdpt.get_entry(pdpt_index);
+    if !pdpt_entry.is_present() {
+        return Err("PDPT entry not present");
+    }
+
+    let pd_phys = pdpt_entry.addr();
+    let pd_virt = phys_to_virt(pd_phys);
+    let pd = unsafe { &mut *(pd_virt as *mut PageTable) };
+
+    let pd_entry = pd.get_entry(pd_index);
+    if !pd_entry.is_present() {
+        return Err("PD entry not present");
+    }
+
+    let pt_phys = pd_entry.addr();
+    let pt_virt = phys_to_virt(pt_phys);
+    let pt = unsafe { &mut *(pt_virt as *mut PageTable) };
+
+    let pt_entry = pt.get_entry_mut(pt_index);
+    if !pt_entry.is_present() {
+        return Err("PT entry not present");
+    }
+
+    // Check if this is actually a COW page
+    if !pt_entry.is_cow() {
+        return Err("Page is not marked as COW");
+    }
+
+    let old_page_phys = pt_entry.addr();
+    let refcount = PAGE_REFCOUNT.get_refcount(old_page_phys);
+
+    serial_println!(
+        "[COW] Handling COW fault at addr=0x{:x}, page_phys=0x{:x}, refcount={}",
+        fault_addr,
+        old_page_phys,
+        refcount
+    );
+
+    if refcount == 1 {
+        // Last reference - just make the page writable
+        pt_entry.clear_cow();
+        pt_entry.set_writable(true);
+
+        serial_println!(
+            "[COW] Last reference - made page writable at addr=0x{:x}",
+            fault_addr
+        );
+    } else {
+        // Multiple references - need to copy the page
+        let mut pmm_guard = get_global_pmm();
+        let pmm = match pmm_guard.as_mut() {
+            Some(p) => p,
+            None => return Err("PMM not initialized"),
+        };
+
+        // Allocate new page
+        let new_page_phys = match pmm.alloc_frame() {
+            Some(phys) => phys,
+            None => return Err("Out of physical memory"),
+        };
+
+        // Copy page data
+        let old_page_virt = phys_to_virt(old_page_phys);
+        let new_page_virt = phys_to_virt(new_page_phys);
+
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                old_page_virt as *const u8,
+                new_page_virt as *mut u8,
+                4096,
+            );
+        }
+
+        // Update PTE to point to new page
+        let old_flags = pt_entry.raw() & 0xFFF;
+        let new_flags = (old_flags & !PageTableFlags::COW.bits()) | PageTableFlags::WRITABLE.bits();
+        pt_entry.set(new_page_phys, PageTableFlags(new_flags));
+
+        // Decrement refcount for old page
+        PAGE_REFCOUNT.dec_refcount(old_page_phys, pmm);
+
+        serial_println!(
+            "[COW] Copied page: old=0x{:x} -> new=0x{:x} at addr=0x{:x}",
+            old_page_phys,
+            new_page_phys,
+            fault_addr
+        );
+    }
+
+    // Flush TLB for this page
+    unsafe {
+        core::arch::asm!(
+            "invlpg [{}]",
+            in(reg) fault_addr_usize,
+            options(nostack, preserves_flags)
+        );
+    }
+
+    Ok(())
+}
+
 /// Handle page fault in user space
 ///
 /// User space page faults indicate that a user process accessed invalid memory.
-/// This function terminates the offending process and logs the fault details.
+/// This function first checks if it's a COW fault, and if not, terminates the process.
 ///
 /// # Arguments
 /// * `fault_addr` - Faulting virtual address
@@ -90,6 +231,34 @@ pub extern "C" fn page_fault_handler(error_code: u64, fault_addr: u64, rip: u64)
 /// * `rip` - Instruction pointer where fault occurred
 fn handle_user_page_fault(fault_addr: u64, error_code: u64, rip: u64) {
     let cpu_id = unsafe { crate::arch::x86_64::smp::percpu::percpu_current().id };
+
+    // Check if this is a COW fault (write to present page)
+    let is_write = (error_code & PF_WRITE) != 0;
+    let is_present = (error_code & PF_PRESENT) != 0;
+
+    if is_write && is_present {
+        // This might be a COW fault - try to handle it
+        match handle_cow_fault(fault_addr) {
+            Ok(()) => {
+                // COW fault handled successfully - return to user space
+                serial_println!(
+                    "[FAULT][cpu{}] COW fault handled successfully at 0x{:x}",
+                    cpu_id,
+                    fault_addr
+                );
+                return;
+            }
+            Err(e) => {
+                // Not a COW fault or handling failed
+                serial_println!(
+                    "[FAULT][cpu{}] Not a COW fault or handling failed: {}",
+                    cpu_id,
+                    e
+                );
+                // Fall through to normal fault handling
+            }
+        }
+    }
 
     // Get current task/process information
     let current_task_info = match sched::get_current_task_info() {

@@ -22,6 +22,7 @@ impl PageTableFlags {
     pub const DIRTY: PageTableFlags = PageTableFlags(1 << 6); // Page has been written to
     pub const HUGE: PageTableFlags = PageTableFlags(1 << 7); // Huge page (2MB or 1GB)
     pub const GLOBAL: PageTableFlags = PageTableFlags(1 << 8); // Global page (not flushed from TLB)
+    pub const COW: PageTableFlags = PageTableFlags(1 << 9); // Copy-on-Write page (available bit)
     pub const NO_EXECUTE: PageTableFlags = PageTableFlags(1 << 63); // Page is not executable (requires NXE bit)
 }
 
@@ -131,6 +132,41 @@ impl PageTableEntry {
     /// Get the raw entry value
     pub fn raw(&self) -> u64 {
         self.0
+    }
+
+    /// Set COW flag and clear WRITABLE flag
+    ///
+    /// This marks the page as copy-on-write, making it read-only until
+    /// a write fault occurs.
+    pub fn set_cow(&mut self) {
+        self.0 |= PageTableFlags::COW.bits();
+        self.0 &= !PageTableFlags::WRITABLE.bits();
+    }
+
+    /// Clear COW flag
+    ///
+    /// This removes the copy-on-write marking from the page.
+    pub fn clear_cow(&mut self) {
+        self.0 &= !PageTableFlags::COW.bits();
+    }
+
+    /// Check if entry is marked as COW
+    pub fn is_cow(&self) -> bool {
+        (self.0 & PageTableFlags::COW.bits()) != 0
+    }
+
+    /// Check if entry is writable
+    pub fn is_writable(&self) -> bool {
+        (self.0 & PageTableFlags::WRITABLE.bits()) != 0
+    }
+
+    /// Set writable flag
+    pub fn set_writable(&mut self, writable: bool) {
+        if writable {
+            self.0 |= PageTableFlags::WRITABLE.bits();
+        } else {
+            self.0 &= !PageTableFlags::WRITABLE.bits();
+        }
     }
 }
 
@@ -847,6 +883,104 @@ pub fn get_current_cr3() -> PhysAddr {
         );
         (cr3 & 0x000F_FFFF_FFFF_F000) as usize
     }
+}
+
+/// Mark all writable user pages as COW in a page table hierarchy
+///
+/// This function walks through all page table levels and marks writable user pages
+/// as copy-on-write. It also increments the reference count for each COW page.
+///
+/// # Arguments
+/// * `pml4_phys` - Physical address of the PML4 (root page table)
+///
+/// # Returns
+/// Ok(count) with the number of pages marked as COW, or an error
+pub fn mark_user_pages_cow(pml4_phys: PhysAddr) -> Result<usize, &'static str> {
+    use crate::mm::refcount::PAGE_REFCOUNT;
+
+    let pml4_virt = phys_to_virt(pml4_phys);
+    let pml4 = unsafe { &mut *(pml4_virt as *mut PageTable) };
+
+    let mut cow_count = 0;
+
+    // Only process user space (lower half): indices 0-255
+    for pml4_idx in 0..256 {
+        let pml4_entry = pml4.get_entry_mut(pml4_idx);
+        if !pml4_entry.is_present() {
+            continue;
+        }
+
+        let pdpt_phys = pml4_entry.addr();
+        let pdpt_virt = phys_to_virt(pdpt_phys);
+        let pdpt = unsafe { &mut *(pdpt_virt as *mut PageTable) };
+
+        for pdpt_idx in 0..512 {
+            let pdpt_entry = pdpt.get_entry_mut(pdpt_idx);
+            if !pdpt_entry.is_present() {
+                continue;
+            }
+
+            // Check for 1GB huge page
+            if (pdpt_entry.raw() & PageTableFlags::HUGE.bits()) != 0 {
+                if pdpt_entry.is_writable() {
+                    let page_phys = pdpt_entry.addr();
+                    pdpt_entry.set_cow();
+                    PAGE_REFCOUNT.inc_refcount(page_phys);
+                    cow_count += 1;
+                }
+                continue;
+            }
+
+            let pd_phys = pdpt_entry.addr();
+            let pd_virt = phys_to_virt(pd_phys);
+            let pd = unsafe { &mut *(pd_virt as *mut PageTable) };
+
+            for pd_idx in 0..512 {
+                let pd_entry = pd.get_entry_mut(pd_idx);
+                if !pd_entry.is_present() {
+                    continue;
+                }
+
+                // Check for 2MB huge page
+                if (pd_entry.raw() & PageTableFlags::HUGE.bits()) != 0 {
+                    if pd_entry.is_writable() {
+                        let page_phys = pd_entry.addr();
+                        pd_entry.set_cow();
+                        PAGE_REFCOUNT.inc_refcount(page_phys);
+                        cow_count += 1;
+                    }
+                    continue;
+                }
+
+                let pt_phys = pd_entry.addr();
+                let pt_virt = phys_to_virt(pt_phys);
+                let pt = unsafe { &mut *(pt_virt as *mut PageTable) };
+
+                for pt_idx in 0..512 {
+                    let pt_entry = pt.get_entry_mut(pt_idx);
+                    if !pt_entry.is_present() {
+                        continue;
+                    }
+
+                    // Mark writable user pages as COW
+                    if pt_entry.is_writable() {
+                        let page_phys = pt_entry.addr();
+                        pt_entry.set_cow();
+                        PAGE_REFCOUNT.inc_refcount(page_phys);
+                        cow_count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    crate::serial_println!(
+        "[PAGING] Marked {} user pages as COW in page table at phys={:#x}",
+        cow_count,
+        pml4_phys
+    );
+
+    Ok(cow_count)
 }
 
 /// Set CR3 to switch to a different page table
