@@ -74,6 +74,7 @@ macro_rules! sched_error {
     };
 }
 
+use alloc::vec::Vec;
 use crate::arch::x86_64::smp::percpu::{percpu_current, percpu_for};
 use context::CpuContext;
 use priority::TaskPriority;
@@ -605,6 +606,38 @@ pub fn get_task_mut(task_id: TaskId) -> Option<&'static mut Task> {
 /// Returns a reference to the task, or None if task doesn't exist
 pub fn get_task_by_id(task_id: TaskId) -> Option<&'static Task> {
     get_task(task_id).map(|t| &*t)
+}
+
+/// Apply a closure to every task in the specified process group.
+///
+/// This helper collects matching tasks while holding the task-table lock
+/// and then invokes the closure without the lock to avoid re-entrancy issues.
+pub fn for_each_task_in_group<F>(pgid: process_group::Pgid, mut f: F)
+where
+    F: FnMut(&'static mut Task),
+{
+    let mut target_ptrs: Vec<*mut Task> = Vec::new();
+
+    {
+        let task_table = TASK_TABLE.lock();
+        for task_ptr in task_table.iter() {
+            if task_ptr.is_null() {
+                continue;
+            }
+
+            let task = unsafe { &*task_ptr.get() };
+            if task.pgid == pgid {
+                target_ptrs.push(task_ptr.get());
+            }
+        }
+    }
+
+    for ptr in target_ptrs {
+        unsafe {
+            let task = &mut *ptr;
+            f(task);
+        }
+    }
 }
 
 /// Get a task as an Arc for exec() operations

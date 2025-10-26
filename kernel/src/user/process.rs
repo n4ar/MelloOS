@@ -144,6 +144,12 @@ pub struct Process {
     /// Parent process ID (None for init process)
     pub parent_pid: Option<ProcessId>,
 
+    /// Effective user identifier
+    pub uid: u32,
+
+    /// Effective group identifier
+    pub gid: u32,
+
     /// Current state of the process
     pub state: ProcessState,
 
@@ -200,6 +206,8 @@ impl Process {
         Self {
             pid,
             parent_pid,
+            uid: 0,
+            gid: 0,
             state: ProcessState::Ready,
             exit_code: None,
             context: CpuContext::new(),
@@ -1016,6 +1024,10 @@ pub fn sync_task_with_process(
     task.context = process.context.clone();
     task.priority = process.priority;
     task.wake_tick = process.wake_tick;
+    task.creds.uid = process.uid;
+    task.creds.gid = process.gid;
+    task.creds.is_kernel_thread = false;
+    task.user_stack_pointer = process.context.rsp;
 
     // Sync memory regions if they differ
     if task.region_count != process.region_count {

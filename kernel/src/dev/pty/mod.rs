@@ -485,27 +485,10 @@ static PTY_TABLE: SpinLock<PtyTable> = SpinLock::new(PtyTable::new());
 /// * `pair` - The PTY pair
 /// * `signal` - The signal to send
 fn send_signal_to_foreground_group(pair: &PtyPair, signal: u32) {
-    use crate::signal::send_signal;
-
     // Get the foreground process group ID
     if let Some(pgid) = pair.slave.foreground_pgid {
         crate::serial_println!("[PTY] Sending signal {} to foreground PGID {}", signal, pgid);
-        
-        // TODO: Send signal to all processes in the process group
-        // For now, just send to the process with ID == PGID (the group leader)
-        if let Some(task) = crate::sched::get_task_mut(pgid) {
-            match send_signal(task, signal) {
-                Ok(()) => {
-                    crate::serial_println!("[PTY] Signal {} sent to process {}", signal, pgid);
-                }
-                Err(()) => {
-                    crate::serial_println!("[PTY] ERROR: Failed to send signal {} to process {}", 
-                                          signal, pgid);
-                }
-            }
-        } else {
-            crate::serial_println!("[PTY] WARNING: Foreground process {} not found", pgid);
-        }
+        send_signal_to_process_group(pgid, signal);
     } else {
         crate::serial_println!("[PTY] WARNING: No foreground process group set");
     }
@@ -517,25 +500,21 @@ fn send_signal_to_foreground_group(pair: &PtyPair, signal: u32) {
 /// * `pgid` - Process group ID
 /// * `signal` - Signal to send
 fn send_signal_to_process_group(pgid: usize, signal: u32) {
-    use crate::signal::send_signal;
-
     crate::serial_println!("[PTY] Sending signal {} to PGID {}", signal, pgid);
     
-    // TODO: Send signal to all processes in the process group
-    // For now, just send to the process with ID == PGID (the group leader)
-    if let Some(task) = crate::sched::get_task_mut(pgid) {
-        match send_signal(task, signal) {
-            Ok(()) => {
-                crate::serial_println!("[PTY] Signal {} sent to process {}", signal, pgid);
-            }
-            Err(()) => {
-                crate::serial_println!("[PTY] ERROR: Failed to send signal {} to process {}", 
-                                      signal, pgid);
-            }
-        }
-    } else {
-        crate::serial_println!("[PTY] WARNING: Process {} not found", pgid);
+    let delivered = crate::signal::send_signal_to_group(pgid, signal);
+    if delivered == 0 {
+        crate::serial_println!(
+            "[PTY] WARNING: No tasks found in PGID {} while sending signal {}",
+            pgid,
+            signal
+        );
     }
+}
+
+/// Fetch the current task's process group ID.
+fn current_task_pgid() -> Option<usize> {
+    crate::sched::current_task().map(|task| task.pgid)
 }
 
 /// Check if the current process is in the foreground process group
@@ -546,19 +525,12 @@ fn send_signal_to_process_group(pgid: usize, signal: u32) {
 /// # Returns
 /// true if current process is in foreground group, false otherwise
 fn is_foreground_process(pair: &PtyPair) -> bool {
-    // Get current task's process group ID
-    if let Some((task_id, _)) = crate::sched::get_current_task_info() {
-        // TODO: Get actual PGID from task
-        // For now, assume task_id == pgid
-        let current_pgid = task_id;
-        
-        if let Some(fg_pgid) = pair.slave.foreground_pgid {
-            return current_pgid == fg_pgid;
-        }
+    match (pair.slave.foreground_pgid, current_task_pgid()) {
+        (Some(fg_pgid), Some(current_pgid)) => current_pgid == fg_pgid,
+        // If no foreground group is set or we can't determine the caller's PGID,
+        // allow access so the operation can make progress.
+        _ => true,
     }
-    
-    // If no foreground group is set, allow access
-    true
 }
 
 /// Initialize the PTY subsystem
@@ -767,12 +739,13 @@ pub fn read_slave(number: PtyNumber, buf: &mut [u8]) -> usize {
             crate::serial_println!("[PTY] Background process attempting to read from PTY {}", number);
             
             // Get current process group ID and send SIGTTIN
-            if let Some((task_id, _)) = crate::sched::get_current_task_info() {
-                // TODO: Get actual PGID from task
-                let current_pgid = task_id;
+            if let Some(current_pgid) = current_task_pgid() {
                 drop(table); // Release lock before sending signal
                 send_signal_to_process_group(current_pgid, crate::signal::signals::SIGTTIN);
                 return 0; // Return 0 bytes read (process will be stopped)
+            } else {
+                drop(table);
+                return 0;
             }
         }
         
@@ -833,12 +806,13 @@ pub fn write_slave(number: PtyNumber, data: &[u8]) -> usize {
             crate::serial_println!("[PTY] Background process attempting to write to PTY {}", number);
             
             // Get current process group ID and send SIGTTOU
-            if let Some((task_id, _)) = crate::sched::get_current_task_info() {
-                // TODO: Get actual PGID from task
-                let current_pgid = task_id;
+            if let Some(current_pgid) = current_task_pgid() {
                 drop(table); // Release lock before sending signal
                 send_signal_to_process_group(current_pgid, crate::signal::signals::SIGTTOU);
                 return 0; // Return 0 bytes written (process will be stopped)
+            } else {
+                drop(table);
+                return 0;
             }
         }
         

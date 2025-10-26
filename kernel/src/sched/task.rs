@@ -7,7 +7,7 @@ use super::context::CpuContext;
 use super::priority::TaskPriority;
 use super::process_group::{DeviceId, Pgid, Pid, Sid};
 use crate::mm::paging::PageTableFlags;
-use crate::signal::{signals, SigAction};
+use crate::signal::{signals, PendingSignalFrame, SigAction};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// Task identifier type
@@ -127,6 +127,37 @@ const MAX_SIGNALS: usize = 64;
 /// User space address limit (512GB)
 pub const USER_LIMIT: usize = 0x0000_8000_0000_0000;
 
+/// Task credential descriptor
+#[derive(Debug, Clone, Copy)]
+pub struct Credentials {
+    /// Effective user identifier
+    pub uid: u32,
+    /// Effective group identifier
+    pub gid: u32,
+    /// Whether this task represents a kernel thread
+    pub is_kernel_thread: bool,
+}
+
+impl Credentials {
+    /// Create credentials for kernel threads (root privileges, kernel flag)
+    pub const fn kernel() -> Self {
+        Self {
+            uid: 0,
+            gid: 0,
+            is_kernel_thread: true,
+        }
+    }
+
+    /// Create user-space credentials
+    pub const fn user(uid: u32, gid: u32) -> Self {
+        Self {
+            uid,
+            gid,
+            is_kernel_thread: false,
+        }
+    }
+}
+
 /// Task Control Block (TCB)
 ///
 /// Contains all information needed to manage a task, including its
@@ -205,6 +236,19 @@ pub struct Task {
     /// Heap end address (current program break)
     /// This marks the current end of the heap, grows upward with brk/sbrk
     pub heap_end: usize,
+
+    /// List of child process IDs
+    /// Used for tracking children and implementing wait() syscall
+    pub children: alloc::vec::Vec<Pid>,
+
+    /// Task credentials (UID/GID + kernel flag)
+    pub creds: Credentials,
+
+    /// Cached user stack pointer used for signal delivery bookkeeping
+    pub user_stack_pointer: u64,
+
+    /// Pending signal frame metadata (if a handler is prepared)
+    pub pending_signal_frame: Option<PendingSignalFrame>,
 }
 
 impl Task {
@@ -310,15 +354,19 @@ impl Task {
             signal_handlers,
             pending_signals: AtomicU64::new(0),
             signal_mask: AtomicU64::new(0),
-            pid: id,            // PID = task ID
-            ppid: 0,            // Will be set by parent
-            pgid: id,           // Initially, pgid = pid
-            sid: id,            // Initially, sid = pid (for init process)
-            tty: None,          // No controlling terminal initially
-            last_syscall: None, // No syscall executed yet
-            fd_table,           // Empty FD table
-            heap_start: 0,      // Will be set during exec or process creation
-            heap_end: 0,        // Will be set during exec or process creation
+            pid: id,                          // PID = task ID
+            ppid: 0,                          // Will be set by parent
+            pgid: id,                         // Initially, pgid = pid
+            sid: id,                          // Initially, sid = pid (for init process)
+            tty: None,                        // No controlling terminal initially
+            last_syscall: None,               // No syscall executed yet
+            fd_table,                         // Empty FD table
+            heap_start: 0,                    // Will be set during exec or process creation
+            heap_end: 0,                      // Will be set during exec or process creation
+            children: alloc::vec::Vec::new(), // Empty children list initially
+            creds: Credentials::kernel(),
+            user_stack_pointer: 0,
+            pending_signal_frame: None,
         })
     }
 

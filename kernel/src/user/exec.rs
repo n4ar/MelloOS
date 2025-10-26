@@ -63,11 +63,31 @@ pub struct ExecContext {
 /// allowing us to restore it if the exec operation fails.
 #[derive(Debug, Clone)]
 pub struct SavedMemoryState {
-    /// Saved memory regions
-    pub regions: Vec<crate::sched::task::MemoryRegion>,
+    /// Saved memory regions (with per-page mappings)
+    pub regions: Vec<SavedRegionState>,
 
     /// Saved heap pointers (heap_start, heap_end) if applicable
     pub heap_pointer: Option<(usize, usize)>,
+}
+
+/// Saved region with its page mappings
+#[derive(Debug, Clone)]
+pub struct SavedRegionState {
+    /// Region metadata
+    pub region: crate::sched::task::MemoryRegion,
+
+    /// Physical frames backing each mapped page in the region
+    pub pages: Vec<SavedPageState>,
+}
+
+/// Saved page mapping information
+#[derive(Debug, Clone)]
+pub struct SavedPageState {
+    /// Page-aligned virtual address
+    pub virt_addr: usize,
+
+    /// Physical frame backing this page (page-aligned)
+    pub phys_addr: usize,
 }
 
 impl ExecContext {
@@ -274,8 +294,8 @@ impl ExecContext {
         use crate::mm::paging::PageMapper;
 
         // 1. Save current memory state for rollback
-        // We need to save the memory regions so we can restore them if exec fails
-        let mut saved_regions = Vec::new();
+        // We need to save the memory regions and their backing pages so we can restore
+        let mut saved_regions: Vec<SavedRegionState> = Vec::new();
 
         // Access task's memory regions through interior mutability pattern
         // Since we have Arc<Task>, we need to be careful about concurrent access
@@ -285,9 +305,40 @@ impl ExecContext {
         // Clone the memory regions for rollback
         // Note: In a full implementation, we would also save the actual page table
         // entries and their contents. For now, we just save the region descriptors.
+        let mut mapper = PageMapper::new();
+
         for i in 0..self.task.region_count {
             if let Some(region) = &self.task.memory_regions[i] {
-                saved_regions.push(region.clone());
+                // Capture per-page mappings for this region
+                let start_page = region.start & !0xFFF;
+                let end_page = (region
+                    .end
+                    .checked_add(0xFFF)
+                    .ok_or(ExecError::InvalidArgument)?
+                    & !0xFFF)
+                    .max(start_page);
+
+                let mut pages = Vec::new();
+                let mut addr = start_page;
+                while addr < end_page {
+                    if let Some(phys_addr) = mapper.translate(addr) {
+                        pages.push(SavedPageState {
+                            virt_addr: addr,
+                            phys_addr: phys_addr & !0xFFF,
+                        });
+                    } else {
+                        crate::serial_println!(
+                            "[EXEC] WARNING: Page 0x{:016x} not mapped while saving region",
+                            addr
+                        );
+                    }
+                    addr += 4096;
+                }
+
+                saved_regions.push(SavedRegionState {
+                    region: region.clone(),
+                    pages,
+                });
             }
         }
 
@@ -303,16 +354,19 @@ impl ExecContext {
         // We need to walk through all user space pages and unmap them
         // This is done by clearing the page table entries for user space
 
-        // Get the current page mapper
-        let mut mapper = PageMapper::new();
-
         // Unmap each memory region
         // We iterate through the saved regions (not task.memory_regions) to avoid
         // borrowing issues, since we'll be modifying the task's regions
         for region in &saved_regions {
             // Unmap all pages in this region
-            let start_page = region.start & !0xFFF; // Align down to page boundary
-            let end_page = (region.end + 0xFFF) & !0xFFF; // Align up to page boundary
+            let start_page = region.region.start & !0xFFF; // Align down to page boundary
+            let end_page = (region
+                .region
+                .end
+                .checked_add(0xFFF)
+                .ok_or(ExecError::InvalidArgument)?
+                & !0xFFF)
+                .max(start_page); // Align up to page boundary
 
             let mut addr = start_page;
             while addr < end_page {
@@ -368,7 +422,7 @@ impl ExecContext {
     /// This function modifies the process's memory layout. It should only be
     /// called after clear_old_image() has been called and exec has failed.
     pub fn restore_old_image(&self, saved_state: SavedMemoryState) -> Result<(), ExecError> {
-        use crate::mm::paging::PageTableFlags;
+        use crate::mm::paging::PageMapper;
 
         // Note: In a full implementation with proper page table isolation,
         // we would need to:
@@ -381,31 +435,30 @@ impl ExecContext {
         // clear_old_image() doesn't actually free the physical pages.
         // They remain allocated but unmapped. So restoration is simpler.
 
-        // Restore each memory region
-        for region in &saved_state.regions {
-            // Convert region flags to page table flags
-            let mut _flags = PageTableFlags::PRESENT | PageTableFlags::USER;
+        // Remap each saved page back into the address space
+        let mut mapper = PageMapper::new();
+        let mut pmm_guard = crate::mm::pmm::get_global_pmm();
+        let pmm = pmm_guard
+            .as_mut()
+            .ok_or(ExecError::OutOfMemory)?;
 
-            if region.flags.bits() & PageTableFlags::WRITABLE.bits() != 0 {
-                _flags = _flags | PageTableFlags::WRITABLE;
+        for saved_region in &saved_state.regions {
+            let flags = saved_region.region.flags;
+            for page in &saved_region.pages {
+                mapper
+                    .map_page(page.virt_addr, page.phys_addr, flags, pmm)
+                    .map_err(|_| ExecError::OutOfMemory)?;
             }
-
-            if region.flags.bits() & PageTableFlags::NO_EXECUTE.bits() != 0 {
-                _flags = _flags | PageTableFlags::NO_EXECUTE;
-            }
-
-            // In a full implementation, we would remap each page here
-            // For now, we just restore the region tracking
-            // TODO: Implement full page remapping when we have proper page table isolation
         }
+        drop(pmm_guard);
 
         // Restore the task's memory region tracking
         unsafe {
             let task_ptr = Arc::as_ptr(&self.task) as *mut Task;
             (*task_ptr).clear_memory_regions();
 
-            for region in saved_state.regions {
-                let _ = (*task_ptr).add_memory_region(region);
+            for region in &saved_state.regions {
+                let _ = (*task_ptr).add_memory_region(region.region.clone());
             }
         }
 
@@ -943,6 +996,7 @@ pub fn validate_user_range(ptr: usize, len: usize) -> Result<(), ExecError> {
 /// # Requirements
 /// Implements R8.3: Check for unmapped memory
 pub fn validate_user_memory_mapped(ptr: usize, len: usize) -> Result<(), ExecError> {
+    use crate::mm::paging::{PageMapper, PageTableFlags};
     use crate::mm::security::is_user_range;
 
     // First validate the range is in user space
@@ -950,12 +1004,28 @@ pub fn validate_user_memory_mapped(ptr: usize, len: usize) -> Result<(), ExecErr
         return Err(ExecError::InvalidArgument);
     }
 
-    // TODO: Check if pages are actually mapped
-    // For now, we'll rely on page fault handling
-    // In a full implementation, we would:
-    // 1. Get current task's page mapper
-    // 2. Check each page in the range
-    // 3. Verify pages are present and have USER flag
+    // Walk each page in the range and ensure it's mapped for userspace
+    let mapper = PageMapper::new();
+    let page_size = 4096usize;
+    let start_page = ptr & !(page_size - 1);
+    let end_addr = ptr.checked_add(len).ok_or(ExecError::InvalidArgument)?;
+    let end_page = end_addr
+        .checked_add(page_size - 1)
+        .ok_or(ExecError::InvalidArgument)?
+        & !(page_size - 1);
+
+    let mut current = start_page;
+    while current < end_page {
+        match mapper.get_page_flags(current) {
+            Some(flags) => {
+                if (flags.bits() & PageTableFlags::USER.bits()) == 0 {
+                    return Err(ExecError::InvalidArgument);
+                }
+            }
+            None => return Err(ExecError::InvalidArgument),
+        }
+        current += page_size;
+    }
 
     Ok(())
 }
@@ -1701,6 +1771,13 @@ impl ExecContext {
             argv_ptr,
             envp_ptr
         );
+
+        // Cache user-mode stack pointer and mark task as userspace before transition
+        unsafe {
+            let task_ptr = Arc::as_ptr(&self.task) as *mut Task;
+            (*task_ptr).user_stack_pointer = stack_pointer;
+            (*task_ptr).creds.is_kernel_thread = false;
+        }
 
         // Perform the jump to userspace using sysretq
         // This is done in inline assembly because we need precise control

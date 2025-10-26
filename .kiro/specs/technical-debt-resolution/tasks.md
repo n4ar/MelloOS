@@ -29,14 +29,14 @@
   - Implement heap pointer restoration after exec failure
   - _Requirements: 3.1, 3.2_
 
-- [ ] 5. Syscall Process Termination
+- [x] 5. Syscall Process Termination
   - Implement proper exit handling in syscall/mod.rs line 148
   - Add process cleanup: close file descriptors, free memory, remove from task table
   - Notify parent process of child termination
   - Set exit status for parent to retrieve
   - _Requirements: 4.1_
 
-- [ ] 6. Syscall Parent Wakeup on Child Exit
+- [-] 6. Syscall Parent Wakeup on Child Exit
   - Implement parent wakeup logic in syscall/mod.rs lines 559, 569
   - Add `wake_parent()` function using scheduler wakeup mechanism
   - Update waitpid to properly block and wake on child state changes

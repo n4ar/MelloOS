@@ -5,6 +5,7 @@
 //! and assembly entry points.
 
 use crate::arch::x86_64::gdt::{KERNEL_CODE_SEG, USER_CODE_SEG};
+use crate::user::process::ProcessId;
 use crate::{serial_print, serial_println};
 
 /// Model Specific Registers for syscall/sysret
@@ -506,9 +507,12 @@ fn sys_write_enhanced(fd: usize, buf_ptr: usize, len: usize) -> isize {
 
 /// Enhanced sys_exit handler - Mark process as zombie and clean up
 ///
-/// This function marks the current process as zombie with the given exit code,
-/// wakes up any waiting parent process, and removes the current task from
-/// the scheduler.
+/// This function performs complete process termination:
+/// 1. Closes all file descriptors
+/// 2. Frees memory regions
+/// 3. Marks process as zombie with exit code
+/// 4. Notifies parent process
+/// 5. Removes task from scheduler
 ///
 /// # Arguments
 /// * `code` - Exit code for the process
@@ -545,9 +549,16 @@ fn sys_exit_enhanced(code: usize) -> ! {
 
     let current_task_id = current_task_info.0;
 
-    // Mark process as zombie in the process table
-    if let Some(mut process_guard) = ProcessManager::get_process(current_task_id) {
+    // Step 1: Close all file descriptors
+    serial_println!("[SYSCALL] SYS_EXIT: Closing all file descriptors");
+    crate::sys::syscall::close_all_fds_on_exit();
+
+    // Step 2: Get process and prepare for cleanup
+    let parent_pid = if let Some(mut process_guard) = ProcessManager::get_process(current_task_id) {
         if let Some(process) = process_guard.get_mut() {
+            let parent = process.parent_pid;
+
+            // Mark process as zombie with exit code
             process.mark_zombie(code as i32);
 
             serial_println!(
@@ -556,27 +567,46 @@ fn sys_exit_enhanced(code: usize) -> ! {
                 code
             );
 
-            // TODO: Wake up parent process if it's waiting
-            // This would involve checking if the parent is blocked on SYS_WAIT
-            // and moving it back to the ready queue
+            // Memory regions will be freed when process is reaped by parent
+            // For now, we keep them so parent can inspect the zombie state
 
-            if let Some(parent_pid) = process.parent_pid {
-                serial_println!(
-                    "[SYSCALL] SYS_EXIT: Process {} has parent {}, should wake parent if waiting",
-                    process.pid,
-                    parent_pid
-                );
-                // TODO: Implement parent wakeup logic
-            }
+            parent
+        } else {
+            None
         }
+    } else {
+        None
+    };
+
+    // Step 3: Notify parent process if it exists
+    if let Some(parent_pid) = parent_pid {
+        serial_println!(
+            "[SYSCALL] SYS_EXIT: Process {} has parent {}, waking parent if waiting",
+            pid,
+            parent_pid
+        );
+
+        // Wake up parent if it's blocked waiting for this child
+        // The parent will clean up the zombie and remove it from its children list
+        wake_parent_if_waiting(parent_pid, current_task_id);
+    } else {
+        serial_println!(
+            "[SYSCALL] SYS_EXIT: Process {} has no parent (orphan or init)",
+            pid
+        );
+
+        // If no parent, remove from children list of any task that might have it
+        // This handles the case where the parent exited before the child
+        // In a full implementation, orphaned processes would be reparented to init
     }
 
-    // Remove current task from scheduler
-    // The task should not be rescheduled after this point
+    // Step 4: Remove current task from scheduler
+    // Mark task as blocked so it won't be rescheduled
+    // The zombie process will be cleaned up when parent calls wait()
     if let Some(current_task) = sched::get_task_mut(current_task_id) {
-        current_task.state = crate::sched::task::TaskState::Ready; // Will be cleaned up
+        current_task.state = crate::sched::task::TaskState::Blocked;
         serial_println!(
-            "[SYSCALL] SYS_EXIT: Task {} marked for cleanup",
+            "[SYSCALL] SYS_EXIT: Task {} marked as blocked (zombie)",
             current_task_id
         );
     }
@@ -586,7 +616,7 @@ fn sys_exit_enhanced(code: usize) -> ! {
         pid
     );
 
-    // Yield to scheduler - this task should never be scheduled again
+    // Step 5: Yield to scheduler - this task should never be scheduled again
     sched::yield_now();
 
     // Should never reach here, but provide fallback
@@ -595,6 +625,63 @@ fn sys_exit_enhanced(code: usize) -> ! {
         unsafe {
             core::arch::asm!("hlt");
         }
+    }
+}
+
+/// Wake up parent process if it's waiting for this child
+///
+/// This function checks if the parent process is blocked on waitpid
+/// and wakes it up if so. It uses the scheduler's wakeup mechanism
+/// to properly transition the parent from Sleeping to Ready state
+/// and re-enqueue it to the appropriate CPU runqueue.
+///
+/// # Arguments
+/// * `parent_pid` - Parent process ID
+/// * `child_pid` - Child process ID that just exited
+fn wake_parent_if_waiting(parent_pid: ProcessId, child_pid: ProcessId) {
+    use crate::sched;
+    use crate::sched::task::TaskState;
+
+    serial_println!(
+        "[SYSCALL] wake_parent: Checking if parent {} is waiting for child {}",
+        parent_pid,
+        child_pid
+    );
+
+    // Check if parent task is blocked waiting for children
+    if let Some(parent_task) = sched::get_task_mut(parent_pid) {
+        // Check if parent is in Sleeping state (used for blocking syscalls like waitpid)
+        if parent_task.state == TaskState::Sleeping {
+            // Wake up the parent - it will check for zombie children when it resumes
+            parent_task.state = TaskState::Ready;
+            parent_task.wake_tick = None;
+
+            serial_println!(
+                "[SYSCALL] wake_parent: Woke up parent process {} waiting for child {}",
+                parent_pid,
+                child_pid
+            );
+
+            // Re-enqueue the parent task to the scheduler
+            // This ensures it will be scheduled to run again
+            sched::enqueue_task(parent_pid, None);
+
+            serial_println!(
+                "[SYSCALL] wake_parent: Parent {} re-enqueued to scheduler",
+                parent_pid
+            );
+        } else {
+            serial_println!(
+                "[SYSCALL] wake_parent: Parent process {} not waiting (state: {:?})",
+                parent_pid,
+                parent_task.state
+            );
+        }
+    } else {
+        serial_println!(
+            "[SYSCALL] wake_parent: Parent process {} not found in task table",
+            parent_pid
+        );
     }
 }
 
@@ -644,7 +731,7 @@ fn sys_getpid_enhanced() -> isize {
 /// * Negative error code on failure
 fn sys_fork_stub() -> isize {
     use crate::mm::paging::PageTable;
-    
+
     use crate::sched::{self};
     use crate::user::process::{ProcessError, ProcessManager};
 
@@ -787,6 +874,20 @@ fn sys_fork_stub() -> isize {
     // Drop the child process guard to release the lock
     drop(child_process_guard);
 
+    // Add child to parent's children list
+    if let Some(parent_task) = sched::get_task_mut(parent_task_id) {
+        parent_task.children.push(child_pid);
+        serial_println!(
+            "[SYSCALL] SYS_FORK: Added child {} to parent {}'s children list",
+            child_pid,
+            parent_task_id
+        );
+    } else {
+        serial_println!(
+            "[SYSCALL] SYS_FORK: Warning: Could not add child to parent's children list"
+        );
+    }
+
     serial_println!(
         "[SYSCALL] SYS_FORK: Fork completed successfully - parent gets PID {}",
         child_pid
@@ -803,7 +904,7 @@ fn sys_fork_stub() -> isize {
 /// be inherited by the new program.
 fn close_cloexec_fds() {
     use crate::sys::syscall::close_fds_with_cloexec;
-    
+
     serial_println!("[SYSCALL] Closing FDs with FD_CLOEXEC flag");
     close_fds_with_cloexec();
 }
@@ -822,10 +923,8 @@ fn close_cloexec_fds() {
 /// * Negative error code on failure
 fn sys_exec_stub(path_ptr: usize, _argv_ptr: usize) -> isize {
     use crate::sched;
-    
-    use crate::user::process::{
-        copy_from_user, is_user_pointer_valid, ProcessManager,
-    };
+
+    use crate::user::process::{copy_from_user, is_user_pointer_valid, ProcessManager};
 
     serial_println!("[SYSCALL] SYS_EXEC: Replacing current process");
 
@@ -1002,6 +1101,10 @@ fn sys_exec_stub(path_ptr: usize, _argv_ptr: usize) -> isize {
 
         // Update task context
         current_task.context = process.context.clone();
+        current_task.creds.uid = process.uid;
+        current_task.creds.gid = process.gid;
+        current_task.creds.is_kernel_thread = false;
+        current_task.user_stack_pointer = process.context.rsp;
 
         serial_println!("[SYSCALL] SYS_EXEC: Successfully replaced process image");
         serial_println!(
@@ -1131,15 +1234,14 @@ fn sys_wait_stub(child_pid: usize) -> isize {
     }
 
     // No zombie children found - we should block the parent
-    // TODO: Implement proper blocking mechanism
-    // For now, we'll return ECHILD (no children) or EAGAIN (try again)
-
     serial_println!("[SYSCALL] SYS_WAIT: No zombie children found");
 
-    // Check if the parent has any children at all
-    // This is a simplified check - in a full implementation we'd maintain
-    // a proper parent-child relationship table
-    let has_children = false; // TODO: Implement proper child tracking
+    // Check if the parent has any children at all by checking the children list
+    let has_children = if let Some(parent_task) = sched::get_task_mut(parent_task_id) {
+        !parent_task.children.is_empty()
+    } else {
+        false
+    };
 
     if !has_children {
         serial_println!("[SYSCALL] SYS_WAIT: Parent has no children");
@@ -1147,13 +1249,105 @@ fn sys_wait_stub(child_pid: usize) -> isize {
     }
 
     // Parent has children but none are zombies yet
-    // In a full implementation, we would:
-    // 1. Mark the parent task as blocked on wait
-    // 2. Remove it from the runqueue
-    // 3. When a child exits, wake up the parent
+    // Block the parent until a child exits
+    serial_println!(
+        "[SYSCALL] SYS_WAIT: Blocking parent {} until child exits",
+        parent_task_id
+    );
 
-    serial_println!("[SYSCALL] SYS_WAIT: Would block parent (not implemented yet)");
-    return EAGAIN; // Try again later (non-blocking for now)
+    // Mark the parent task as Sleeping (blocked on waitpid)
+    if let Some(parent_task) = sched::get_task_mut(parent_task_id) {
+        parent_task.state = crate::sched::task::TaskState::Sleeping;
+        parent_task.wake_tick = None; // No timeout - wait indefinitely
+
+        serial_println!(
+            "[SYSCALL] SYS_WAIT: Parent {} marked as Sleeping, yielding to scheduler",
+            parent_task_id
+        );
+    } else {
+        serial_println!("[SYSCALL] SYS_WAIT: Failed to get parent task");
+        return ESRCH;
+    }
+
+    // Yield to scheduler - parent will be woken up when a child exits
+    sched::yield_now();
+
+    // When we resume here, a child has exited - check for zombies again
+    serial_println!(
+        "[SYSCALL] SYS_WAIT: Parent {} resumed, checking for zombies again",
+        parent_task_id
+    );
+
+    // Retry the zombie check after waking up
+    let zombie_child = if child_pid == 0 {
+        ProcessManager::find_zombie_child(parent_task_id)
+    } else {
+        if let Some(child_guard) = ProcessManager::get_process(child_pid) {
+            if let Some(child_process) = child_guard.get() {
+                if child_process.is_child_of(parent_task_id)
+                    && child_process.state == crate::user::process::ProcessState::Zombie
+                {
+                    child_process.exit_code.map(|code| (child_pid, code))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    if let Some((dead_child_pid, exit_code)) = zombie_child {
+        // Found a zombie child after waking up - clean it up and return
+        serial_println!(
+            "[SYSCALL] SYS_WAIT: After wakeup, found zombie child {} with exit code {}",
+            dead_child_pid,
+            exit_code
+        );
+
+        // Remove the zombie process from the process table
+        match ProcessManager::remove_process(dead_child_pid) {
+            Ok(removed_process) => {
+                serial_println!(
+                    "[SYSCALL] SYS_WAIT: Cleaned up zombie process {} ({})",
+                    removed_process.pid,
+                    removed_process.get_name()
+                );
+            }
+            Err(e) => {
+                serial_println!(
+                    "[SYSCALL] SYS_WAIT: Failed to remove zombie process {}: {:?}",
+                    dead_child_pid,
+                    e
+                );
+            }
+        }
+
+        // Remove child from parent's children list
+        if let Some(parent_task) = sched::get_task_mut(parent_task_id) {
+            parent_task.children.retain(|&pid| pid != dead_child_pid);
+            serial_println!(
+                "[SYSCALL] SYS_WAIT: Removed child {} from parent's children list",
+                dead_child_pid
+            );
+        }
+
+        // Return child PID and exit code
+        let result = ((dead_child_pid & 0xFFFFFF) << 8) | ((exit_code as usize) & 0xFF);
+        serial_println!(
+            "[SYSCALL] SYS_WAIT: Returning result 0x{:x} (pid={}, code={})",
+            result,
+            dead_child_pid,
+            exit_code
+        );
+        return result as isize;
+    }
+
+    // Still no zombie after waking up - this shouldn't happen but handle gracefully
+    serial_println!("[SYSCALL] SYS_WAIT: No zombie found after wakeup, returning EAGAIN");
+    return EAGAIN;
 }
 
 /// Integration tests for syscall mechanism

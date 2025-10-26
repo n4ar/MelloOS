@@ -41,6 +41,11 @@ static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 #[link_section = ".requests"]
 static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
 
+/// Global framebuffer instance for panic handler access
+/// This is initialized during kernel startup and can be accessed by the panic handler
+/// to display panic information on screen
+pub static mut GLOBAL_FRAMEBUFFER: Option<framebuffer::Framebuffer> = None;
+
 /// Demonstration task A - prints "A" in a loop
 fn task_a() -> ! {
     loop {
@@ -911,6 +916,11 @@ pub extern "C" fn _start() -> ! {
     // Clear the screen with black color
     fb.clear(0x000000);
 
+    // Store framebuffer globally for panic handler access
+    unsafe {
+        GLOBAL_FRAMEBUFFER = Some(fb);
+    }
+
     serial_println!("[KERNEL] Initializing memory management...");
     // Initialize memory management system
     // This must be called after framebuffer setup but before any dynamic memory allocation
@@ -1000,7 +1010,12 @@ pub extern "C" fn _start() -> ! {
     serial_println!("[KERNEL] Writing message to screen...");
     // Display "Hello from MelloOS ✨" message
     // White text on black background, positioned at (100, 100)
-    fb.write_string("Hello from MelloOS ✨", 100, 100, 0xFFFFFF, 0x000000);
+    #[allow(static_mut_refs)]
+    unsafe {
+        if let Some(fb) = GLOBAL_FRAMEBUFFER.as_mut() {
+            fb.write_string("Hello from MelloOS ✨", 100, 100, 0xFFFFFF, 0x000000);
+        }
+    }
 
     serial_println!("[KERNEL] Initializing IPC subsystem...");
     // Initialize IPC ports

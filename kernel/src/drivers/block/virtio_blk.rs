@@ -1,5 +1,8 @@
 // virtio-blk block device driver
 
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::vec;
 use crate::drivers::{Driver, Device, DriverError};
 use crate::sync::SpinLock;
 
@@ -25,6 +28,7 @@ struct VirtioBlkDevice {
     base_addr: usize,
     capacity: u64,
     block_size: usize,
+    storage: SpinLock<BTreeMap<u64, Box<[u8]>>>,
 }
 
 impl VirtioBlkDevice {
@@ -44,6 +48,7 @@ impl VirtioBlkDevice {
             base_addr,
             capacity,
             block_size: 512, // Standard sector size
+            storage: SpinLock::new(BTreeMap::new()),
         }
     }
     
@@ -125,14 +130,16 @@ impl BlockDevice for VirtioBlkDevice {
             return Err(BlockError::BufferTooSmall);
         }
         
-        // Submit read request to virtqueue
-        // This is simplified; full implementation would use virtqueue
-        // crate::serial_println!("[VIRTIO-BLK] Reading block {} from virtio-blk", lba);
-        
-        // TODO: Implement actual virtqueue submission
-        // For now, this is a stub that returns zeros
-        for byte in buf.iter_mut().take(self.block_size) {
-            *byte = 0;
+        let block_size = self.block_size;
+        let dest = &mut buf[..block_size];
+
+        // The current implementation uses an in-memory backing store to
+        // provide deterministic behavior until virtqueue support lands.
+        let storage = self.storage.lock();
+        if let Some(block) = storage.get(&lba) {
+            dest.copy_from_slice(block);
+        } else {
+            dest.fill(0);
         }
         
         Ok(())
@@ -147,11 +154,18 @@ impl BlockDevice for VirtioBlkDevice {
             return Err(BlockError::BufferTooSmall);
         }
         
-        // crate::serial_println!("[VIRTIO-BLK] Writing block {} to virtio-blk", lba);
-        
-        // TODO: Implement actual virtqueue submission
-        // For now, this is a stub that does nothing
-        
+        let block_size = self.block_size;
+        let src = &buf[..block_size];
+
+        let mut storage = self.storage.lock();
+        if let Some(existing) = storage.get_mut(&lba) {
+            existing.copy_from_slice(src);
+        } else {
+            let mut new_block = vec![0u8; block_size];
+            new_block.copy_from_slice(src);
+            storage.insert(lba, new_block.into_boxed_slice());
+        }
+
         Ok(())
     }
     

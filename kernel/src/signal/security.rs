@@ -5,6 +5,8 @@
 //! protection for critical processes.
 
 use super::{signals, Signal, SigHandler};
+use crate::mm::paging::PageTableFlags;
+use crate::sched;
 use crate::sched::task::{Task, USER_LIMIT};
 
 /// Error types for signal security operations
@@ -74,8 +76,17 @@ pub fn check_signal_permission(
         return Err(SignalSecurityError::SessionMismatch);
     }
 
-    // TODO: Add UID-based permission checks when user management is implemented
-    // For now, allow signals within the same session
+    // Allow root to signal anyone
+    if sender.creds.uid == 0 {
+        return Ok(());
+    }
+
+    // Allow signaling between processes that share the same effective UID
+    if sender.creds.uid == target.creds.uid {
+        return Ok(());
+    }
+
+    // Allow signals within the same session (for compat with early userland)
     if sender.sid == target.sid {
         return Ok(());
     }
@@ -119,10 +130,10 @@ pub fn check_protected_process(target: &Task, signal: Signal) -> SignalSecurityR
         }
     }
 
-    // TODO: Add protection for kernel threads
-    // if target.pid < 100 {
-    //     return Err(SignalSecurityError::ProtectedProcess);
-    // }
+    // Kernel threads should not be signaled by userspace
+    if target.creds.is_kernel_thread {
+        return Err(SignalSecurityError::ProtectedProcess);
+    }
 
     Ok(())
 }
@@ -155,8 +166,9 @@ pub fn validate_signal_handler(handler: SigHandler) -> SignalSecurityResult<()> 
                 return Err(SignalSecurityError::InvalidHandler);
             }
 
-            // TODO: Check if address is in executable code pages
-            // This would require access to the page mapper
+            if !is_executable_user_address(addr) {
+                return Err(SignalSecurityError::InvalidHandler);
+            }
 
             Ok(())
         }
@@ -283,6 +295,24 @@ pub fn audit_signal_send(
             );
         }
     }
+}
+
+fn is_executable_user_address(addr: usize) -> bool {
+    if addr >= USER_LIMIT {
+        return false;
+    }
+
+    if let Some(task) = sched::current_task() {
+        for region_opt in &task.memory_regions[..task.region_count] {
+            if let Some(region) = region_opt {
+                if region.contains(addr) {
+                    return (region.flags.bits() & PageTableFlags::NO_EXECUTE.bits()) == 0;
+                }
+            }
+        }
+    }
+
+    true
 }
 
 #[cfg(test)]

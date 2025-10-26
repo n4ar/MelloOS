@@ -19,6 +19,13 @@ NC='\033[0m'
 
 OUTPUT_FILE="TECHNICAL_DEBT_CATEGORIZED.md"
 
+# Check if ripgrep is available
+if ! command -v rg &> /dev/null; then
+    echo -e "${RED}Error: ripgrep (rg) is not installed${NC}"
+    echo "Install with: brew install ripgrep"
+    exit 1
+fi
+
 echo "Categorizing TODOs in MelloOS..."
 echo "Output: $OUTPUT_FILE"
 echo ""
@@ -39,20 +46,20 @@ This document categorizes all TODO, FIXME, and HACK markers found in the MelloOS
 
 EOF
 
-# Count totals
-TOTAL_TODO=$(grep -r -i --include="*.rs" --include="*.md" --include="*.toml" \
-    --exclude-dir=target --exclude-dir=.git --exclude-dir=build \
-    '\(//\|#\|/\*\|\*\).*\bTODO\b' \
+# Count totals using ripgrep
+TOTAL_TODO=$(rg -i '\bTODO\b' \
+    --type rust --type markdown --type toml \
+    --glob '!target' --glob '!.git' --glob '!build' \
     kernel/ tests/ 2>/dev/null | wc -l | tr -d ' ')
 
-TOTAL_FIXME=$(grep -r -i --include="*.rs" --include="*.md" --include="*.toml" \
-    --exclude-dir=target --exclude-dir=.git --exclude-dir=build \
-    '\(//\|#\|/\*\|\*\).*\bFIXME\b' \
+TOTAL_FIXME=$(rg -i '\bFIXME\b' \
+    --type rust --type markdown --type toml \
+    --glob '!target' --glob '!.git' --glob '!build' \
     kernel/ tests/ 2>/dev/null | wc -l | tr -d ' ')
 
-TOTAL_HACK=$(grep -r -i --include="*.rs" --include="*.md" --include="*.toml" \
-    --exclude-dir=target --exclude-dir=.git --exclude-dir=build \
-    '\(//\|#\|/\*\|\*\).*\bHACK\b' \
+TOTAL_HACK=$(rg -i '\bHACK\b' \
+    --type rust --type markdown --type toml \
+    --glob '!target' --glob '!.git' --glob '!build' \
     kernel/ tests/ 2>/dev/null | wc -l | tr -d ' ')
 
 cat >> "$OUTPUT_FILE" << EOF
@@ -76,9 +83,8 @@ cat >> "$OUTPUT_FILE" << 'EOF'
 EOF
 
 # Memory Management
-MM_COUNT=$(grep -r -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+MM_COUNT=$(rg -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/mm/ 2>/dev/null | wc -l | tr -d ' ')
 
 cat >> "$OUTPUT_FILE" << EOF
@@ -86,18 +92,16 @@ cat >> "$OUTPUT_FILE" << EOF
 
 EOF
 
-grep -rn -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+rg -n -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/mm/ 2>/dev/null | \
     sed 's/^/- /' >> "$OUTPUT_FILE" || echo "None" >> "$OUTPUT_FILE"
 
 echo "" >> "$OUTPUT_FILE"
 
 # Filesystem
-FS_COUNT=$(grep -r -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+FS_COUNT=$(rg -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/fs/ 2>/dev/null | wc -l | tr -d ' ')
 
 cat >> "$OUTPUT_FILE" << EOF
@@ -105,18 +109,16 @@ cat >> "$OUTPUT_FILE" << EOF
 
 EOF
 
-grep -rn -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+rg -n -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/fs/ 2>/dev/null | \
     sed 's/^/- /' >> "$OUTPUT_FILE" || echo "None" >> "$OUTPUT_FILE"
 
 echo "" >> "$OUTPUT_FILE"
 
 # User/Process Management
-USER_COUNT=$(grep -r -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+USER_COUNT=$(rg -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/user/ 2>/dev/null | wc -l | tr -d ' ')
 
 cat >> "$OUTPUT_FILE" << EOF
@@ -124,18 +126,16 @@ cat >> "$OUTPUT_FILE" << EOF
 
 EOF
 
-grep -rn -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+rg -n -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/user/ 2>/dev/null | \
     sed 's/^/- /' >> "$OUTPUT_FILE" || echo "None" >> "$OUTPUT_FILE"
 
 echo "" >> "$OUTPUT_FILE"
 
 # Syscalls
-SYSCALL_COUNT=$(grep -r -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+SYSCALL_COUNT=$(rg -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/arch/x86_64/syscall/ kernel/src/sys/ 2>/dev/null | wc -l | tr -d ' ')
 
 cat >> "$OUTPUT_FILE" << EOF
@@ -143,18 +143,16 @@ cat >> "$OUTPUT_FILE" << EOF
 
 EOF
 
-grep -rn -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+rg -n -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/arch/x86_64/syscall/ kernel/src/sys/ 2>/dev/null | \
     sed 's/^/- /' >> "$OUTPUT_FILE" || echo "None" >> "$OUTPUT_FILE"
 
 echo "" >> "$OUTPUT_FILE"
 
 # Drivers
-DRIVER_COUNT=$(grep -r -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+DRIVER_COUNT=$(rg -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/drivers/ 2>/dev/null | wc -l | tr -d ' ')
 
 cat >> "$OUTPUT_FILE" << EOF
@@ -162,18 +160,16 @@ cat >> "$OUTPUT_FILE" << EOF
 
 EOF
 
-grep -rn -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+rg -n -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/drivers/ 2>/dev/null | \
     sed 's/^/- /' >> "$OUTPUT_FILE" || echo "None" >> "$OUTPUT_FILE"
 
 echo "" >> "$OUTPUT_FILE"
 
 # Signals
-SIGNAL_COUNT=$(grep -r -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+SIGNAL_COUNT=$(rg -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/signal/ 2>/dev/null | wc -l | tr -d ' ')
 
 cat >> "$OUTPUT_FILE" << EOF
@@ -181,18 +177,16 @@ cat >> "$OUTPUT_FILE" << EOF
 
 EOF
 
-grep -rn -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+rg -n -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/signal/ 2>/dev/null | \
     sed 's/^/- /' >> "$OUTPUT_FILE" || echo "None" >> "$OUTPUT_FILE"
 
 echo "" >> "$OUTPUT_FILE"
 
 # Devices (PTY, etc.)
-DEV_COUNT=$(grep -r -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+DEV_COUNT=$(rg -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/dev/ 2>/dev/null | wc -l | tr -d ' ')
 
 cat >> "$OUTPUT_FILE" << EOF
@@ -200,18 +194,16 @@ cat >> "$OUTPUT_FILE" << EOF
 
 EOF
 
-grep -rn -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+rg -n -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/src/dev/ 2>/dev/null | \
     sed 's/^/- /' >> "$OUTPUT_FILE" || echo "None" >> "$OUTPUT_FILE"
 
 echo "" >> "$OUTPUT_FILE"
 
 # Userspace programs
-USERSPACE_COUNT=$(grep -r -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+USERSPACE_COUNT=$(rg -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/userspace/ 2>/dev/null | wc -l | tr -d ' ')
 
 cat >> "$OUTPUT_FILE" << EOF
@@ -219,18 +211,16 @@ cat >> "$OUTPUT_FILE" << EOF
 
 EOF
 
-grep -rn -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+rg -n -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/userspace/ 2>/dev/null | \
     sed 's/^/- /' >> "$OUTPUT_FILE" || echo "None" >> "$OUTPUT_FILE"
 
 echo "" >> "$OUTPUT_FILE"
 
 # Tests
-TEST_COUNT=$(grep -r -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+TEST_COUNT=$(rg -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     tests/ 2>/dev/null | wc -l | tr -d ' ')
 
 cat >> "$OUTPUT_FILE" << EOF
@@ -238,9 +228,8 @@ cat >> "$OUTPUT_FILE" << EOF
 
 EOF
 
-grep -rn -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b' \
+rg -n -i '\b(TODO|FIXME|HACK)\b' \
+    --type rust --glob '!target' --glob '!.git' \
     tests/ 2>/dev/null | \
     sed 's/^/- /' >> "$OUTPUT_FILE" || echo "None" >> "$OUTPUT_FILE"
 
@@ -256,9 +245,8 @@ cat >> "$OUTPUT_FILE" << 'EOF'
 
 EOF
 
-grep -rn -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b.*\(security\|unsafe\|panic\|crash\|bug\|critical\|important\)' \
+rg -n -i '\b(TODO|FIXME|HACK)\b.*(security|unsafe|panic|crash|bug|critical|important)' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/ 2>/dev/null | \
     sed 's/^/- /' >> "$OUTPUT_FILE" || echo "None found" >> "$OUTPUT_FILE"
 
@@ -269,9 +257,8 @@ cat >> "$OUTPUT_FILE" << 'EOF'
 
 EOF
 
-grep -rn -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b.*\(implement\|optimization\|performance\|feature\)' \
+rg -n -i '\b(TODO|FIXME|HACK)\b.*(implement|optimization|performance|feature)' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/ 2>/dev/null | \
     sed 's/^/- /' >> "$OUTPUT_FILE" || echo "None found" >> "$OUTPUT_FILE"
 
@@ -282,9 +269,8 @@ cat >> "$OUTPUT_FILE" << 'EOF'
 
 EOF
 
-grep -rn -i --include="*.rs" \
-    --exclude-dir=target --exclude-dir=.git \
-    '\(//\|#\|/\*\|\*\).*\b\(TODO\|FIXME\|HACK\)\b.*\(log\|document\|comment\|cleanup\)' \
+rg -n -i '\b(TODO|FIXME|HACK)\b.*(log|document|comment|cleanup)' \
+    --type rust --glob '!target' --glob '!.git' \
     kernel/ 2>/dev/null | \
     sed 's/^/- /' >> "$OUTPUT_FILE" || echo "None found" >> "$OUTPUT_FILE"
 

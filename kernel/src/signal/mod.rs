@@ -165,6 +165,28 @@ impl SigAction {
     }
 }
 
+/// Minimal representation of a signal frame that would be placed on the user stack.
+#[derive(Debug, Clone, Copy)]
+pub struct SignalStackFrame {
+    /// Signal being delivered
+    pub signal: Signal,
+    /// Address of the handler
+    pub handler: u64,
+    /// Stored user return address (placeholder until sigreturn is implemented)
+    pub return_address: u64,
+    /// Previous user stack pointer
+    pub saved_rsp: u64,
+}
+
+/// Metadata tracked by the kernel while a custom handler is pending.
+#[derive(Debug, Clone, Copy)]
+pub struct PendingSignalFrame {
+    /// Virtual address on the user stack where the frame would reside
+    pub frame_ptr: u64,
+    /// Frame contents (context snapshot)
+    pub frame: SignalStackFrame,
+}
+
 /// Default signal actions
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -254,14 +276,28 @@ pub fn send_signal_to_task(task: &crate::sched::task::Task, signal: Signal) -> b
 /// * `pgid` - Process group ID
 /// * `signal` - Signal number to send
 ///
+/// # Returns
+/// Number of tasks that successfully had the signal queued.
+///
 /// # Note
 /// This function requires access to the task table and process group table.
 /// The actual implementation will be in the scheduler module.
 #[allow(dead_code)]
-pub fn send_signal_to_group(pgid: usize, signal: Signal) {
-    // This is a placeholder - actual implementation will be in scheduler
-    // where we have access to the task table
-    let _ = (pgid, signal);
+pub fn send_signal_to_group(pgid: usize, signal: Signal) -> usize {
+    let mut delivered = 0;
+    crate::sched::for_each_task_in_group(pgid, |task| {
+        if let Err(()) = send_signal(task, signal) {
+            crate::serial_println!(
+                "[SIGNAL] WARNING: Failed to queue signal {} for task {} in PGID {}",
+                signal,
+                task.id,
+                pgid
+            );
+        } else {
+            delivered += 1;
+        }
+    });
+    delivered
 }
 
 /// Legacy function for compatibility
@@ -402,18 +438,49 @@ pub fn deliver_pending_signals(task: &mut crate::sched::task::Task) -> Option<Si
 /// Ok(()) if the frame was setup successfully, Err if stack setup failed
 #[allow(dead_code)]
 pub fn setup_signal_frame(
-    _task: &mut crate::sched::task::Task,
-    _signal: Signal,
-    _handler_addr: usize,
+    task: &mut crate::sched::task::Task,
+    signal: Signal,
+    handler_addr: usize,
 ) -> Result<(), ()> {
-    // TODO: Implement signal frame setup
-    // This requires:
-    // 1. Save current context (RIP, RSP, registers) on user stack
-    // 2. Setup stack to call signal handler
-    // 3. Setup return trampoline (sigreturn)
-    // 4. Modify task context to jump to handler
+    use crate::sched::task::MemoryRegionType;
 
-    // For now, just return Ok - this will be implemented when we have
-    // proper user stack management
+    if handler_addr == 0 || handler_addr >= crate::sched::task::USER_LIMIT {
+        return Err(());
+    }
+
+    // Prevent nested handler setup until we support multiple frames
+    if task.pending_signal_frame.is_some() {
+        return Err(());
+    }
+
+    // Resolve the effective user stack pointer
+    let current_rsp = if task.user_stack_pointer != 0 {
+        task.user_stack_pointer
+    } else {
+        task.memory_regions[..task.region_count]
+            .iter()
+            .filter_map(|region_opt| region_opt.as_ref())
+            .find(|region| region.region_type == MemoryRegionType::Stack)
+            .map(|region| region.end as u64)
+            .ok_or(())?
+    };
+
+    let frame_size = core::mem::size_of::<SignalStackFrame>() as u64;
+    let mut new_rsp = current_rsp.checked_sub(frame_size).ok_or(())?;
+    new_rsp &= !0xF;
+
+    let frame = SignalStackFrame {
+        signal,
+        handler: handler_addr as u64,
+        return_address: current_rsp,
+        saved_rsp: current_rsp,
+    };
+
+    task.pending_signal_frame = Some(PendingSignalFrame {
+        frame_ptr: new_rsp,
+        frame,
+    });
+    task.user_stack_pointer = new_rsp;
+
     Ok(())
 }

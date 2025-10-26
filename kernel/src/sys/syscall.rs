@@ -1511,6 +1511,57 @@ pub fn close_fds_with_cloexec() {
     }
 }
 
+/// Close all file descriptors for process exit
+///
+/// This is called during process termination to clean up all open file
+/// descriptors and associated resources.
+pub fn close_all_fds_on_exit() {
+    let mut fd_table = FD_TABLE.lock();
+
+    // Scan all file descriptors and close them
+    for fd in 0..MAX_FDS {
+        if let Some(fd_entry) = fd_table.get(fd) {
+            crate::serial_println!("[SYSCALL] Closing FD {} on exit", fd);
+
+            // Get the FD type before closing
+            let fd_type = fd_entry.fd_type;
+
+            // Close the FD
+            fd_table.close(fd);
+
+            // Handle cleanup based on FD type
+            match fd_type {
+                FdType::PtyMaster(pty_num) => {
+                    crate::dev::pty::deallocate_pty(pty_num);
+                    crate::serial_println!("[SYSCALL] Deallocated PTY {}", pty_num);
+                }
+                FdType::PtySlave(pty_num) => {
+                    crate::serial_println!("[SYSCALL] Closed PTY slave {}", pty_num);
+                }
+                FdType::PipeRead(pipe_id) => {
+                    let mut pipe_table = PIPE_TABLE.lock();
+                    pipe_table.close_reader(pipe_id);
+                    crate::serial_println!("[SYSCALL] Closed pipe reader {}", pipe_id);
+                }
+                FdType::PipeWrite(pipe_id) => {
+                    let mut pipe_table = PIPE_TABLE.lock();
+                    pipe_table.close_writer(pipe_id);
+                    crate::serial_println!("[SYSCALL] Closed pipe writer {}", pipe_id);
+                }
+                FdType::VfsFile { inode, .. } => {
+                    crate::serial_println!("[SYSCALL] Closed VFS file (inode {})", inode.ino());
+                    // Arc will handle reference counting automatically
+                }
+                FdType::Invalid => {
+                    crate::serial_println!("[SYSCALL] Encountered invalid FD {}", fd);
+                }
+            }
+        }
+    }
+
+    crate::serial_println!("[SYSCALL] All file descriptors closed on exit");
+}
+
 /// Per-task file descriptor table
 ///
 /// this would be per-task.
