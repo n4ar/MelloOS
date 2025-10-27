@@ -6,6 +6,7 @@ use crate::config::MAX_CPUS;
 use crate::mm::allocator::kmalloc;
 use crate::serial_println;
 use core::mem::size_of;
+use alloc::vec::Vec;
 
 /// GDT segment selectors
 pub const KERNEL_CODE_SEG: u16 = 0x28; // Ring 0 code (from Limine)
@@ -240,6 +241,12 @@ static mut TSS_TABLE: [TaskStateSegment; MAX_CPUS] = [TaskStateSegment::new(); M
 /// Per-CPU GDT instances
 static mut GDT_TABLE: [Option<*mut Gdt>; MAX_CPUS] = [None; MAX_CPUS];
 
+/// Per-CPU kernel stack pointers for tracking
+static mut KERNEL_STACKS: [Option<u64>; MAX_CPUS] = [None; MAX_CPUS];
+
+/// Stack size for kernel stacks (16KB per CPU)
+const KERNEL_STACK_SIZE: usize = 16384;
+
 /// Initialize GDT and TSS for a specific CPU
 pub fn init_gdt_tss_for_cpu(cpu_id: usize) -> Result<(), &'static str> {
     if cpu_id >= MAX_CPUS {
@@ -255,13 +262,9 @@ pub fn init_gdt_tss_for_cpu(cpu_id: usize) -> Result<(), &'static str> {
         // Set up IST stacks for critical handlers
         tss.setup_ist_stacks(cpu_id)?;
 
-        // For now, allocate a temporary kernel stack
-        // TODO: Use actual per-CPU kernel stack when available
-        let kernel_stack = kmalloc(8192) as u64; // 8KB kernel stack
-        if kernel_stack == 0 {
-            return Err("Failed to allocate kernel stack");
-        }
-        tss.set_kernel_stack(kernel_stack + 8192); // Stack grows downward
+        // Allocate per-CPU kernel stack
+        let kernel_stack = allocate_kernel_stack_for_cpu(cpu_id)?;
+        tss.set_kernel_stack(kernel_stack);
 
         // Allocate GDT for this CPU
         let gdt_ptr = kmalloc(size_of::<Gdt>()) as *mut Gdt;
@@ -371,6 +374,169 @@ pub fn get_tss_for_cpu(cpu_id: usize) -> Option<&'static TaskStateSegment> {
     unsafe { Some(&TSS_TABLE[cpu_id]) }
 }
 
+/// Allocate a kernel stack for a specific CPU
+fn allocate_kernel_stack_for_cpu(cpu_id: usize) -> Result<u64, &'static str> {
+    if cpu_id >= MAX_CPUS {
+        return Err("Invalid CPU ID");
+    }
+
+    // Allocate kernel stack
+    let stack_base = kmalloc(KERNEL_STACK_SIZE) as u64;
+    if stack_base == 0 {
+        return Err("Failed to allocate kernel stack");
+    }
+
+    let stack_top = stack_base + KERNEL_STACK_SIZE as u64;
+    
+    unsafe {
+        KERNEL_STACKS[cpu_id] = Some(stack_top);
+    }
+
+    serial_println!(
+        "[GDT][cpu{}] Allocated kernel stack: 0x{:x} - 0x{:x} (top: 0x{:x})",
+        cpu_id,
+        stack_base,
+        stack_base + KERNEL_STACK_SIZE as u64,
+        stack_top
+    );
+
+    Ok(stack_top)
+}
+
+/// Get kernel stack top for a specific CPU
+pub fn get_kernel_stack_for_cpu(cpu_id: usize) -> Option<u64> {
+    if cpu_id >= MAX_CPUS {
+        return None;
+    }
+
+    unsafe { KERNEL_STACKS[cpu_id] }
+}
+
+/// Initialize GDT for the bootstrap processor (BSP)
+pub fn init_bsp_gdt() -> Result<(), &'static str> {
+    serial_println!("[GDT] Initializing BSP GDT...");
+    init_gdt_tss_for_cpu(0)
+}
+
+/// Initialize GDT for an application processor (AP)
+pub fn init_ap_gdt(cpu_id: usize) -> Result<(), &'static str> {
+    if cpu_id == 0 {
+        return Err("CPU 0 is BSP, use init_bsp_gdt()");
+    }
+    
+    serial_println!("[GDT] Initializing AP {} GDT...", cpu_id);
+    init_gdt_tss_for_cpu(cpu_id)
+}
+
+/// Clean up GDT resources for a CPU (for CPU hotplug support)
+pub fn cleanup_gdt_for_cpu(cpu_id: usize) -> Result<(), &'static str> {
+    if cpu_id >= MAX_CPUS {
+        return Err("Invalid CPU ID");
+    }
+
+    unsafe {
+        // Free GDT memory
+        if let Some(_gdt_ptr) = GDT_TABLE[cpu_id] {
+            // In a real implementation, we would free the memory here
+            // For now, just mark as None
+            GDT_TABLE[cpu_id] = None;
+            serial_println!("[GDT] Cleaned up GDT for CPU {}", cpu_id);
+        }
+
+        // Free kernel stack memory
+        if let Some(_stack_top) = KERNEL_STACKS[cpu_id] {
+            // In a real implementation, we would free the stack memory here
+            KERNEL_STACKS[cpu_id] = None;
+            serial_println!("[GDT] Cleaned up kernel stack for CPU {}", cpu_id);
+        }
+    }
+
+    Ok(())
+}
+
+/// Set up I/O permission bitmap in TSS (for port I/O access control)
+pub fn setup_io_bitmap_for_cpu(cpu_id: usize, allowed_ports: &[u16]) -> Result<(), &'static str> {
+    if cpu_id >= MAX_CPUS {
+        return Err("Invalid CPU ID");
+    }
+
+    // For now, we don't implement I/O bitmaps as they're not critical
+    // In a full implementation, this would set up the I/O permission bitmap
+    // in the TSS to control which ports user processes can access
+    
+    serial_println!(
+        "[GDT][cpu{}] I/O bitmap setup requested for {} ports (not implemented)",
+        cpu_id,
+        allowed_ports.len()
+    );
+
+    Ok(())
+}
+
+/// Update IST stack for a specific interrupt type
+pub fn update_ist_stack(cpu_id: usize, ist_index: usize, stack_top: u64) -> Result<(), &'static str> {
+    if cpu_id >= MAX_CPUS {
+        return Err("Invalid CPU ID");
+    }
+
+    if ist_index >= 7 {
+        return Err("Invalid IST index (must be 0-6)");
+    }
+
+    unsafe {
+        let tss = &mut TSS_TABLE[cpu_id];
+        
+        match ist_index {
+            0 => tss.ist1 = stack_top,
+            1 => tss.ist2 = stack_top,
+            2 => tss.ist3 = stack_top,
+            3 => tss.ist4 = stack_top,
+            4 => tss.ist5 = stack_top,
+            5 => tss.ist6 = stack_top,
+            6 => tss.ist7 = stack_top,
+            _ => return Err("Invalid IST index"),
+        }
+    }
+
+    serial_println!(
+        "[GDT][cpu{}] Updated IST{} stack to 0x{:x}",
+        cpu_id,
+        ist_index + 1,
+        stack_top
+    );
+
+    Ok(())
+}
+
+/// Get current GDT information for debugging
+pub fn get_gdt_info(cpu_id: usize) -> Option<GdtInfo> {
+    if cpu_id >= MAX_CPUS {
+        return None;
+    }
+
+    unsafe {
+        if let Some(gdt_ptr) = GDT_TABLE[cpu_id] {
+            Some(GdtInfo {
+                gdt_base: gdt_ptr as u64,
+                gdt_limit: (size_of::<Gdt>() - 1) as u16,
+                tss_base: &TSS_TABLE[cpu_id] as *const TaskStateSegment as u64,
+                kernel_stack: KERNEL_STACKS[cpu_id],
+            })
+        } else {
+            None
+        }
+    }
+}
+
+/// GDT information structure for debugging
+#[derive(Debug, Clone, Copy)]
+pub struct GdtInfo {
+    pub gdt_base: u64,
+    pub gdt_limit: u16,
+    pub tss_base: u64,
+    pub kernel_stack: Option<u64>,
+}
+
 /// User space address limit
 pub const USER_LIMIT: usize = 0x0000_8000_0000_0000;
 
@@ -394,6 +560,108 @@ pub struct MemoryRegion {
     pub start: usize,
     pub end: usize,
     pub region_type: MemoryRegionType,
+    pub permissions: MemoryPermissions,
+}
+
+/// Memory permissions for regions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryPermissions {
+    pub readable: bool,
+    pub writable: bool,
+    pub executable: bool,
+    pub user_accessible: bool,
+}
+
+impl MemoryPermissions {
+    /// Create read-only permissions
+    pub const fn read_only() -> Self {
+        Self {
+            readable: true,
+            writable: false,
+            executable: false,
+            user_accessible: true,
+        }
+    }
+
+    /// Create read-write permissions
+    pub const fn read_write() -> Self {
+        Self {
+            readable: true,
+            writable: true,
+            executable: false,
+            user_accessible: true,
+        }
+    }
+
+    /// Create executable permissions
+    pub const fn executable() -> Self {
+        Self {
+            readable: true,
+            writable: false,
+            executable: true,
+            user_accessible: true,
+        }
+    }
+
+    /// Create kernel-only permissions
+    pub const fn kernel_only() -> Self {
+        Self {
+            readable: true,
+            writable: true,
+            executable: false,
+            user_accessible: false,
+        }
+    }
+}
+
+impl MemoryRegion {
+    /// Create a new memory region
+    pub fn new(start: usize, end: usize, region_type: MemoryRegionType, permissions: MemoryPermissions) -> Self {
+        Self {
+            start,
+            end,
+            region_type,
+            permissions,
+        }
+    }
+
+    /// Get the size of this memory region
+    pub fn size(&self) -> usize {
+        self.end - self.start
+    }
+
+    /// Check if an address is within this region
+    pub fn contains(&self, addr: usize) -> bool {
+        addr >= self.start && addr < self.end
+    }
+
+    /// Check if this region overlaps with another
+    pub fn overlaps_with(&self, other: &MemoryRegion) -> bool {
+        self.start < other.end && other.start < self.end
+    }
+
+    /// Split this region at the given address
+    pub fn split_at(&self, addr: usize) -> Option<(MemoryRegion, MemoryRegion)> {
+        if !self.contains(addr) || addr == self.start || addr == self.end {
+            return None;
+        }
+
+        let first = MemoryRegion {
+            start: self.start,
+            end: addr,
+            region_type: self.region_type,
+            permissions: self.permissions,
+        };
+
+        let second = MemoryRegion {
+            start: addr,
+            end: self.end,
+            region_type: self.region_type,
+            permissions: self.permissions,
+        };
+
+        Some((first, second))
+    }
 }
 
 /// External assembly functions
@@ -424,26 +692,7 @@ extern "C" fn kernel_panic_invalid_user_transition(error_code: u64) -> ! {
 /// - Proper page flags (USER | WRITABLE | NO_EXECUTE)
 /// - Memory region tracking for the process
 pub fn setup_user_stack() -> Result<u64, &'static str> {
-    let stack_top = USER_STACK_TOP;
-    let stack_size = USER_STACK_SIZE;
-    let stack_bottom = stack_top - stack_size;
-    let guard_page = stack_bottom - 4096;
-
-    // For now, we'll use a simplified approach since we don't have
-    // full process management yet. In the complete implementation,
-    // this would be part of the process creation.
-
-    // TODO: Implement proper page mapping when paging system is integrated
-    // For now, just return the stack top address
-
-    serial_println!(
-        "[USER] User stack setup: 0x{:x} - 0x{:x} (guard at 0x{:x})",
-        stack_bottom,
-        stack_top,
-        guard_page
-    );
-
-    Ok(stack_top as u64)
+    setup_user_stack_with_size(USER_STACK_SIZE)
 }
 
 /// Transition to user mode using the assembly trampoline
@@ -521,6 +770,196 @@ pub fn validate_gdt_entry(selector: u16) -> bool {
             false
         }
     }
+}
+
+/// Set up complete user process memory layout
+pub fn setup_user_process_memory(entry_point: u64, stack_size: usize) -> Result<UserProcessLayout, &'static str> {
+    // Validate entry point is in user space
+    if entry_point >= USER_LIMIT as u64 {
+        return Err("Entry point not in user space");
+    }
+
+    // Set up user stack
+    let user_stack = setup_user_stack_with_size(stack_size)?;
+    
+    // Create memory layout
+    let layout = UserProcessLayout {
+        entry_point,
+        stack_top: user_stack,
+        stack_size,
+        heap_start: 0x0000_4000_0000_0000, // 64TB mark for heap
+        heap_size: 0,
+        code_regions: Vec::new(),
+        data_regions: Vec::new(),
+    };
+
+    Ok(layout)
+}
+
+/// Set up user stack with custom size
+pub fn setup_user_stack_with_size(stack_size: usize) -> Result<u64, &'static str> {
+    if stack_size == 0 || stack_size > 1024 * 1024 {
+        return Err("Invalid stack size");
+    }
+
+    let stack_top = USER_STACK_TOP;
+    let stack_bottom = stack_top - stack_size;
+    let guard_page = stack_bottom - 4096;
+
+    // TODO: Implement proper page mapping when memory management is fully integrated
+    // For now, we'll use a simplified approach that allocates memory but doesn't
+    // set up proper page mappings. This will be completed when the paging system
+    // is fully implemented.
+    
+    // Allocate memory for the stack (simplified allocation)
+    let stack_memory = kmalloc(stack_size) as u64;
+    if stack_memory == 0 {
+        return Err("Failed to allocate memory for user stack");
+    }
+    
+    // In a complete implementation, we would:
+    // 1. Allocate physical pages for the stack
+    // 2. Map them with USER | WRITABLE permissions  
+    // 3. Set up a guard page at the bottom
+    // 4. Update the process page table
+    
+    // For now, just use the allocated memory as the stack base
+    let actual_stack_top = stack_memory + stack_size as u64;
+
+    serial_println!(
+        "[USER] User stack setup: 0x{:x} - 0x{:x} (guard at 0x{:x}) [simplified]",
+        stack_bottom,
+        stack_top,
+        guard_page
+    );
+
+    Ok(actual_stack_top)
+}
+
+/// Complete user process memory layout
+#[derive(Debug, Clone)]
+pub struct UserProcessLayout {
+    pub entry_point: u64,
+    pub stack_top: u64,
+    pub stack_size: usize,
+    pub heap_start: u64,
+    pub heap_size: usize,
+    pub code_regions: Vec<MemoryRegion>,
+    pub data_regions: Vec<MemoryRegion>,
+}
+
+impl UserProcessLayout {
+    /// Add a code region to the layout
+    pub fn add_code_region(&mut self, start: usize, size: usize) -> Result<(), &'static str> {
+        if start + size >= USER_LIMIT {
+            return Err("Code region exceeds user space limit");
+        }
+
+        let region = MemoryRegion::new(
+            start,
+            start + size,
+            MemoryRegionType::Code,
+            MemoryPermissions::executable(),
+        );
+
+        // Check for overlaps
+        for existing in &self.code_regions {
+            if region.overlaps_with(existing) {
+                return Err("Code region overlaps with existing region");
+            }
+        }
+
+        self.code_regions.push(region);
+        Ok(())
+    }
+
+    /// Add a data region to the layout
+    pub fn add_data_region(&mut self, start: usize, size: usize, writable: bool) -> Result<(), &'static str> {
+        if start + size >= USER_LIMIT {
+            return Err("Data region exceeds user space limit");
+        }
+
+        let permissions = if writable {
+            MemoryPermissions::read_write()
+        } else {
+            MemoryPermissions::read_only()
+        };
+
+        let region = MemoryRegion::new(
+            start,
+            start + size,
+            MemoryRegionType::Data,
+            permissions,
+        );
+
+        // Check for overlaps
+        for existing in &self.data_regions {
+            if region.overlaps_with(existing) {
+                return Err("Data region overlaps with existing region");
+            }
+        }
+
+        self.data_regions.push(region);
+        Ok(())
+    }
+
+    /// Get total memory usage
+    pub fn total_memory_usage(&self) -> usize {
+        let code_size: usize = self.code_regions.iter().map(|r| r.size()).sum();
+        let data_size: usize = self.data_regions.iter().map(|r| r.size()).sum();
+        code_size + data_size + self.stack_size + self.heap_size
+    }
+}
+
+/// Prepare for user mode transition with full context setup
+pub fn prepare_user_mode_transition(layout: &UserProcessLayout) -> Result<UserModeContext, &'static str> {
+    // Validate the layout
+    if layout.entry_point >= USER_LIMIT as u64 {
+        return Err("Invalid entry point");
+    }
+
+    if layout.stack_top >= USER_LIMIT as u64 {
+        return Err("Invalid stack top");
+    }
+
+    // Get current CPU ID
+    let cpu_id = crate::arch::x86_64::smp::percpu::percpu_current().id;
+
+    // Update TSS with current kernel stack
+    if let Some(kernel_stack) = get_kernel_stack_for_cpu(cpu_id) {
+        update_kernel_stack_for_process(cpu_id, kernel_stack);
+    }
+
+    Ok(UserModeContext {
+        entry_point: layout.entry_point,
+        user_stack: layout.stack_top,
+        user_code_selector: USER_CODE_SEG,
+        user_data_selector: USER_DATA_SEG,
+        rflags: 0x202, // IF=1, reserved bit=1
+    })
+}
+
+/// User mode context for transition
+#[derive(Debug, Clone, Copy)]
+pub struct UserModeContext {
+    pub entry_point: u64,
+    pub user_stack: u64,
+    pub user_code_selector: u16,
+    pub user_data_selector: u16,
+    pub rflags: u64,
+}
+
+/// Transition to user mode with full context
+pub unsafe fn transition_to_user_mode_with_context(context: &UserModeContext) -> ! {
+    serial_println!("[USER] Transitioning to user mode with context:");
+    serial_println!("[USER]   Entry point: 0x{:x}", context.entry_point);
+    serial_println!("[USER]   User stack:  0x{:x}", context.user_stack);
+    serial_println!("[USER]   Code selector: 0x{:x}", context.user_code_selector);
+    serial_println!("[USER]   Data selector: 0x{:x}", context.user_data_selector);
+    serial_println!("[USER]   RFLAGS: 0x{:x}", context.rflags);
+
+    // Call assembly trampoline - this never returns
+    user_entry_trampoline(context.entry_point, context.user_stack);
 }
 
 #[cfg(test)]
