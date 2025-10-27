@@ -7,6 +7,7 @@ pub mod btree;
 pub mod checksum;
 pub mod compress;
 pub mod extent;
+pub mod inode;
 pub mod keys;
 pub mod replay;
 #[path = "super.rs"]
