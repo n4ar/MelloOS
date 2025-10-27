@@ -6,30 +6,30 @@ use super::checksum::crc32c_u64;
 use crate::drivers::block::BlockDevice;
 use alloc::sync::Arc;
 
-//! # TSC Timing Implementation Status
-//! 
-//! ## ✅ FULLY IMPLEMENTED:
-//! - TSC availability and invariant TSC detection via CPUID
-//! - Runtime TSC frequency calibration using PIT (Programmable Interval Timer)
-//! - High-precision nanosecond timing conversion
-//! - Fallback to tick-based timing when TSC unavailable
-//! - Proper initialization function for boot-time setup
-//! 
-//! ## Usage:
-//! ```rust
-//! // Call during kernel initialization (after timer setup)
-//! init_tsc_timing().expect("Failed to initialize TSC timing");
-//! 
-//! // Use for high-precision timestamps
-//! let timestamp = current_time_ns();
-//! ```
-//! 
-//! ## Features:
-//! - Automatic TSC frequency detection (no hardcoded values)
-//! - CPUID-based feature detection (TSC support, invariant TSC)
-//! - PIT-based calibration for accuracy
-//! - 128-bit arithmetic to prevent overflow
-//! - Comprehensive error handling and logging
+// # TSC Timing Implementation Status
+// 
+// ## ✅ FULLY IMPLEMENTED:
+// - TSC availability and invariant TSC detection via CPUID
+// - Runtime TSC frequency calibration using PIT (Programmable Interval Timer)
+// - High-precision nanosecond timing conversion
+// - Fallback to tick-based timing when TSC unavailable
+// - Proper initialization function for boot-time setup
+// 
+// ## Usage:
+// ```rust
+// // Call during kernel initialization (after timer setup)
+// init_tsc_timing().expect("Failed to initialize TSC timing");
+// 
+// // Use for high-precision timestamps
+// let timestamp = current_time_ns();
+// ```
+// 
+// ## Features:
+// - Automatic TSC frequency detection (no hardcoded values)
+// - CPUID-based feature detection (TSC support, invariant TSC)
+// - PIT-based calibration for accuracy
+// - 128-bit arithmetic to prevent overflow
+// - Comprehensive error handling and logging
 
 /// Initialize TSC timing subsystem
 ///
@@ -122,7 +122,7 @@ fn is_tsc_available() -> bool {
             out("ecx") ecx,
             out("edx") edx,
         );
-        (eax, ebx, ecx, edx)
+        (eax, ebx, ecx, edx)    
     };
 
     // Check TSC flag in EDX bit 4
