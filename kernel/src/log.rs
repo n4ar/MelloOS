@@ -1,7 +1,6 @@
 /// Structured logging module for MelloOS kernel
 /// Provides logging with format: [cpuN][pid=X][subsys] message
 /// Supports log levels: ERROR, WARN, INFO, DEBUG, TRACE
-
 use crate::arch::x86_64::smp::percpu::percpu_current;
 use core::fmt;
 use spin::Mutex;
@@ -43,7 +42,8 @@ impl fmt::Display for LogLevel {
 
 /// Global log level filter
 /// Only messages at or below this level will be logged
-static LOG_LEVEL: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(LogLevel::Info as u8);
+static LOG_LEVEL: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(LogLevel::Info as u8);
 
 /// Set the global log level
 pub fn set_log_level(level: LogLevel) {
@@ -92,7 +92,7 @@ impl LogBuffer {
     fn add_message(&mut self, message: &str) {
         let bytes = message.as_bytes();
         let len = bytes.len();
-        
+
         // If message is too long, truncate it
         if len >= LOG_BUFFER_SIZE {
             return;
@@ -108,7 +108,7 @@ impl LogBuffer {
         self.buffer[self.write_pos..self.write_pos + len].copy_from_slice(bytes);
         self.buffer[self.write_pos + len] = b'\n';
         self.write_pos += len + 1;
-        
+
         if self.entries < MAX_LOG_ENTRIES {
             self.entries += 1;
         }
@@ -174,7 +174,7 @@ pub fn _log(level: LogLevel, subsys: &str, args: fmt::Arguments) {
         buffer: [u8; 512],
         pos: usize,
     }
-    
+
     impl LogWriter {
         fn new() -> Self {
             Self {
@@ -182,12 +182,12 @@ pub fn _log(level: LogLevel, subsys: &str, args: fmt::Arguments) {
                 pos: 0,
             }
         }
-        
+
         fn as_str(&self) -> Result<&str, core::str::Utf8Error> {
             core::str::from_utf8(&self.buffer[..self.pos])
         }
     }
-    
+
     impl Write for LogWriter {
         fn write_str(&mut self, s: &str) -> fmt::Result {
             let bytes = s.as_bytes();
@@ -198,9 +198,9 @@ pub fn _log(level: LogLevel, subsys: &str, args: fmt::Arguments) {
             Ok(())
         }
     }
-    
+
     let mut writer = LogWriter::new();
-    
+
     let _ = write!(
         writer,
         "[cpu{}][pid={}][{}][{}] {}",
@@ -210,7 +210,7 @@ pub fn _log(level: LogLevel, subsys: &str, args: fmt::Arguments) {
         level.as_str(),
         args
     );
-    
+
     // Add to log buffer
     if let Ok(message) = writer.as_str() {
         add_to_log_buffer(message);

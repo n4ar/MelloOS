@@ -20,7 +20,7 @@ pub struct Args {
 
 impl Args {
     /// Parse command-line arguments
-    /// 
+    ///
     /// # Arguments
     /// * `argv` - Array of argument strings (including program name)
     /// * `optstring` - Option specification string (e.g., "abc:d::" for -a, -b, -c arg, -d [arg])
@@ -39,7 +39,7 @@ impl Args {
 
         while i < argv.len() {
             let arg = argv[i];
-            
+
             // Check if this is an option
             if arg.starts_with('-') && arg.len() > 1 && arg != "--" {
                 // Handle long option terminator
@@ -47,20 +47,20 @@ impl Args {
                     i += 1;
                     break;
                 }
-                
+
                 // Parse short options
                 let chars: Vec<char> = arg.chars().skip(1).collect();
                 let mut j = 0;
-                
+
                 while j < chars.len() {
                     let opt = chars[j];
-                    
+
                     // Find option in optstring
                     if let Some(pos) = optstring.find(opt) {
                         let requires_arg = optstring.as_bytes().get(pos + 1) == Some(&b':');
                         let optional_arg = optstring.as_bytes().get(pos + 1) == Some(&b':')
                             && optstring.as_bytes().get(pos + 2) == Some(&b':');
-                        
+
                         if requires_arg && !optional_arg {
                             // Option requires argument
                             let opt_arg = if j + 1 < chars.len() {
@@ -76,7 +76,7 @@ impl Args {
                             } else {
                                 return Err(Error::MissingArgument);
                             };
-                            
+
                             options.push((opt, opt_arg));
                             break; // Done with this argv element
                         } else if optional_arg {
@@ -88,7 +88,7 @@ impl Args {
                             } else {
                                 None
                             };
-                            
+
                             options.push((opt, opt_arg));
                             break; // Done with this argv element
                         } else {
@@ -98,17 +98,17 @@ impl Args {
                     } else {
                         return Err(Error::UnknownOption);
                     }
-                    
+
                     j += 1;
                 }
             } else {
                 // Not an option, it's a positional argument
                 positional.push(arg);
             }
-            
+
             i += 1;
         }
-        
+
         // Add remaining arguments as positional
         while i < argv.len() {
             positional.push(argv[i]);
@@ -191,7 +191,7 @@ mod tests {
     fn test_parse_flags() {
         let argv = &["ls", "-l", "-a"];
         let args = Args::parse(argv, "la").unwrap();
-        
+
         assert!(args.has_option('l'));
         assert!(args.has_option('a'));
         assert!(!args.has_option('h'));
@@ -202,7 +202,7 @@ mod tests {
     fn test_parse_combined_flags() {
         let argv = &["ls", "-la"];
         let args = Args::parse(argv, "la").unwrap();
-        
+
         assert!(args.has_option('l'));
         assert!(args.has_option('a'));
         assert_eq!(args.positional_count(), 0);
@@ -212,7 +212,7 @@ mod tests {
     fn test_parse_option_with_arg() {
         let argv = &["grep", "-n", "pattern", "file"];
         let args = Args::parse(argv, "n:").unwrap();
-        
+
         assert!(args.has_option('n'));
         assert_eq!(args.get_option('n'), Some("pattern"));
         assert_eq!(args.positional_count(), 1);
@@ -223,7 +223,7 @@ mod tests {
     fn test_parse_positional() {
         let argv = &["cat", "file1", "file2"];
         let args = Args::parse(argv, "").unwrap();
-        
+
         assert_eq!(args.positional_count(), 2);
         assert_eq!(args.get_positional(0), Some("file1"));
         assert_eq!(args.get_positional(1), Some("file2"));

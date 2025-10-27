@@ -2,9 +2,9 @@
 //!
 //! Maintains a history of terminal lines for scrolling.
 
+use crate::screen::Cell;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use crate::screen::Cell;
 
 /// Maximum number of lines in scrollback buffer
 const MAX_SCROLLBACK_LINES: usize = 10_000;

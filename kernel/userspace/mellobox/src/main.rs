@@ -9,10 +9,10 @@
 extern crate alloc;
 
 mod allocator;
-mod syscalls;
-mod error;
 mod args;
 mod commands;
+mod error;
+mod syscalls;
 
 use error::{Error, Result};
 
@@ -27,24 +27,78 @@ struct Applet {
 
 /// List of available applets
 const APPLETS: &[Applet] = &[
-    Applet { name: "ls", func: commands::ls::main },
-    Applet { name: "cp", func: commands::cp::main },
-    Applet { name: "mv", func: commands::mv::main },
-    Applet { name: "rm", func: commands::rm::main },
-    Applet { name: "cat", func: commands::cat::main },
-    Applet { name: "grep", func: commands::grep::main },
-    Applet { name: "ps", func: commands::ps::main },
-    Applet { name: "kill", func: commands::kill::main },
-    Applet { name: "mkdir", func: commands::mkdir::main },
-    Applet { name: "touch", func: commands::touch::main },
-    Applet { name: "echo", func: commands::echo::main },
-    Applet { name: "pwd", func: commands::pwd::main },
-    Applet { name: "true", func: commands::true_cmd::main },
-    Applet { name: "false", func: commands::false_cmd::main },
-    Applet { name: "stat", func: commands::stat::main },
-    Applet { name: "df", func: commands::df::main },
-    Applet { name: "mount", func: commands::mount::main },
-    Applet { name: "umount", func: commands::umount::main },
+    Applet {
+        name: "ls",
+        func: commands::ls::main,
+    },
+    Applet {
+        name: "cp",
+        func: commands::cp::main,
+    },
+    Applet {
+        name: "mv",
+        func: commands::mv::main,
+    },
+    Applet {
+        name: "rm",
+        func: commands::rm::main,
+    },
+    Applet {
+        name: "cat",
+        func: commands::cat::main,
+    },
+    Applet {
+        name: "grep",
+        func: commands::grep::main,
+    },
+    Applet {
+        name: "ps",
+        func: commands::ps::main,
+    },
+    Applet {
+        name: "kill",
+        func: commands::kill::main,
+    },
+    Applet {
+        name: "mkdir",
+        func: commands::mkdir::main,
+    },
+    Applet {
+        name: "touch",
+        func: commands::touch::main,
+    },
+    Applet {
+        name: "echo",
+        func: commands::echo::main,
+    },
+    Applet {
+        name: "pwd",
+        func: commands::pwd::main,
+    },
+    Applet {
+        name: "true",
+        func: commands::true_cmd::main,
+    },
+    Applet {
+        name: "false",
+        func: commands::false_cmd::main,
+    },
+    Applet {
+        name: "stat",
+        func: commands::stat::main,
+    },
+    Applet {
+        name: "df",
+        func: commands::df::main,
+    },
+    Applet {
+        name: "mount",
+        func: commands::mount::main,
+    },
+    Applet {
+        name: "umount",
+        func: commands::umount::main,
+    },
 ];
 
 /// Extract program name from argv[0]
@@ -71,23 +125,23 @@ fn dispatch(argv: &'static [&'static str]) -> Result<i32> {
             print_usage();
             return Ok(0);
         }
-        
+
         let applet_name = argv[1];
-        
+
         // Create new argv with applet name as argv[0]
         let mut new_argv = alloc::vec::Vec::new();
         new_argv.push(applet_name);
         for i in 2..argv.len() {
             new_argv.push(argv[i]);
         }
-        
+
         // Find and run applet
         for applet in APPLETS {
             if applet.name == applet_name {
                 return (applet.func)(alloc::vec::Vec::leak(new_argv));
             }
         }
-        
+
         error::print_usage_error("mellobox", "unknown applet");
         return Err(Error::InvalidArgument);
     }
@@ -110,9 +164,9 @@ fn print_usage() {
 Usage: mellobox <applet> [args...]\n\
    or: <applet> [args...] (via symlink)\n\n\
 Available applets:\n";
-    
+
     syscalls::write(1, usage);
-    
+
     // Print applet list
     for applet in APPLETS {
         syscalls::write(1, b"  ");
@@ -146,7 +200,7 @@ pub extern "C" fn _start() -> ! {
 }
 
 /// Get argv from stack
-/// 
+///
 /// The kernel sets up the stack as:
 /// ```
 /// [argc]
@@ -162,34 +216,34 @@ unsafe fn get_argv() -> &'static [&'static str] {
     // Get stack pointer
     let mut rsp: usize;
     core::arch::asm!("mov {}, rsp", out(reg) rsp);
-    
+
     // Read argc
     let argc = *(rsp as *const usize);
     rsp += 8;
-    
+
     // Read argv pointers
     let argv_ptrs = core::slice::from_raw_parts(rsp as *const *const u8, argc);
-    
+
     // Convert to string slices
     let mut argv = alloc::vec::Vec::with_capacity(argc);
     for &ptr in argv_ptrs {
         if ptr.is_null() {
             break;
         }
-        
+
         // Find string length
         let mut len = 0;
         while *ptr.add(len) != 0 {
             len += 1;
         }
-        
+
         // Create string slice
         let bytes = core::slice::from_raw_parts(ptr, len);
         if let Ok(s) = core::str::from_utf8(bytes) {
             argv.push(s);
         }
     }
-    
+
     alloc::vec::Vec::leak(argv)
 }
 
@@ -198,11 +252,11 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     // Try to print panic message
     let msg = b"PANIC: ";
     syscalls::write(2, msg);
-    
+
     if let Some(location) = info.location() {
         let mut buf = [0u8; 256];
         let mut pos = 0;
-        
+
         // Write file name
         for &b in location.file().as_bytes() {
             if pos >= buf.len() - 1 {
@@ -211,19 +265,16 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
             buf[pos] = b;
             pos += 1;
         }
-        
+
         // Write ":"
         if pos < buf.len() - 1 {
             buf[pos] = b':';
             pos += 1;
         }
-        
+
         syscalls::write(2, &buf[..pos]);
     }
-    
+
     syscalls::write(2, b"\n");
     syscalls::exit(1);
 }
-
-
-

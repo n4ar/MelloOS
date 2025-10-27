@@ -41,18 +41,25 @@ fn main() {
         PathBuf::from("userspace/mellobox/target/x86_64-unknown-none/release/mellobox");
 
     let _init_dest = handle_userspace_binary(init_binary_path, "init_binary.bin", &out_dir);
-    let _mello_term_dest = handle_userspace_binary(mello_term_path, "mello_term_binary.bin", &out_dir);
+    let _mello_term_dest =
+        handle_userspace_binary(mello_term_path, "mello_term_binary.bin", &out_dir);
     let _mello_sh_dest = handle_userspace_binary(mello_sh_path, "mello_sh_binary.bin", &out_dir);
     let _mellobox_dest = handle_userspace_binary(mellobox_path, "mellobox_binary.bin", &out_dir);
 
     // Tell cargo to rerun this build script if any userspace binary changes
     println!("cargo:rerun-if-changed=userspace/init/target/x86_64-unknown-none/release/init");
     println!("cargo:rerun-if-changed=userspace/init/src/main.rs");
-    println!("cargo:rerun-if-changed=userspace/mello-term/target/x86_64-unknown-none/release/mello-term");
+    println!(
+        "cargo:rerun-if-changed=userspace/mello-term/target/x86_64-unknown-none/release/mello-term"
+    );
     println!("cargo:rerun-if-changed=userspace/mello-term/src/main.rs");
-    println!("cargo:rerun-if-changed=userspace/mello-sh/target/x86_64-unknown-none/release/mello-sh");
+    println!(
+        "cargo:rerun-if-changed=userspace/mello-sh/target/x86_64-unknown-none/release/mello-sh"
+    );
     println!("cargo:rerun-if-changed=userspace/mello-sh/src/main.rs");
-    println!("cargo:rerun-if-changed=userspace/mellobox/target/x86_64-unknown-none/release/mellobox");
+    println!(
+        "cargo:rerun-if-changed=userspace/mellobox/target/x86_64-unknown-none/release/mellobox"
+    );
     println!("cargo:rerun-if-changed=userspace/mellobox/src/main.rs");
 
     // Compile AP trampoline assembly
@@ -236,7 +243,10 @@ fn main() {
         }
 
         // Link the object file with the kernel
-        println!("cargo:rustc-link-arg={}", syscall_entry_obj.to_str().unwrap());
+        println!(
+            "cargo:rustc-link-arg={}",
+            syscall_entry_obj.to_str().unwrap()
+        );
 
         println!(
             "cargo:warning=Syscall entry assembly compiled to {:?}",

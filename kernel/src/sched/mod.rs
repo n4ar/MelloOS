@@ -74,8 +74,8 @@ macro_rules! sched_error {
     };
 }
 
-use alloc::vec::Vec;
 use crate::arch::x86_64::smp::percpu::{percpu_current, percpu_for};
+use alloc::vec::Vec;
 use context::CpuContext;
 use priority::TaskPriority;
 use spin::Mutex;

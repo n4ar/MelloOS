@@ -37,15 +37,15 @@ pub struct DirKey {
 
 impl DirKey {
     pub const SIZE: usize = 90;
-    
+
     pub fn new(parent_ino: u64, name: &str) -> Self {
         let name_bytes = name.as_bytes();
         let name_hash = fnv1a_hash(name_bytes);
         let inline_len = core::cmp::min(name_bytes.len(), 64);
-        
+
         let mut name_inline = [0u8; 64];
         name_inline[..inline_len].copy_from_slice(&name_bytes[..inline_len]);
-        
+
         Self {
             key_type: KeyType::DirKey as u8,
             _reserved: [0; 7],
@@ -56,14 +56,13 @@ impl DirKey {
             name_inline,
         }
     }
-    
+
     pub fn to_bytes(&self) -> Vec<u8> {
-        let bytes = unsafe {
-            core::slice::from_raw_parts(self as *const _ as *const u8, Self::SIZE)
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, Self::SIZE) };
         bytes.to_vec()
     }
-    
+
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() < Self::SIZE {
             return Err("Data too small for DirKey");
@@ -74,9 +73,10 @@ impl DirKey {
 
 impl PartialEq for DirKey {
     fn eq(&self, other: &Self) -> bool {
-        self.parent_ino == other.parent_ino &&
-        self.name_hash == other.name_hash &&
-        self.name_inline[..self.name_len as usize] == other.name_inline[..other.name_len as usize]
+        self.parent_ino == other.parent_ino
+            && self.name_hash == other.name_hash
+            && self.name_inline[..self.name_len as usize]
+                == other.name_inline[..other.name_len as usize]
     }
 }
 
@@ -90,10 +90,13 @@ impl PartialOrd for DirKey {
 
 impl Ord for DirKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.parent_ino.cmp(&other.parent_ino)
+        self.parent_ino
+            .cmp(&other.parent_ino)
             .then(self.name_hash.cmp(&other.name_hash))
-            .then(self.name_inline[..self.name_len as usize]
-                .cmp(&other.name_inline[..other.name_len as usize]))
+            .then(
+                self.name_inline[..self.name_len as usize]
+                    .cmp(&other.name_inline[..other.name_len as usize]),
+            )
     }
 }
 
@@ -111,7 +114,7 @@ pub struct InodeKey {
 
 impl InodeKey {
     pub const SIZE: usize = 16;
-    
+
     pub fn new(ino: u64) -> Self {
         Self {
             key_type: KeyType::InodeKey as u8,
@@ -119,14 +122,13 @@ impl InodeKey {
             ino,
         }
     }
-    
+
     pub fn to_bytes(&self) -> Vec<u8> {
-        let bytes = unsafe {
-            core::slice::from_raw_parts(self as *const _ as *const u8, Self::SIZE)
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, Self::SIZE) };
         bytes.to_vec()
     }
-    
+
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() < Self::SIZE {
             return Err("Data too small for InodeKey");
@@ -163,7 +165,7 @@ pub struct ExtentKey {
 
 impl ExtentKey {
     pub const SIZE: usize = 24;
-    
+
     pub fn new(ino: u64, file_offset: u64) -> Self {
         Self {
             key_type: KeyType::ExtentKey as u8,
@@ -172,14 +174,13 @@ impl ExtentKey {
             file_offset,
         }
     }
-    
+
     pub fn to_bytes(&self) -> Vec<u8> {
-        let bytes = unsafe {
-            core::slice::from_raw_parts(self as *const _ as *const u8, Self::SIZE)
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, Self::SIZE) };
         bytes.to_vec()
     }
-    
+
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() < Self::SIZE {
             return Err("Data too small for ExtentKey");
@@ -196,7 +197,8 @@ impl PartialOrd for ExtentKey {
 
 impl Ord for ExtentKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.ino.cmp(&other.ino)
+        self.ino
+            .cmp(&other.ino)
             .then(self.file_offset.cmp(&other.file_offset))
     }
 }
@@ -223,15 +225,15 @@ pub struct XattrKey {
 
 impl XattrKey {
     pub const SIZE: usize = 272;
-    
+
     pub fn new(ino: u64, name: &str) -> Self {
         let name_bytes = name.as_bytes();
         let name_hash = fnv1a_hash(name_bytes);
         let name_len = core::cmp::min(name_bytes.len(), 254);
-        
+
         let mut name_buf = [0u8; 254];
         name_buf[..name_len].copy_from_slice(&name_bytes[..name_len]);
-        
+
         Self {
             key_type: KeyType::XattrKey as u8,
             _reserved: [0; 7],
@@ -242,14 +244,13 @@ impl XattrKey {
             name: name_buf,
         }
     }
-    
+
     pub fn to_bytes(&self) -> Vec<u8> {
-        let bytes = unsafe {
-            core::slice::from_raw_parts(self as *const _ as *const u8, Self::SIZE)
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, Self::SIZE) };
         bytes.to_vec()
     }
-    
+
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() < Self::SIZE {
             return Err("Data too small for XattrKey");
@@ -260,9 +261,9 @@ impl XattrKey {
 
 impl PartialEq for XattrKey {
     fn eq(&self, other: &Self) -> bool {
-        self.ino == other.ino &&
-        self.name_hash == other.name_hash &&
-        self.name[..self.name_len as usize] == other.name[..other.name_len as usize]
+        self.ino == other.ino
+            && self.name_hash == other.name_hash
+            && self.name[..self.name_len as usize] == other.name[..other.name_len as usize]
     }
 }
 
@@ -276,10 +277,10 @@ impl PartialOrd for XattrKey {
 
 impl Ord for XattrKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.ino.cmp(&other.ino)
+        self.ino
+            .cmp(&other.ino)
             .then(self.name_hash.cmp(&other.name_hash))
-            .then(self.name[..self.name_len as usize]
-                .cmp(&other.name[..other.name_len as usize]))
+            .then(self.name[..self.name_len as usize].cmp(&other.name[..other.name_len as usize]))
     }
 }
 
@@ -315,7 +316,7 @@ pub struct DirVal {
 
 impl DirVal {
     pub const MIN_SIZE: usize = 12;
-    
+
     pub fn new(child_ino: u64, file_type: FileType, name: Option<&str>) -> Self {
         let (name_len, name_overflow) = if let Some(n) = name {
             let bytes = n.as_bytes();
@@ -327,7 +328,7 @@ impl DirVal {
         } else {
             (0, Vec::new())
         };
-        
+
         Self {
             child_ino,
             file_type: file_type as u8,
@@ -335,7 +336,7 @@ impl DirVal {
             name_overflow,
         }
     }
-    
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(Self::MIN_SIZE + self.name_overflow.len());
         bytes.extend_from_slice(&self.child_ino.to_le_bytes());
@@ -345,25 +346,24 @@ impl DirVal {
         bytes.extend_from_slice(&self.name_overflow);
         bytes
     }
-    
+
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() < Self::MIN_SIZE {
             return Err("Data too small for DirVal");
         }
-        
+
         let child_ino = u64::from_le_bytes([
-            data[0], data[1], data[2], data[3],
-            data[4], data[5], data[6], data[7],
+            data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
         ]);
         let file_type = data[8];
         let name_len = data[9];
-        
+
         let name_overflow = if name_len > 0 {
             data[Self::MIN_SIZE..].to_vec()
         } else {
             Vec::new()
         };
-        
+
         Ok(Self {
             child_ino,
             file_type,
@@ -411,7 +411,7 @@ pub struct InodeVal {
 impl InodeVal {
     pub const MIN_SIZE: usize = 80;
     pub const MAX_INLINE_SIZE: usize = 4096;
-    
+
     pub fn new(mode: u16, uid: u32, gid: u32) -> Self {
         Self {
             mode,
@@ -428,11 +428,11 @@ impl InodeVal {
             inline_data: Vec::new(),
         }
     }
-    
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let inline_len = core::cmp::min(self.inline_data.len(), Self::MAX_INLINE_SIZE);
         let mut bytes = Vec::with_capacity(Self::MIN_SIZE + inline_len);
-        
+
         bytes.extend_from_slice(&self.mode.to_le_bytes());
         bytes.extend_from_slice(&[0u8; 2]); // Reserved
         bytes.extend_from_slice(&self.uid.to_le_bytes());
@@ -449,52 +449,46 @@ impl InodeVal {
         bytes.extend_from_slice(&self.rdev.to_le_bytes());
         bytes.extend_from_slice(&[0u8; 8]); // Reserved
         bytes.extend_from_slice(&self.inline_data[..inline_len]);
-        
+
         bytes
     }
-    
+
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() < Self::MIN_SIZE {
             return Err("Data too small for InodeVal");
         }
-        
+
         let mode = u16::from_le_bytes([data[0], data[1]]);
         let uid = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
         let gid = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
         let nlink = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
         let size = u64::from_le_bytes([
-            data[16], data[17], data[18], data[19],
-            data[20], data[21], data[22], data[23],
+            data[16], data[17], data[18], data[19], data[20], data[21], data[22], data[23],
         ]);
         let atime_ns = u64::from_le_bytes([
-            data[24], data[25], data[26], data[27],
-            data[28], data[29], data[30], data[31],
+            data[24], data[25], data[26], data[27], data[28], data[29], data[30], data[31],
         ]);
         let mtime_ns = u64::from_le_bytes([
-            data[32], data[33], data[34], data[35],
-            data[36], data[37], data[38], data[39],
+            data[32], data[33], data[34], data[35], data[36], data[37], data[38], data[39],
         ]);
         let ctime_ns = u64::from_le_bytes([
-            data[40], data[41], data[42], data[43],
-            data[44], data[45], data[46], data[47],
+            data[40], data[41], data[42], data[43], data[44], data[45], data[46], data[47],
         ]);
         let crtime_ns = u64::from_le_bytes([
-            data[48], data[49], data[50], data[51],
-            data[52], data[53], data[54], data[55],
+            data[48], data[49], data[50], data[51], data[52], data[53], data[54], data[55],
         ]);
         let flags = u32::from_le_bytes([data[56], data[57], data[58], data[59]]);
         let inline_len = u16::from_le_bytes([data[60], data[61]]) as usize;
         let rdev = u64::from_le_bytes([
-            data[64], data[65], data[66], data[67],
-            data[68], data[69], data[70], data[71],
+            data[64], data[65], data[66], data[67], data[68], data[69], data[70], data[71],
         ]);
-        
+
         let inline_data = if inline_len > 0 && data.len() >= Self::MIN_SIZE + inline_len {
             data[Self::MIN_SIZE..Self::MIN_SIZE + inline_len].to_vec()
         } else {
             Vec::new()
         };
-        
+
         Ok(Self {
             mode,
             uid,
@@ -534,7 +528,7 @@ pub struct ExtentVal {
 
 impl ExtentVal {
     pub const SIZE: usize = 24;
-    
+
     pub fn new(phys_lba: u64, length: u32) -> Self {
         Self {
             phys_lba,
@@ -544,14 +538,13 @@ impl ExtentVal {
             checksum: 0,
         }
     }
-    
+
     pub fn to_bytes(&self) -> Vec<u8> {
-        let bytes = unsafe {
-            core::slice::from_raw_parts(self as *const _ as *const u8, Self::SIZE)
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, Self::SIZE) };
         bytes.to_vec()
     }
-    
+
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() < Self::SIZE {
             return Err("Data too small for ExtentVal");
@@ -572,18 +565,18 @@ pub struct XattrVal {
 impl XattrVal {
     pub const MIN_SIZE: usize = 8;
     pub const MAX_SIZE: usize = 65536;
-    
+
     pub fn new(data: Vec<u8>) -> Result<Self, &'static str> {
         if data.len() > Self::MAX_SIZE {
             return Err("Attribute value too large");
         }
-        
+
         Ok(Self {
             length: data.len() as u32,
             data,
         })
     }
-    
+
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(Self::MIN_SIZE + self.data.len());
         bytes.extend_from_slice(&self.length.to_le_bytes());
@@ -591,20 +584,20 @@ impl XattrVal {
         bytes.extend_from_slice(&self.data);
         bytes
     }
-    
+
     pub fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
         if data.len() < Self::MIN_SIZE {
             return Err("Data too small for XattrVal");
         }
-        
+
         let length = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-        
+
         if data.len() < Self::MIN_SIZE + length {
             return Err("Truncated attribute value");
         }
-        
+
         let value_data = data[Self::MIN_SIZE..Self::MIN_SIZE + length].to_vec();
-        
+
         Ok(Self {
             length: length as u32,
             data: value_data,
@@ -620,7 +613,7 @@ impl XattrVal {
 fn fnv1a_hash(data: &[u8]) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
-    
+
     let mut hash = FNV_OFFSET;
     for &byte in data {
         hash ^= byte as u64;
@@ -632,46 +625,46 @@ fn fnv1a_hash(data: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_dir_key() {
         let key = DirKey::new(1, "test.txt");
         assert_eq!(key.parent_ino, 1);
         assert_eq!(key.name_len, 8);
-        
+
         let bytes = key.to_bytes();
         let key2 = DirKey::from_bytes(&bytes).unwrap();
         assert_eq!(key, key2);
     }
-    
+
     #[test]
     fn test_inode_key() {
         let key = InodeKey::new(42);
         assert_eq!(key.ino, 42);
-        
+
         let bytes = key.to_bytes();
         let key2 = InodeKey::from_bytes(&bytes).unwrap();
         assert_eq!(key, key2);
     }
-    
+
     #[test]
     fn test_extent_key() {
         let key = ExtentKey::new(42, 4096);
         assert_eq!(key.ino, 42);
         assert_eq!(key.file_offset, 4096);
-        
+
         let bytes = key.to_bytes();
         let key2 = ExtentKey::from_bytes(&bytes).unwrap();
         assert_eq!(key, key2);
     }
-    
+
     #[test]
     fn test_inode_val() {
         let val = InodeVal::new(0o644, 1000, 1000);
         assert_eq!(val.mode, 0o644);
         assert_eq!(val.uid, 1000);
         assert_eq!(val.gid, 1000);
-        
+
         let bytes = val.to_bytes();
         let val2 = InodeVal::from_bytes(&bytes).unwrap();
         assert_eq!(val.mode, val2.mode);

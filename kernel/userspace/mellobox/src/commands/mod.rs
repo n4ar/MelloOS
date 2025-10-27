@@ -1,20 +1,20 @@
 //! Command implementations for mellobox utilities
 
-pub mod ls;
-pub mod cp;
-pub mod mv;
-pub mod rm;
 pub mod cat;
-pub mod grep;
-pub mod ps;
-pub mod kill;
-pub mod mkdir;
-pub mod touch;
-pub mod echo;
-pub mod pwd;
-pub mod true_cmd;
-pub mod false_cmd;
-pub mod stat;
+pub mod cp;
 pub mod df;
+pub mod echo;
+pub mod false_cmd;
+pub mod grep;
+pub mod kill;
+pub mod ls;
+pub mod mkdir;
 pub mod mount;
+pub mod mv;
+pub mod ps;
+pub mod pwd;
+pub mod rm;
+pub mod stat;
+pub mod touch;
+pub mod true_cmd;
 pub mod umount;

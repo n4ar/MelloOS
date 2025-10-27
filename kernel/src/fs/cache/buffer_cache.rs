@@ -9,7 +9,7 @@
 //! Note: This is a simplified implementation using static arrays
 //! since the kernel doesn't have the alloc crate yet.
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::RwLock;
 
 /// Maximum buffer size (typically 4 KiB for metadata blocks)
@@ -117,9 +117,9 @@ impl BufferEntry {
 
     /// Check if this entry matches the given device and block
     pub fn matches(&self, device_id: u64, block_num: u64) -> bool {
-        self.is_valid() &&
-        self.device_id.load(Ordering::Acquire) == device_id &&
-        self.block_num.load(Ordering::Acquire) == block_num
+        self.is_valid()
+            && self.device_id.load(Ordering::Acquire) == device_id
+            && self.block_num.load(Ordering::Acquire) == block_num
     }
 
     /// Invalidate entry
@@ -158,7 +158,7 @@ impl BufferCache {
     /// Returns the index of the buffer if found
     pub fn get_buffer(&self, device_id: u64, block_num: u64) -> Option<usize> {
         let timestamp = self.next_timestamp();
-        
+
         for (idx, buffer_lock) in self.buffers.iter().enumerate() {
             let buffer = buffer_lock.read();
             if buffer.matches(device_id, block_num) {
@@ -183,7 +183,7 @@ impl BufferCache {
     /// Returns the index where the buffer was inserted
     pub fn insert_buffer(&self, device_id: u64, block_num: u64, data: &[u8]) -> Option<usize> {
         let timestamp = self.next_timestamp();
-        
+
         // First try to find an invalid entry
         for (idx, buffer_lock) in self.buffers.iter().enumerate() {
             let mut buffer = buffer_lock.write();
@@ -197,7 +197,7 @@ impl BufferCache {
         // If no invalid entry, evict LRU
         let mut oldest_idx = 0;
         let mut oldest_time = u64::MAX;
-        
+
         for (idx, buffer_lock) in self.buffers.iter().enumerate() {
             let buffer = buffer_lock.read();
             let access_time = buffer.last_access();

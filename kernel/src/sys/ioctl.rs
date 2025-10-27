@@ -7,14 +7,14 @@
 use crate::sys::syscall::FdType;
 
 /// ioctl command numbers (from Linux/POSIX)
-pub const TIOCGPTN: usize = 0x80045430;  // Get PTY number
-pub const TCGETS: usize = 0x5401;        // Get termios structure
-pub const TCSETS: usize = 0x5402;        // Set termios structure
-pub const TIOCGWINSZ: usize = 0x5413;    // Get window size
-pub const TIOCSWINSZ: usize = 0x5414;    // Set window size
-pub const TIOCSPGRP: usize = 0x5410;     // Set foreground process group
-pub const TIOCGPGRP: usize = 0x540F;     // Get foreground process group
-pub const TIOCSCTTY: usize = 0x540E;     // Make this TTY the controlling terminal
+pub const TIOCGPTN: usize = 0x80045430; // Get PTY number
+pub const TCGETS: usize = 0x5401; // Get termios structure
+pub const TCSETS: usize = 0x5402; // Set termios structure
+pub const TIOCGWINSZ: usize = 0x5413; // Get window size
+pub const TIOCSWINSZ: usize = 0x5414; // Set window size
+pub const TIOCSPGRP: usize = 0x5410; // Set foreground process group
+pub const TIOCGPGRP: usize = 0x540F; // Get foreground process group
+pub const TIOCSCTTY: usize = 0x540E; // Make this TTY the controlling terminal
 
 /// ioctl command categories
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

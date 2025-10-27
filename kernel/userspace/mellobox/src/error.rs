@@ -99,10 +99,10 @@ impl fmt::Display for Error {
 /// Print error message to stderr
 pub fn print_error(program: &str, error: Error) {
     use crate::syscalls;
-    
+
     let mut buf = [0u8; 256];
     let mut pos = 0;
-    
+
     // Write program name
     for &b in program.as_bytes() {
         if pos >= buf.len() - 1 {
@@ -111,7 +111,7 @@ pub fn print_error(program: &str, error: Error) {
         buf[pos] = b;
         pos += 1;
     }
-    
+
     // Write ": "
     if pos < buf.len() - 2 {
         buf[pos] = b':';
@@ -119,7 +119,7 @@ pub fn print_error(program: &str, error: Error) {
         buf[pos] = b' ';
         pos += 1;
     }
-    
+
     // Write error message
     for &b in error.message().as_bytes() {
         if pos >= buf.len() - 1 {
@@ -128,13 +128,13 @@ pub fn print_error(program: &str, error: Error) {
         buf[pos] = b;
         pos += 1;
     }
-    
+
     // Write newline
     if pos < buf.len() {
         buf[pos] = b'\n';
         pos += 1;
     }
-    
+
     // Write to stderr (fd 2)
     syscalls::write(2, &buf[..pos]);
 }
@@ -142,10 +142,10 @@ pub fn print_error(program: &str, error: Error) {
 /// Print usage error to stderr
 pub fn print_usage_error(program: &str, message: &str) {
     use crate::syscalls;
-    
+
     let mut buf = [0u8; 256];
     let mut pos = 0;
-    
+
     // Write program name
     for &b in program.as_bytes() {
         if pos >= buf.len() - 1 {
@@ -154,7 +154,7 @@ pub fn print_usage_error(program: &str, message: &str) {
         buf[pos] = b;
         pos += 1;
     }
-    
+
     // Write ": "
     if pos < buf.len() - 2 {
         buf[pos] = b':';
@@ -162,7 +162,7 @@ pub fn print_usage_error(program: &str, message: &str) {
         buf[pos] = b' ';
         pos += 1;
     }
-    
+
     // Write message
     for &b in message.as_bytes() {
         if pos >= buf.len() - 1 {
@@ -171,13 +171,13 @@ pub fn print_usage_error(program: &str, message: &str) {
         buf[pos] = b;
         pos += 1;
     }
-    
+
     // Write newline
     if pos < buf.len() {
         buf[pos] = b'\n';
         pos += 1;
     }
-    
+
     // Write to stderr (fd 2)
     syscalls::write(2, &buf[..pos]);
 }

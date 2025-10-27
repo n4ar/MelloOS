@@ -1,9 +1,9 @@
 //! I/O Port Operations
 //!
 //! Provides safe wrappers for x86_64 I/O port operations with mock support for testing.
-//! 
+//!
 //! # Safety
-//! 
+//!
 //! All port I/O operations are inherently unsafe as they directly interact with hardware.
 //! Callers must ensure:
 //! - The port address is valid for the intended device

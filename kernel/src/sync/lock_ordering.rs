@@ -104,18 +104,18 @@
 //! // Acquire locks in correct order: PTY table → Session → PTY pair
 //! let pty_table = PTY_TABLE.lock();
 //! let pty_pair = &pty_table.pairs[pty_num];
-//! 
+//!
 //! // Use trylock with timeout for PTY pair
 //! let pty_lock = match pty_pair.try_lock_timeout(100) {
 //!     Some(lock) => lock,
 //!     None => return Err(EBUSY),
 //! };
-//! 
+//!
 //! pty_lock.winsize = new_size;
 //! let foreground_pgid = pty_lock.slave.foreground_pgid;
 //! drop(pty_lock);
 //! drop(pty_table);
-//! 
+//!
 //! // Now send SIGWINCH to foreground group
 //! if let Some(pgid) = foreground_pgid {
 //!     send_signal_to_group(pgid, SIGWINCH);
@@ -127,10 +127,10 @@
 //! // Acquire locks in correct order: Session → Process Group → Task
 //! let session_table = SESSION_TABLE.lock();
 //! let session = &session_table.sessions[sid];
-//! 
+//!
 //! let pg_table = PROCESS_GROUP_TABLE.lock();
 //! let pg = &pg_table.groups[pgid];
-//! 
+//!
 //! // Iterate over processes and send signal
 //! for pid in pg.iter() {
 //!     let task_table = TASK_TABLE.lock();

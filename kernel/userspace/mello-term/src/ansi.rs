@@ -12,6 +12,14 @@ pub enum ParserState {
     Csi,
 }
 
+/// Modes for clearing parts of the current line
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineClearMode {
+    CursorToEnd,
+    CursorToStart,
+    EntireLine,
+}
+
 /// ANSI escape sequence parser
 pub struct AnsiParser {
     state: ParserState,
@@ -143,10 +151,10 @@ impl AnsiParser {
                 if self.has_param {
                     self.params.push(self.current_param);
                 }
-                
+
                 let row = self.params.get(0).copied().unwrap_or(1).saturating_sub(1);
                 let col = self.params.get(1).copied().unwrap_or(1).saturating_sub(1);
-                
+
                 self.reset();
                 ParseResult::CursorPosition(row as u16, col as u16)
             }
@@ -157,9 +165,9 @@ impl AnsiParser {
                 } else {
                     0
                 };
-                
+
                 self.reset();
-                
+
                 // Mode 2 = clear entire screen
                 if mode == 2 {
                     ParseResult::ClearScreen
@@ -170,27 +178,31 @@ impl AnsiParser {
             }
             b'K' => {
                 // Clear line
-                let _mode = if self.has_param {
+                let mode = if self.has_param {
                     self.current_param
                 } else {
                     0
                 };
-                
+
                 self.reset();
-                // TODO: Implement clear line modes
-                ParseResult::None
+                let clear_mode = match mode {
+                    1 => LineClearMode::CursorToStart,
+                    2 => LineClearMode::EntireLine,
+                    _ => LineClearMode::CursorToEnd,
+                };
+                ParseResult::ClearLine(clear_mode)
             }
             b'm' => {
                 // SGR - Set Graphics Rendition (colors/attributes)
                 if self.has_param {
                     self.params.push(self.current_param);
                 }
-                
+
                 // If no parameters, default to 0 (reset)
                 if self.params.is_empty() {
                     self.params.push(0);
                 }
-                
+
                 let params = self.params.clone();
                 self.reset();
                 ParseResult::SetGraphicsMode(params)
@@ -223,5 +235,6 @@ pub enum ParseResult {
     CursorBack(u16),
     CursorPosition(u16, u16),
     ClearScreen,
+    ClearLine(LineClearMode),
     SetGraphicsMode(Vec<u32>),
 }

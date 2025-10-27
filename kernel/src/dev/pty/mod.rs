@@ -105,11 +105,11 @@ impl Termios {
         };
 
         // Set default control characters
-        termios.c_cc[cc::VINTR] = 3;   // Ctrl-C
-        termios.c_cc[cc::VSUSP] = 26;  // Ctrl-Z
-        termios.c_cc[cc::VEOF] = 4;    // Ctrl-D
+        termios.c_cc[cc::VINTR] = 3; // Ctrl-C
+        termios.c_cc[cc::VSUSP] = 26; // Ctrl-Z
+        termios.c_cc[cc::VEOF] = 4; // Ctrl-D
         termios.c_cc[cc::VERASE] = 127; // Backspace
-        termios.c_cc[cc::VQUIT] = 28;  // Ctrl-\
+        termios.c_cc[cc::VQUIT] = 28; // Ctrl-\
         termios.c_cc[cc::VMIN] = 1;
         termios.c_cc[cc::VTIME] = 0;
 
@@ -208,10 +208,10 @@ impl RingBuffer {
         if space == 0 {
             return 0;
         }
-        
+
         let to_write = data.len().min(space);
         let buffer_len = self.data.len();
-        
+
         // Fast path: contiguous write (no wrap-around)
         let contiguous = (buffer_len - self.write_pos).min(to_write);
         if contiguous > 0 {
@@ -220,7 +220,7 @@ impl RingBuffer {
                 .copy_from_slice(&data[..contiguous]);
             self.write_pos = (self.write_pos + contiguous) % buffer_len;
         }
-        
+
         // Handle wrap-around if needed
         let remaining = to_write - contiguous;
         if remaining > 0 {
@@ -244,20 +244,19 @@ impl RingBuffer {
         if available == 0 {
             return 0;
         }
-        
+
         let to_read = buf.len().min(available);
         let buffer_len = self.data.len();
-        
+
         // Fast path: contiguous read (no wrap-around)
         let contiguous = (buffer_len - self.read_pos).min(to_read);
         if contiguous > 0 {
             // Use slice copy for better performance
-            buf[..contiguous].copy_from_slice(
-                &self.data[self.read_pos..self.read_pos + contiguous]
-            );
+            buf[..contiguous]
+                .copy_from_slice(&self.data[self.read_pos..self.read_pos + contiguous]);
             self.read_pos = (self.read_pos + contiguous) % buffer_len;
         }
-        
+
         // Handle wrap-around if needed
         let remaining = to_read - contiguous;
         if remaining > 0 {
@@ -402,14 +401,14 @@ impl PtyTable {
         // Create array of PTY pairs using const initialization
         const INIT_PAIR: PtyPair = PtyPair::new(0);
         let mut pairs = [INIT_PAIR; MAX_PTY_PAIRS];
-        
+
         // Initialize each pair with its correct number
         let mut i = 0;
         while i < MAX_PTY_PAIRS {
             pairs[i] = PtyPair::new(i as PtyNumber);
             i += 1;
         }
-        
+
         Self { pairs }
     }
 
@@ -487,7 +486,11 @@ static PTY_TABLE: SpinLock<PtyTable> = SpinLock::new(PtyTable::new());
 fn send_signal_to_foreground_group(pair: &PtyPair, signal: u32) {
     // Get the foreground process group ID
     if let Some(pgid) = pair.slave.foreground_pgid {
-        crate::serial_println!("[PTY] Sending signal {} to foreground PGID {}", signal, pgid);
+        crate::serial_println!(
+            "[PTY] Sending signal {} to foreground PGID {}",
+            signal,
+            pgid
+        );
         send_signal_to_process_group(pgid, signal);
     } else {
         crate::serial_println!("[PTY] WARNING: No foreground process group set");
@@ -501,7 +504,7 @@ fn send_signal_to_foreground_group(pair: &PtyPair, signal: u32) {
 /// * `signal` - Signal to send
 fn send_signal_to_process_group(pgid: usize, signal: u32) {
     crate::serial_println!("[PTY] Sending signal {} to PGID {}", signal, pgid);
-    
+
     let delivered = crate::signal::send_signal_to_group(pgid, signal);
     if delivered == 0 {
         crate::serial_println!(
@@ -539,7 +542,10 @@ fn is_foreground_process(pair: &PtyPair) -> bool {
 pub fn init() {
     let mut table = PTY_TABLE.lock();
     table.init();
-    crate::serial_println!("[PTY] Initialized PTY subsystem with {} pairs", MAX_PTY_PAIRS);
+    crate::serial_println!(
+        "[PTY] Initialized PTY subsystem with {} pairs",
+        MAX_PTY_PAIRS
+    );
 }
 
 /// Allocate a new PTY pair
@@ -563,15 +569,18 @@ pub fn allocate_pty() -> Option<PtyNumber> {
 /// Sends SIGHUP to the foreground process group before deallocating.
 pub fn deallocate_pty(number: PtyNumber) -> bool {
     let mut table = PTY_TABLE.lock();
-    
+
     // Send SIGHUP to foreground process group before closing
     if let Some(pair) = table.get_pty_mut(number) {
         if pair.allocated {
-            crate::serial_println!("[PTY] Sending SIGHUP to foreground group before closing PTY {}", number);
+            crate::serial_println!(
+                "[PTY] Sending SIGHUP to foreground group before closing PTY {}",
+                number
+            );
             send_signal_to_foreground_group(pair, crate::signal::signals::SIGHUP);
         }
     }
-    
+
     let result = table.deallocate_pty(number);
     if result {
         crate::serial_println!("[PTY] Deallocated PTY pair {}", number);
@@ -624,9 +633,13 @@ pub fn set_winsize(number: PtyNumber, winsize: Winsize) -> bool {
     let mut table = PTY_TABLE.lock();
     if let Some(pair) = table.get_pty_mut(number) {
         pair.master.winsize = winsize;
-        crate::serial_println!("[PTY] Window size changed for PTY {}: {}x{}", 
-                              number, winsize.ws_row, winsize.ws_col);
-        
+        crate::serial_println!(
+            "[PTY] Window size changed for PTY {}: {}x{}",
+            number,
+            winsize.ws_row,
+            winsize.ws_col
+        );
+
         // Send SIGWINCH to foreground process group
         send_signal_to_foreground_group(pair, crate::signal::signals::SIGWINCH);
         true
@@ -660,18 +673,18 @@ pub fn write_master(number: PtyNumber, data: &[u8]) -> usize {
     if let Some(pair) = table.get_pty_mut(number) {
         let termios = pair.master.termios;
         let mut bytes_written = 0;
-        
+
         for &byte in data {
             // Process input according to termios flags
             let mut processed_byte = byte;
-            
+
             // Input processing (c_iflag)
             if termios.c_iflag & iflag::ICRNL != 0 && byte == b'\r' {
                 processed_byte = b'\n'; // Map CR to NL
             } else if termios.c_iflag & iflag::INLCR != 0 && byte == b'\n' {
                 processed_byte = b'\r'; // Map NL to CR
             }
-            
+
             // Check for special characters if ISIG is enabled
             if termios.c_lflag & lflag::ISIG != 0 {
                 if byte == termios.c_cc[cc::VINTR] {
@@ -691,16 +704,16 @@ pub fn write_master(number: PtyNumber, data: &[u8]) -> usize {
                     continue;
                 }
             }
-            
+
             // Write to slave input buffer
             if pair.slave.input_buffer.write(&[processed_byte]) > 0 {
                 bytes_written += 1;
-                
+
                 // Echo back if ECHO is enabled
                 if termios.c_lflag & lflag::ECHO != 0 {
                     // Echo to master output buffer
                     let echo_byte = processed_byte;
-                    
+
                     // Output processing for echo
                     if termios.c_oflag & oflag::OPOST != 0 {
                         if termios.c_oflag & oflag::ONLCR != 0 && echo_byte == b'\n' {
@@ -708,7 +721,7 @@ pub fn write_master(number: PtyNumber, data: &[u8]) -> usize {
                             pair.master.output_buffer.write(&[b'\r']);
                         }
                     }
-                    
+
                     pair.master.output_buffer.write(&[echo_byte]);
                 }
             } else {
@@ -716,9 +729,13 @@ pub fn write_master(number: PtyNumber, data: &[u8]) -> usize {
                 break;
             }
         }
-        
+
         if bytes_written > 0 {
-            crate::serial_println!("[PTY] Master wrote {} bytes to PTY {}", bytes_written, number);
+            crate::serial_println!(
+                "[PTY] Master wrote {} bytes to PTY {}",
+                bytes_written,
+                number
+            );
         }
         bytes_written
     } else {
@@ -736,8 +753,11 @@ pub fn read_slave(number: PtyNumber, buf: &mut [u8]) -> usize {
     if let Some(pair) = table.get_pty_mut(number) {
         // Check if this is a background process trying to read
         if !is_foreground_process(pair) {
-            crate::serial_println!("[PTY] Background process attempting to read from PTY {}", number);
-            
+            crate::serial_println!(
+                "[PTY] Background process attempting to read from PTY {}",
+                number
+            );
+
             // Get current process group ID and send SIGTTIN
             if let Some(current_pgid) = current_task_pgid() {
                 drop(table); // Release lock before sending signal
@@ -748,15 +768,15 @@ pub fn read_slave(number: PtyNumber, buf: &mut [u8]) -> usize {
                 return 0;
             }
         }
-        
+
         let termios = pair.master.termios;
-        
+
         // In canonical mode, read until newline
         if termios.c_lflag & lflag::ICANON != 0 {
             // Check if there's a newline in the buffer
             let mut temp_buf = [0u8; PTY_BUFFER_SIZE];
             let available = pair.slave.input_buffer.peek(&mut temp_buf);
-            
+
             // Look for newline
             let mut newline_pos = None;
             for i in 0..available {
@@ -765,14 +785,17 @@ pub fn read_slave(number: PtyNumber, buf: &mut [u8]) -> usize {
                     break;
                 }
             }
-            
+
             if let Some(pos) = newline_pos {
                 // Read up to and including the newline
                 let to_read = pos.min(buf.len());
                 let bytes_read = pair.slave.input_buffer.read(&mut buf[..to_read]);
                 if bytes_read > 0 {
-                    crate::serial_println!("[PTY] Slave read {} bytes from PTY {} (canonical)", 
-                                          bytes_read, number);
+                    crate::serial_println!(
+                        "[PTY] Slave read {} bytes from PTY {} (canonical)",
+                        bytes_read,
+                        number
+                    );
                 }
                 bytes_read
             } else {
@@ -783,8 +806,11 @@ pub fn read_slave(number: PtyNumber, buf: &mut [u8]) -> usize {
             // Raw mode - read whatever is available
             let bytes_read = pair.slave.input_buffer.read(buf);
             if bytes_read > 0 {
-                crate::serial_println!("[PTY] Slave read {} bytes from PTY {} (raw)", 
-                                      bytes_read, number);
+                crate::serial_println!(
+                    "[PTY] Slave read {} bytes from PTY {} (raw)",
+                    bytes_read,
+                    number
+                );
             }
             bytes_read
         }
@@ -803,8 +829,11 @@ pub fn write_slave(number: PtyNumber, data: &[u8]) -> usize {
     if let Some(pair) = table.get_pty_mut(number) {
         // Check if this is a background process trying to write
         if !is_foreground_process(pair) {
-            crate::serial_println!("[PTY] Background process attempting to write to PTY {}", number);
-            
+            crate::serial_println!(
+                "[PTY] Background process attempting to write to PTY {}",
+                number
+            );
+
             // Get current process group ID and send SIGTTOU
             if let Some(current_pgid) = current_task_pgid() {
                 drop(table); // Release lock before sending signal
@@ -815,13 +844,13 @@ pub fn write_slave(number: PtyNumber, data: &[u8]) -> usize {
                 return 0;
             }
         }
-        
+
         let termios = pair.master.termios;
         let mut bytes_written = 0;
-        
+
         for &byte in data {
             let processed_byte = byte;
-            
+
             // Output processing (c_oflag)
             if termios.c_oflag & oflag::OPOST != 0 {
                 if termios.c_oflag & oflag::ONLCR != 0 && byte == b'\n' {
@@ -831,7 +860,7 @@ pub fn write_slave(number: PtyNumber, data: &[u8]) -> usize {
                     }
                 }
             }
-            
+
             // Write to master output buffer
             if pair.master.output_buffer.write(&[processed_byte]) > 0 {
                 bytes_written += 1;
@@ -840,9 +869,13 @@ pub fn write_slave(number: PtyNumber, data: &[u8]) -> usize {
                 break;
             }
         }
-        
+
         if bytes_written > 0 {
-            crate::serial_println!("[PTY] Slave wrote {} bytes to PTY {}", bytes_written, number);
+            crate::serial_println!(
+                "[PTY] Slave wrote {} bytes to PTY {}",
+                bytes_written,
+                number
+            );
         }
         bytes_written
     } else {

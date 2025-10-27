@@ -1,8 +1,8 @@
 // UART16550 serial port driver for COM1
 // This is the driver subsystem's serial driver, separate from the early boot serial.rs
 
+use crate::drivers::{Device, Driver, DriverError};
 use crate::io::port::{inb, outb};
-use crate::drivers::{Driver, Device, DriverError};
 use crate::sync::SpinLock;
 
 const COM1_PORT: u16 = 0x3F8;
@@ -19,31 +19,31 @@ impl SerialPort {
     fn new(base: u16) -> Self {
         SerialPort { base }
     }
-    
+
     /// Initialize the UART (38400 baud, 8N1)
     fn init(&self) {
         unsafe {
             // Disable interrupts
             outb(self.base + 1, 0x00);
-            
+
             // Enable DLAB (set baud rate divisor)
             outb(self.base + 3, 0x80);
-            
+
             // Set divisor to 3 (38400 baud)
             outb(self.base + 0, 0x03);
             outb(self.base + 1, 0x00);
-            
+
             // 8 bits, no parity, one stop bit (8N1)
             outb(self.base + 3, 0x03);
-            
+
             // Enable FIFO, clear them, with 14-byte threshold
             outb(self.base + 2, 0xC7);
-            
+
             // IRQs enabled, RTS/DSR set
             outb(self.base + 4, 0x0B);
         }
     }
-    
+
     /// Write a byte to the serial port
     fn write_byte(&self, byte: u8) {
         unsafe {
@@ -52,7 +52,7 @@ impl SerialPort {
             outb(self.base, byte);
         }
     }
-    
+
     /// Read a byte from the serial port (non-blocking)
     fn read_byte(&self) -> Option<u8> {
         unsafe {
@@ -74,13 +74,13 @@ pub fn serial_probe(device: &Device) -> bool {
 /// Initialize the serial driver
 pub fn serial_init(_device: &Device) -> Result<(), DriverError> {
     crate::log_info!("SERIAL", "Initializing UART16550 serial driver");
-    
+
     let port = SerialPort::new(COM1_PORT);
     port.init();
-    
+
     let mut serial = SERIAL_PORT.lock();
     *serial = Some(port);
-    
+
     crate::log_info!("SERIAL", "Serial port COM1 initialized");
     Ok(())
 }
@@ -109,7 +109,10 @@ pub fn serial_write_str(s: &str) {
 
 /// Read a byte from serial port (non-blocking)
 pub fn serial_read() -> Option<u8> {
-    SERIAL_PORT.lock().as_ref().and_then(|port| port.read_byte())
+    SERIAL_PORT
+        .lock()
+        .as_ref()
+        .and_then(|port| port.read_byte())
 }
 
 /// Serial driver constant for registration

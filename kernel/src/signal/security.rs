@@ -4,7 +4,7 @@
 //! It implements permission checks, signal handler validation, and
 //! protection for critical processes.
 
-use super::{signals, Signal, SigHandler};
+use super::{signals, SigHandler, Signal};
 use crate::mm::paging::PageTableFlags;
 use crate::sched;
 use crate::sched::task::{Task, USER_LIMIT};

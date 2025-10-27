@@ -1,10 +1,10 @@
 // virtio-blk block device driver
 
+use crate::drivers::{Device, Driver, DriverError};
+use crate::sync::SpinLock;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec;
-use crate::drivers::{Driver, Device, DriverError};
-use crate::sync::SpinLock;
 
 /// Block device trait for filesystem integration
 pub trait BlockDevice: Send + Sync {
@@ -36,14 +36,12 @@ impl VirtioBlkDevice {
     fn new(base_addr: usize) -> Self {
         // Read capacity from virtio config space
         let capacity = if base_addr != 0 {
-            unsafe {
-                crate::io::mmio::mmio_read32(base_addr + 0x14) as u64
-            }
+            unsafe { crate::io::mmio::mmio_read32(base_addr + 0x14) as u64 }
         } else {
             // Default capacity for testing
             1024 * 1024 // 1M blocks = 512 MB
         };
-        
+
         VirtioBlkDevice {
             base_addr,
             capacity,
@@ -51,40 +49,43 @@ impl VirtioBlkDevice {
             storage: SpinLock::new(BTreeMap::new()),
         }
     }
-    
+
     /// Initialize the virtio device
     fn init(&mut self) -> Result<(), DriverError> {
         crate::serial_println!("[VIRTIO-BLK] Initializing virtio-blk device");
-        
+
         if self.base_addr == 0 {
             crate::serial_println!("[VIRTIO-BLK] ⚠ No MMIO base address, using stub mode");
             return Ok(());
         }
-        
+
         // 1. Reset device
         self.reset();
-        
+
         // 2. Set ACKNOWLEDGE status bit
         self.set_status(1);
-        
+
         // 3. Set DRIVER status bit
         self.set_status(2);
-        
+
         // 4. Read feature bits and negotiate
         self.negotiate_features();
-        
+
         // 5. Set FEATURES_OK status bit
         self.set_status(8);
-        
+
         // 6. Set DRIVER_OK status bit
         self.set_status(4);
-        
-        crate::serial_println!("[VIRTIO-BLK] ✓ virtio-blk initialized: {} blocks of {} bytes", 
-                   self.capacity, self.block_size);
-        
+
+        crate::serial_println!(
+            "[VIRTIO-BLK] ✓ virtio-blk initialized: {} blocks of {} bytes",
+            self.capacity,
+            self.block_size
+        );
+
         Ok(())
     }
-    
+
     /// Reset the virtio device
     fn reset(&self) {
         if self.base_addr != 0 {
@@ -93,7 +94,7 @@ impl VirtioBlkDevice {
             }
         }
     }
-    
+
     /// Set device status bits
     fn set_status(&self, status: u8) {
         if self.base_addr != 0 {
@@ -103,17 +104,15 @@ impl VirtioBlkDevice {
             }
         }
     }
-    
+
     /// Negotiate device features
     fn negotiate_features(&self) {
         // For now, accept default features
         // In full implementation, would read and write feature bits
         if self.base_addr != 0 {
             // Read device features
-            let _device_features = unsafe {
-                crate::io::mmio::mmio_read32(self.base_addr + 0x10)
-            };
-            
+            let _device_features = unsafe { crate::io::mmio::mmio_read32(self.base_addr + 0x10) };
+
             // For basic operation, we don't need to negotiate specific features
             // Just accept the defaults
         }
@@ -125,11 +124,11 @@ impl BlockDevice for VirtioBlkDevice {
         if lba >= self.capacity {
             return Err(BlockError::InvalidLba);
         }
-        
+
         if buf.len() < self.block_size {
             return Err(BlockError::BufferTooSmall);
         }
-        
+
         let block_size = self.block_size;
         let dest = &mut buf[..block_size];
 
@@ -141,19 +140,19 @@ impl BlockDevice for VirtioBlkDevice {
         } else {
             dest.fill(0);
         }
-        
+
         Ok(())
     }
-    
+
     fn write_block(&self, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
         if lba >= self.capacity {
             return Err(BlockError::InvalidLba);
         }
-        
+
         if buf.len() < self.block_size {
             return Err(BlockError::BufferTooSmall);
         }
-        
+
         let block_size = self.block_size;
         let src = &buf[..block_size];
 
@@ -168,11 +167,11 @@ impl BlockDevice for VirtioBlkDevice {
 
         Ok(())
     }
-    
+
     fn block_count(&self) -> u64 {
         self.capacity
     }
-    
+
     fn block_size(&self) -> usize {
         self.block_size
     }
@@ -189,13 +188,13 @@ pub fn virtio_blk_probe(device: &Device) -> bool {
 /// Initialize virtio-blk driver
 pub fn virtio_blk_init(device: &Device) -> Result<(), DriverError> {
     crate::serial_println!("[VIRTIO-BLK] Initializing virtio-blk driver");
-    
+
     let mut blk_device = VirtioBlkDevice::new(device.io_base as usize);
     blk_device.init()?;
-    
+
     let mut global = VIRTIO_BLK.lock();
     *global = Some(blk_device);
-    
+
     Ok(())
 }
 
@@ -210,7 +209,8 @@ pub fn virtio_blk_shutdown(_device: &Device) -> Result<(), DriverError> {
 /// Public API: Read a block from disk
 pub fn block_read(lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
     let device = VIRTIO_BLK.lock();
-    device.as_ref()
+    device
+        .as_ref()
         .ok_or(BlockError::DeviceNotReady)?
         .read_block(lba, buf)
 }
@@ -218,7 +218,8 @@ pub fn block_read(lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
 /// Public API: Write a block to disk
 pub fn block_write(lba: u64, buf: &[u8]) -> Result<(), BlockError> {
     let device = VIRTIO_BLK.lock();
-    device.as_ref()
+    device
+        .as_ref()
         .ok_or(BlockError::DeviceNotReady)?
         .write_block(lba, buf)
 }

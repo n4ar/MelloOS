@@ -2,9 +2,9 @@
 //!
 //! Provides text selection and clipboard management.
 
+use crate::screen::Cell;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::screen::Cell;
 
 /// Text selection region
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +87,8 @@ impl Clipboard {
 
         // Normalize selection
         let (start_row, start_col, end_row, end_col) = if selection.start_row < selection.end_row
-            || (selection.start_row == selection.end_row && selection.start_col <= selection.end_col)
+            || (selection.start_row == selection.end_row
+                && selection.start_col <= selection.end_col)
         {
             (
                 selection.start_row,

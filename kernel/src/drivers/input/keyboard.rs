@@ -44,10 +44,8 @@ static SCANCODE_TO_ASCII: [u8; 128] = [
     // 0x40-0x4F: Function keys
     0, 0, 0, 0, 0, 0, 0, b'7', b'8', b'9', b'-', b'4', b'5', b'6', b'+', b'1',
     // 0x50-0x5F: Keypad continued
-    b'2', b'3', b'0', b'.', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    // 0x60-0x6F: Extended keys
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    // 0x70-0x7F: Extended keys
+    b'2', b'3', b'0', b'.', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x60-0x6F: Extended keys
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // 0x70-0x7F: Extended keys
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
@@ -59,19 +57,18 @@ pub fn keyboard_probe(device: &Device) -> bool {
 /// Initialize the PS/2 keyboard driver
 pub fn keyboard_init(_device: &Device) -> Result<(), DriverError> {
     crate::log_info!("KEYBOARD", "Initializing PS/2 keyboard driver");
-    
+
     // Register IRQ handler for keyboard interrupt (IRQ 1)
-    register_irq_handler(1, keyboard_irq_handler)
-        .map_err(|e| {
-            crate::log_error!("KEYBOARD", "Failed to register keyboard IRQ handler: {}", e);
-            DriverError::InitFailure
-        })?;
-    
+    register_irq_handler(1, keyboard_irq_handler).map_err(|e| {
+        crate::log_error!("KEYBOARD", "Failed to register keyboard IRQ handler: {}", e);
+        DriverError::InitFailure
+    })?;
+
     // Enable the first PS/2 port (keyboard)
     unsafe {
         outb(KBD_COMMAND_PORT, 0xAE);
     }
-    
+
     crate::log_info!("KEYBOARD", "PS/2 keyboard initialized successfully");
     Ok(())
 }
@@ -79,16 +76,16 @@ pub fn keyboard_init(_device: &Device) -> Result<(), DriverError> {
 /// Shutdown the PS/2 keyboard driver
 pub fn keyboard_shutdown(_device: &Device) -> Result<(), DriverError> {
     crate::log_info!("KEYBOARD", "Shutting down PS/2 keyboard driver");
-    
+
     // Unregister IRQ handler
     crate::io::irq::unregister_irq_handler(1);
-    
+
     // Clear the buffer
     let mut head = BUFFER_HEAD.lock();
     let mut tail = BUFFER_TAIL.lock();
     *head = 0;
     *tail = 0;
-    
+
     crate::log_info!("KEYBOARD", "PS/2 keyboard shutdown complete");
     Ok(())
 }
@@ -99,12 +96,12 @@ fn keyboard_irq_handler() {
     unsafe {
         // Read scancode from keyboard data port
         let scancode = inb(KBD_DATA_PORT);
-        
+
         // Ignore key release events (high bit set)
         if scancode & 0x80 != 0 {
             return;
         }
-        
+
         // Translate scancode to ASCII
         if let Some(&ascii) = SCANCODE_TO_ASCII.get(scancode as usize) {
             if ascii != 0 {
@@ -112,9 +109,9 @@ fn keyboard_irq_handler() {
                 let mut head = BUFFER_HEAD.lock();
                 let tail = BUFFER_TAIL.lock();
                 let mut buffer = KEYBOARD_BUFFER.lock();
-                
+
                 let next_head = (*head + 1) % BUFFER_SIZE;
-                
+
                 // Check if buffer is full
                 if next_head != *tail {
                     buffer[*head] = ascii;
@@ -132,7 +129,7 @@ pub fn keyboard_read() -> Option<u8> {
     let head = BUFFER_HEAD.lock();
     let mut tail = BUFFER_TAIL.lock();
     let buffer = KEYBOARD_BUFFER.lock();
-    
+
     if *head == *tail {
         // Buffer is empty
         None

@@ -438,9 +438,7 @@ impl ExecContext {
         // Remap each saved page back into the address space
         let mut mapper = PageMapper::new();
         let mut pmm_guard = crate::mm::pmm::get_global_pmm();
-        let pmm = pmm_guard
-            .as_mut()
-            .ok_or(ExecError::OutOfMemory)?;
+        let pmm = pmm_guard.as_mut().ok_or(ExecError::OutOfMemory)?;
 
         for saved_region in &saved_state.regions {
             let flags = saved_region.region.flags;

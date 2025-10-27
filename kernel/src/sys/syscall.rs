@@ -174,6 +174,7 @@ pub const SYS_FSYNC: usize = 45;
 pub const SYS_FDATASYNC: usize = 46;
 pub const SYS_MOUNT: usize = 47;
 pub const SYS_UMOUNT: usize = 48;
+pub const SYS_GET_MOUNT_INFO: usize = 49;
 
 static NEXT_FAKE_PID: AtomicUsize = AtomicUsize::new(2000);
 
@@ -260,6 +261,7 @@ pub extern "C" fn syscall_dispatcher(
         SYS_FDATASYNC => "SYS_FDATASYNC",
         SYS_MOUNT => "SYS_MOUNT",
         SYS_UMOUNT => "SYS_UMOUNT",
+        SYS_GET_MOUNT_INFO => "SYS_GET_MOUNT_INFO",
         _ => "INVALID",
     };
 
@@ -332,6 +334,7 @@ pub extern "C" fn syscall_dispatcher(
         SYS_FDATASYNC => sys_fdatasync(arg1),
         SYS_MOUNT => sys_mount(arg1, arg2, arg3),
         SYS_UMOUNT => sys_umount(arg1, arg2),
+        SYS_GET_MOUNT_INFO => sys_get_mount_info(arg1, arg2),
         _ => {
             serial_println!("[SYSCALL] ERROR: Invalid syscall ID: {}", syscall_id);
             -1 // Invalid syscall
@@ -3402,6 +3405,84 @@ fn sys_get_device_list(buf_ptr: usize, max_devices: usize) -> isize {
 
         count += 1;
     });
+
+    count as isize
+}
+
+/// Mount statistics structure exposed to userland
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MountInfo {
+    pub mount_point: [u8; 64],
+    pub fs_type: [u8; 16],
+    pub block_size: u64,
+    pub total_blocks: u64,
+    pub free_blocks: u64,
+    pub available_blocks: u64,
+    pub total_files: u64,
+    pub free_files: u64,
+}
+
+/// sys_get_mount_info handler - Enumerate mounted filesystems and stats
+///
+/// # Arguments
+/// * `buf_ptr` - Pointer to array of MountInfo structures
+/// * `max_entries` - Maximum number of entries the buffer can hold
+///
+/// # Returns
+/// Number of mount entries written, or -1 on error
+fn sys_get_mount_info(buf_ptr: usize, max_entries: usize) -> isize {
+    if max_entries == 0 {
+        return 0;
+    }
+
+    let buf_size = max_entries * core::mem::size_of::<MountInfo>();
+    if !validate_user_buffer(buf_ptr, buf_size) {
+        serial_println!("[SYSCALL] sys_get_mount_info: invalid buffer");
+        return -1;
+    }
+
+    let buffer = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut MountInfo, max_entries) };
+
+    let mounts = crate::fs::vfs::mount::list_mounts();
+    let mut count = 0;
+
+    for mount in mounts {
+        if count >= max_entries {
+            break;
+        }
+
+        let stats = mount.superblock.statfs();
+        let entry = &mut buffer[count];
+
+        entry.mount_point = [0; 64];
+        entry.fs_type = [0; 16];
+
+        let path_bytes = mount.path.as_bytes();
+        let max_path = entry.mount_point.len().saturating_sub(1);
+        let copy_len = core::cmp::min(path_bytes.len(), max_path);
+        entry.mount_point[..copy_len].copy_from_slice(&path_bytes[..copy_len]);
+        if copy_len < entry.mount_point.len() {
+            entry.mount_point[copy_len] = 0;
+        }
+
+        let type_bytes = mount.fs_type.as_bytes();
+        let max_type = entry.fs_type.len().saturating_sub(1);
+        let type_len = core::cmp::min(type_bytes.len(), max_type);
+        entry.fs_type[..type_len].copy_from_slice(&type_bytes[..type_len]);
+        if type_len < entry.fs_type.len() {
+            entry.fs_type[type_len] = 0;
+        }
+
+        entry.block_size = stats.f_bsize;
+        entry.total_blocks = stats.f_blocks;
+        entry.free_blocks = stats.f_bfree;
+        entry.available_blocks = stats.f_bavail;
+        entry.total_files = stats.f_files;
+        entry.free_files = stats.f_ffree;
+
+        count += 1;
+    }
 
     count as isize
 }

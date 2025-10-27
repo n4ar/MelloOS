@@ -9,23 +9,23 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{format, string::String, vec::Vec};
 use core::arch::asm;
 
 mod allocator;
+mod ansi;
+mod clipboard;
+mod input;
 mod pty;
 mod screen;
-mod ansi;
-mod input;
-mod utf8;
 mod scrollback;
-mod clipboard;
+mod utf8;
 
+use ansi::{AnsiParser, LineClearMode, ParseResult};
+use clipboard::Clipboard;
 use pty::PtyMaster;
 use screen::ScreenBuffer;
-use ansi::AnsiParser;
 use scrollback::ScrollbackBuffer;
-use clipboard::Clipboard;
 
 /// Syscall numbers
 const SYS_WRITE: usize = 0;
@@ -34,6 +34,7 @@ const SYS_OPEN: usize = 10;
 const SYS_READ: usize = 11;
 const SYS_CLOSE: usize = 12;
 const SYS_IOCTL: usize = 13;
+const SYS_YIELD: usize = 6;
 
 /// Raw syscall function
 #[inline(always)]
@@ -65,6 +66,13 @@ fn sys_exit(code: usize) -> ! {
     loop {}
 }
 
+/// Yield the CPU to avoid busy spinning
+fn sys_yield() {
+    unsafe {
+        syscall(SYS_YIELD, 0, 0, 0);
+    }
+}
+
 /// Main terminal emulator structure
 pub struct MelloTerm {
     pty_master: PtyMaster,
@@ -72,6 +80,8 @@ pub struct MelloTerm {
     parser: AnsiParser,
     scrollback: ScrollbackBuffer,
     clipboard: Clipboard,
+    dirty: bool,
+    first_render: bool,
 }
 
 impl MelloTerm {
@@ -89,6 +99,8 @@ impl MelloTerm {
             parser,
             scrollback,
             clipboard,
+            dirty: true,
+            first_render: true,
         })
     }
 
@@ -156,26 +168,117 @@ impl MelloTerm {
         self.pty_master.set_winsize(&winsize)?;
 
         sys_write("Mello-Term: Window resized\n");
+        self.dirty = true;
         Ok(())
     }
 
     /// Main event loop
     pub fn run(&mut self) -> Result<(), &'static str> {
         sys_write("Mello-Term: Starting terminal emulator...\n");
-
-        // TODO: Implement main event loop in later subtasks
-        // - Read from PTY master
-        // - Parse ANSI sequences
-        // - Update screen buffer
-        // - Handle keyboard input
-        // - Render to display
-
-        sys_write("Mello-Term: Initialized successfully\n");
-
-        // For now, just loop
         loop {
-            // Placeholder - will be implemented in subtask 7.2+
+            self.drain_pty()?;
+            input::handle_keyboard_input(&self.pty_master)?;
+            self.render();
+            sys_yield();
         }
+    }
+
+    fn drain_pty(&mut self) -> Result<(), &'static str> {
+        let mut buffer = [0u8; 512];
+        loop {
+            let bytes_read = self.pty_master.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+
+            for &byte in &buffer[..bytes_read] {
+                let result = self.parser.parse(byte);
+                self.apply_parse_result(result);
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_parse_result(&mut self, result: ParseResult) {
+        match result {
+            ParseResult::None => {}
+            ParseResult::Print(ch) => {
+                self.screen.write_char(ch);
+                self.dirty = true;
+            }
+            ParseResult::CursorUp(n) => {
+                self.screen.cursor_up(n);
+                self.dirty = true;
+            }
+            ParseResult::CursorDown(n) => {
+                self.screen.cursor_down(n);
+                self.dirty = true;
+            }
+            ParseResult::CursorForward(n) => {
+                self.screen.cursor_forward(n);
+                self.dirty = true;
+            }
+            ParseResult::CursorBack(n) => {
+                self.screen.cursor_back(n);
+                self.dirty = true;
+            }
+            ParseResult::CursorPosition(row, col) => {
+                self.screen.move_cursor(row, col);
+                self.dirty = true;
+            }
+            ParseResult::ClearScreen => {
+                self.screen.clear();
+                self.dirty = true;
+            }
+            ParseResult::ClearLine(mode) => {
+                match mode {
+                    LineClearMode::CursorToEnd => self.screen.clear_to_end_of_line(),
+                    LineClearMode::CursorToStart => self.screen.clear_from_start_of_line(),
+                    LineClearMode::EntireLine => self.screen.clear_line(self.screen.cursor.row),
+                }
+                self.dirty = true;
+            }
+            ParseResult::SetGraphicsMode(_params) => {
+                // Attribute handling not yet implemented
+            }
+        }
+    }
+
+    fn render(&mut self) {
+        if !self.dirty {
+            return;
+        }
+
+        if self.first_render {
+            sys_write("\x1b[2J");
+            self.first_render = false;
+        }
+
+        sys_write("\x1b[H");
+        let mut line = String::new();
+
+        for row in 0..self.screen.rows {
+            line.clear();
+            for col in 0..self.screen.cols {
+                if let Some(cell) = self.screen.get_cell(row, col) {
+                    if cell.is_wide_continuation {
+                        line.push(' ');
+                    } else {
+                        line.push(cell.ch);
+                    }
+                }
+            }
+            line.push('\n');
+            sys_write(line.as_str());
+        }
+
+        let cursor_cmd = format!(
+            "\x1b[{};{}H",
+            self.screen.cursor.row + 1,
+            self.screen.cursor.col + 1
+        );
+        sys_write(&cursor_cmd);
+        self.dirty = false;
     }
 }
 

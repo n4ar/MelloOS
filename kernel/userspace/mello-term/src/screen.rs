@@ -153,7 +153,7 @@ impl ScreenBuffer {
 
                 // Get character width
                 let width = crate::utf8::char_width(ch);
-                
+
                 // Skip combining characters (width 0) - they should be handled specially
                 if width == 0 && !crate::utf8::is_combining(ch) {
                     return;
@@ -270,7 +270,8 @@ impl ScreenBuffer {
 
     /// Clear from cursor to end of screen
     pub fn clear_to_end_of_screen(&mut self) {
-        let start_idx = (self.cursor.row as usize) * (self.cols as usize) + (self.cursor.col as usize);
+        let start_idx =
+            (self.cursor.row as usize) * (self.cols as usize) + (self.cursor.col as usize);
         for i in start_idx..self.cells.len() {
             self.cells[i] = Cell::default();
         }
@@ -282,6 +283,18 @@ impl ScreenBuffer {
         let start_idx = row_start + (self.cursor.col as usize);
         let end_idx = row_start + (self.cols as usize);
         for i in start_idx..end_idx {
+            if let Some(cell) = self.cells.get_mut(i) {
+                *cell = Cell::default();
+            }
+        }
+    }
+
+    /// Clear from start of line to current cursor position (inclusive)
+    pub fn clear_from_start_of_line(&mut self) {
+        let row_start = (self.cursor.row as usize) * (self.cols as usize);
+        let end_idx = (self.cursor.col as usize).saturating_add(1);
+        let end_idx = core::cmp::min(end_idx, self.cols as usize);
+        for i in row_start..(row_start + end_idx) {
             if let Some(cell) = self.cells.get_mut(i) {
                 *cell = Cell::default();
             }

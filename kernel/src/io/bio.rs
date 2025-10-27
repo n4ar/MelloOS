@@ -5,7 +5,7 @@
 //! - Batch I/O submissions for efficiency
 //! - TRIM/DISCARD support hook for SSD optimization
 
-use core::sync::atomic::{AtomicUsize, AtomicU64, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::RwLock;
 
 /// Block I/O operation type
@@ -175,7 +175,8 @@ impl BioQueue {
     /// Initialize queue for a device
     pub fn init(&self, device_id: u64, target_depth: usize) {
         self.device_id.store(device_id, Ordering::Release);
-        self.target_depth.store(target_depth.min(MAX_QUEUE_DEPTH), Ordering::Release);
+        self.target_depth
+            .store(target_depth.min(MAX_QUEUE_DEPTH), Ordering::Release);
         self.in_use.store(true, Ordering::Release);
         self.depth.store(0, Ordering::Release);
         self.submitted.store(0, Ordering::Release);
@@ -264,7 +265,8 @@ impl BioQueue {
 
     /// Set target queue depth
     pub fn set_target_depth(&self, depth: usize) {
-        self.target_depth.store(depth.min(MAX_QUEUE_DEPTH), Ordering::Release);
+        self.target_depth
+            .store(depth.min(MAX_QUEUE_DEPTH), Ordering::Release);
     }
 
     /// Get number of submitted requests
@@ -286,7 +288,7 @@ impl BioQueue {
     pub fn reset(&self) {
         self.in_use.store(false, Ordering::Release);
         self.depth.store(0, Ordering::Release);
-        
+
         // Invalidate all entries
         for entry_lock in &self.entries {
             let entry = entry_lock.read();

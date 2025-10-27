@@ -42,7 +42,7 @@ impl Utf8Parser {
                 // Invalid start byte
                 return None;
             }
-            
+
             self.bytes[0] = byte;
             self.len = 1;
             None
@@ -54,38 +54,38 @@ impl Utf8Parser {
                 self.expected = 0;
                 return None;
             }
-            
+
             self.bytes[self.len] = byte;
             self.len += 1;
-            
+
             if self.len == self.expected {
                 // Complete character
                 let ch = match self.expected {
                     2 => {
-                        let code = ((self.bytes[0] & 0x1F) as u32) << 6
-                                 | ((self.bytes[1] & 0x3F) as u32);
+                        let code =
+                            ((self.bytes[0] & 0x1F) as u32) << 6 | ((self.bytes[1] & 0x3F) as u32);
                         char::from_u32(code)
                     }
                     3 => {
                         let code = ((self.bytes[0] & 0x0F) as u32) << 12
-                                 | ((self.bytes[1] & 0x3F) as u32) << 6
-                                 | ((self.bytes[2] & 0x3F) as u32);
+                            | ((self.bytes[1] & 0x3F) as u32) << 6
+                            | ((self.bytes[2] & 0x3F) as u32);
                         char::from_u32(code)
                     }
                     4 => {
                         let code = ((self.bytes[0] & 0x07) as u32) << 18
-                                 | ((self.bytes[1] & 0x3F) as u32) << 12
-                                 | ((self.bytes[2] & 0x3F) as u32) << 6
-                                 | ((self.bytes[3] & 0x3F) as u32);
+                            | ((self.bytes[1] & 0x3F) as u32) << 12
+                            | ((self.bytes[2] & 0x3F) as u32) << 6
+                            | ((self.bytes[3] & 0x3F) as u32);
                         char::from_u32(code)
                     }
                     _ => None,
                 };
-                
+
                 // Reset for next character
                 self.len = 0;
                 self.expected = 0;
-                
+
                 ch
             } else {
                 // Need more bytes
@@ -110,42 +110,42 @@ impl Utf8Parser {
 /// - Other Unicode: width 1
 pub fn char_width(ch: char) -> usize {
     let code = ch as u32;
-    
+
     // Control characters have width 0
     if code < 0x20 || (code >= 0x7F && code < 0xA0) {
         return 0;
     }
-    
+
     // CJK Unified Ideographs (width 2)
     if (0x4E00..=0x9FFF).contains(&code) {
         return 2;
     }
-    
+
     // CJK Compatibility Ideographs (width 2)
     if (0xF900..=0xFAFF).contains(&code) {
         return 2;
     }
-    
+
     // Hangul Syllables (width 2)
     if (0xAC00..=0xD7AF).contains(&code) {
         return 2;
     }
-    
+
     // Hiragana and Katakana (width 2)
     if (0x3040..=0x30FF).contains(&code) {
         return 2;
     }
-    
+
     // Fullwidth forms (width 2)
     if (0xFF00..=0xFFEF).contains(&code) {
         return 2;
     }
-    
+
     // Combining characters (width 0)
     if (0x0300..=0x036F).contains(&code) {
         return 0;
     }
-    
+
     // Default to width 1
     1
 }
@@ -153,21 +153,21 @@ pub fn char_width(ch: char) -> usize {
 /// Check if a character is a combining character
 pub fn is_combining(ch: char) -> bool {
     let code = ch as u32;
-    
+
     // Combining Diacritical Marks
     if (0x0300..=0x036F).contains(&code) {
         return true;
     }
-    
+
     // Combining Diacritical Marks Extended
     if (0x1AB0..=0x1AFF).contains(&code) {
         return true;
     }
-    
+
     // Combining Diacritical Marks Supplement
     if (0x1DC0..=0x1DFF).contains(&code) {
         return true;
     }
-    
+
     false
 }

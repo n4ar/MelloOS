@@ -10,15 +10,20 @@ const SYS_READ: usize = 11;
 const SYS_WRITE: usize = 0;
 const SYS_CLOSE: usize = 12;
 const SYS_IOCTL: usize = 13;
+const SYS_FCNTL: usize = 22;
 
 /// ioctl commands
-const TIOCGPTN: usize = 0x80045430;  // Get PTY number
-const TIOCGWINSZ: usize = 0x5413;    // Get window size
-const TIOCSWINSZ: usize = 0x5414;    // Set window size
+const TIOCGPTN: usize = 0x80045430; // Get PTY number
+const TIOCGWINSZ: usize = 0x5413; // Get window size
+const TIOCSWINSZ: usize = 0x5414; // Set window size
 
 /// File open flags
 const O_RDWR: usize = 0x0002;
 const O_NONBLOCK: usize = 0x0800;
+
+/// fcntl commands
+const F_GETFL: usize = 3;
+const F_SETFL: usize = 4;
 
 /// Raw syscall function
 #[inline(always)]
@@ -87,6 +92,16 @@ fn sys_ioctl(fd: i32, cmd: usize, arg: usize) -> Result<i32, &'static str> {
     }
 }
 
+/// File descriptor control
+fn sys_fcntl(fd: i32, cmd: usize, arg: usize) -> Result<usize, &'static str> {
+    let result = unsafe { syscall(SYS_FCNTL, fd as usize, cmd, arg) };
+    if result < 0 {
+        Err("fcntl failed")
+    } else {
+        Ok(result as usize)
+    }
+}
+
 /// PTY master file descriptor wrapper
 pub struct PtyMaster {
     master_fd: i32,
@@ -103,8 +118,9 @@ impl PtyMaster {
         let mut slave_number: u32 = 0;
         sys_ioctl(master_fd, TIOCGPTN, &mut slave_number as *mut u32 as usize)?;
 
-        // TODO: Set up non-blocking I/O with fcntl (not yet implemented)
-        // For now, we'll use blocking I/O
+        // Enable non-blocking mode so reads don't stall the UI loop
+        let current_flags = sys_fcntl(master_fd, F_GETFL, 0)?;
+        sys_fcntl(master_fd, F_SETFL, current_flags | O_NONBLOCK)?;
 
         Ok(Self {
             master_fd,
@@ -135,13 +151,21 @@ impl PtyMaster {
     /// Get window size
     pub fn get_winsize(&self) -> Result<Winsize, &'static str> {
         let mut winsize = Winsize::default();
-        sys_ioctl(self.master_fd, TIOCGWINSZ, &mut winsize as *mut Winsize as usize)?;
+        sys_ioctl(
+            self.master_fd,
+            TIOCGWINSZ,
+            &mut winsize as *mut Winsize as usize,
+        )?;
         Ok(winsize)
     }
 
     /// Set window size
     pub fn set_winsize(&self, winsize: &Winsize) -> Result<(), &'static str> {
-        sys_ioctl(self.master_fd, TIOCSWINSZ, winsize as *const Winsize as usize)?;
+        sys_ioctl(
+            self.master_fd,
+            TIOCSWINSZ,
+            winsize as *const Winsize as usize,
+        )?;
         Ok(())
     }
 }

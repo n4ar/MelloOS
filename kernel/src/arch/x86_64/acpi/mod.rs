@@ -279,7 +279,10 @@ fn find_madt_in_rsdt(rsdt_addr: u64) -> Result<u64, AcpiError> {
 
 /// Find MADT in XSDT (ACPI 2.0+)
 fn find_madt_in_xsdt(xsdt_addr: u64) -> Result<u64, AcpiError> {
-    serial_println!("[ACPI] find_madt_in_xsdt: Reading header at 0x{:x}", xsdt_addr);
+    serial_println!(
+        "[ACPI] find_madt_in_xsdt: Reading header at 0x{:x}",
+        xsdt_addr
+    );
 
     serial_println!("[ACPI] find_madt_in_xsdt: Validating XSDT signature");
     // Validate XSDT signature
@@ -296,7 +299,10 @@ fn find_madt_in_xsdt(xsdt_addr: u64) -> Result<u64, AcpiError> {
         let header_ptr = xsdt_addr as *const SdtHeader;
         core::ptr::read_unaligned(core::ptr::addr_of!((*header_ptr).length))
     };
-    serial_println!("[ACPI] find_madt_in_xsdt: XSDT signature valid, length={}", header_length);
+    serial_println!(
+        "[ACPI] find_madt_in_xsdt: XSDT signature valid, length={}",
+        header_length
+    );
     serial_println!("[ACPI] find_madt_in_xsdt: Validating checksum");
     // Validate checksum
     let xsdt_bytes =
@@ -312,7 +318,10 @@ fn find_madt_in_xsdt(xsdt_addr: u64) -> Result<u64, AcpiError> {
     let entries_size = header_length as usize - entries_offset;
     let entry_count = entries_size / 8; // 64-bit pointers
 
-    serial_println!("[ACPI] find_madt_in_xsdt: {} entries to search", entry_count);
+    serial_println!(
+        "[ACPI] find_madt_in_xsdt: {} entries to search",
+        entry_count
+    );
     // Get pointer to entries array
     let entries_ptr = unsafe { (xsdt_addr as *const u8).add(entries_offset) as *const u64 };
     let entries = unsafe { slice::from_raw_parts(entries_ptr, entry_count) };
@@ -320,10 +329,17 @@ fn find_madt_in_xsdt(xsdt_addr: u64) -> Result<u64, AcpiError> {
     // Search for MADT
     serial_println!("[ACPI] find_madt_in_xsdt: Searching for MADT...");
     for (i, &entry_addr) in entries.iter().enumerate() {
-        serial_println!("[ACPI] find_madt_in_xsdt: Checking entry {} at 0x{:x}", i, entry_addr);
+        serial_println!(
+            "[ACPI] find_madt_in_xsdt: Checking entry {} at 0x{:x}",
+            i,
+            entry_addr
+        );
         let entry_header = unsafe { &*(entry_addr as *const SdtHeader) };
         let entry_sig = unsafe { core::ptr::read_unaligned(&entry_header.signature) };
-        serial_println!("[ACPI] find_madt_in_xsdt: Entry signature: {:?}", core::str::from_utf8(&entry_sig).unwrap_or("???"));
+        serial_println!(
+            "[ACPI] find_madt_in_xsdt: Entry signature: {:?}",
+            core::str::from_utf8(&entry_sig).unwrap_or("???")
+        );
         if &entry_sig == b"APIC" {
             serial_println!("[ACPI] find_madt_in_xsdt: Found MADT!");
             return Ok(entry_addr);

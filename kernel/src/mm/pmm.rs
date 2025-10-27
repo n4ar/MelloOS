@@ -320,7 +320,7 @@ impl PhysicalMemoryManager {
 /// # Safety
 /// This must be initialized before any code tries to access it.
 /// The initialization happens in mm::init() during kernel boot.
-pub static GLOBAL_PMM: crate::sync::SpinLock<Option<PhysicalMemoryManager>> = 
+pub static GLOBAL_PMM: crate::sync::SpinLock<Option<PhysicalMemoryManager>> =
     crate::sync::SpinLock::new(None);
 
 /// Initialize the global PMM instance

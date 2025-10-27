@@ -7,9 +7,9 @@
 use crate::sync::SpinLock;
 
 // Driver modules
+pub mod block;
 pub mod input;
 pub mod serial;
-pub mod block;
 
 /// Represents a device driver
 #[derive(Copy, Clone)]
@@ -35,20 +35,20 @@ pub struct Device {
 /// Device state tracking
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DeviceState {
-    Detected,      // Device found but not initialized
-    Initializing,  // Driver init in progress
-    Active,        // Device operational
-    Failed,        // Initialization failed
-    Shutdown,      // Device shut down
+    Detected,     // Device found but not initialized
+    Initializing, // Driver init in progress
+    Active,       // Device operational
+    Failed,       // Initialization failed
+    Shutdown,     // Device shut down
 }
 
 /// Bus types supported by the system
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BusType {
-    Platform,   // Platform devices (built-in)
-    PS2,        // PS/2 keyboard/mouse
-    PCI,        // PCI/PCIe devices
-    Virtio,     // Paravirtualized devices
+    Platform, // Platform devices (built-in)
+    PS2,      // PS/2 keyboard/mouse
+    PCI,      // PCI/PCIe devices
+    Virtio,   // Paravirtualized devices
 }
 
 /// Driver-specific errors
@@ -80,7 +80,7 @@ impl DriverRegistry {
             count: 0,
         }
     }
-    
+
     fn register(&mut self, driver: Driver) -> Result<(), &'static str> {
         if self.count >= MAX_DRIVERS {
             return Err("Driver registry full");
@@ -89,7 +89,7 @@ impl DriverRegistry {
         self.count += 1;
         Ok(())
     }
-    
+
     fn iter(&self) -> impl Iterator<Item = &Driver> {
         self.drivers[..self.count].iter().filter_map(|d| d.as_ref())
     }
@@ -108,7 +108,7 @@ impl DeviceRegistry {
             count: 0,
         }
     }
-    
+
     fn register(&mut self, device: Device) -> Result<(), &'static str> {
         if self.count >= MAX_DEVICES {
             return Err("Device registry full");
@@ -117,11 +117,13 @@ impl DeviceRegistry {
         self.count += 1;
         Ok(())
     }
-    
+
     fn iter_mut(&mut self) -> impl Iterator<Item = &mut Device> {
-        self.devices[..self.count].iter_mut().filter_map(|d| d.as_mut())
+        self.devices[..self.count]
+            .iter_mut()
+            .filter_map(|d| d.as_mut())
     }
-    
+
     fn iter(&self) -> impl Iterator<Item = &Device> {
         self.devices[..self.count].iter().filter_map(|d| d.as_ref())
     }
@@ -141,7 +143,11 @@ pub fn driver_register(driver: Driver) {
             crate::serial_println!("[DRIVER] ✓ Registered driver: {}", driver.name);
         }
         Err(e) => {
-            crate::serial_println!("[DRIVER] ✗ Failed to register driver {}: {}", driver.name, e);
+            crate::serial_println!(
+                "[DRIVER] ✗ Failed to register driver {}: {}",
+                driver.name,
+                e
+            );
         }
     }
 }
@@ -169,7 +175,11 @@ pub fn device_register(device: Device) {
             }
         }
         Err(e) => {
-            crate::serial_println!("[DRIVER] ✗ Failed to register device {}: {}", device.name, e);
+            crate::serial_println!(
+                "[DRIVER] ✗ Failed to register device {}: {}",
+                device.name,
+                e
+            );
         }
     }
 }
@@ -177,41 +187,41 @@ pub fn device_register(device: Device) {
 /// Probe all registered drivers against all registered devices
 pub fn driver_probe_all() {
     crate::serial_println!("[DRIVER] Starting driver probing...");
-    
+
     // We need to collect driver info first to avoid holding both locks
     let driver_count = DRIVER_REGISTRY.lock().count;
-    
+
     if driver_count == 0 {
         crate::serial_println!("[DRIVER] No drivers registered, skipping probe");
         return;
     }
-    
+
     // Get device count from devtree
     let device_count = crate::io::devtree::device_count();
-    
+
     if device_count == 0 {
         crate::serial_println!("[DRIVER] No devices detected, skipping probe");
         return;
     }
-    
+
     crate::serial_println!("[DRIVER] Found {} devices to probe", device_count);
-    
+
     let mut matched_count = 0;
     let mut failed_count = 0;
     let mut unmatched_count = 0;
-    
+
     // Collect device names first to avoid holding devtree lock during probing
     const MAX_DEVICES: usize = 32;
     let mut device_names: [Option<&'static str>; MAX_DEVICES] = [None; MAX_DEVICES];
     let mut name_count = 0;
-    
+
     crate::io::devtree::for_each_device(|device| {
         if device.driver.is_none() && name_count < MAX_DEVICES {
             device_names[name_count] = Some(device.name);
             name_count += 1;
         }
     });
-    
+
     // Probe each device
     for device_name_opt in &device_names[..name_count] {
         let device_name = match device_name_opt {
@@ -223,27 +233,42 @@ pub fn driver_probe_all() {
             Some(d) => d,
             None => continue,
         };
-        
+
         crate::serial_println!("[DRIVER] Probing device: {}", device.name);
         crate::io::devtree::update_device(device.name, None, DeviceState::Initializing);
-        
+
         // Try each driver
         let drivers = DRIVER_REGISTRY.lock();
         let mut found_match = false;
-        
+
         for driver in drivers.iter() {
             if (driver.probe)(&device) {
-                crate::serial_println!("[DRIVER]   ✓ Driver '{}' matched device '{}'", driver.name, device.name);
+                crate::serial_println!(
+                    "[DRIVER]   ✓ Driver '{}' matched device '{}'",
+                    driver.name,
+                    device.name
+                );
                 match (driver.init)(&device) {
                     Ok(()) => {
-                        crate::io::devtree::update_device(device.name, Some(driver.name), DeviceState::Active);
-                        crate::serial_println!("[DRIVER]   ✓ Driver '{}' initialized successfully", driver.name);
+                        crate::io::devtree::update_device(
+                            device.name,
+                            Some(driver.name),
+                            DeviceState::Active,
+                        );
+                        crate::serial_println!(
+                            "[DRIVER]   ✓ Driver '{}' initialized successfully",
+                            driver.name
+                        );
                         matched_count += 1;
                         found_match = true;
                         break;
                     }
                     Err(e) => {
-                        crate::serial_println!("[DRIVER]   ✗ Driver '{}' init failed: {:?}", driver.name, e);
+                        crate::serial_println!(
+                            "[DRIVER]   ✗ Driver '{}' init failed: {:?}",
+                            driver.name,
+                            e
+                        );
                         crate::io::devtree::update_device(device.name, None, DeviceState::Failed);
                         failed_count += 1;
                         found_match = true;
@@ -253,16 +278,20 @@ pub fn driver_probe_all() {
             }
         }
         drop(drivers); // Release driver lock
-        
+
         if !found_match {
             crate::io::devtree::update_device(device.name, None, DeviceState::Detected);
             crate::serial_println!("[DRIVER]   ⚠ No driver found for device '{}'", device.name);
             unmatched_count += 1;
         }
     }
-    
-    crate::serial_println!("[DRIVER] Probing complete: {} matched, {} failed, {} unmatched", 
-                          matched_count, failed_count, unmatched_count);
+
+    crate::serial_println!(
+        "[DRIVER] Probing complete: {} matched, {} failed, {} unmatched",
+        matched_count,
+        failed_count,
+        unmatched_count
+    );
 }
 
 /// Get the number of registered devices
@@ -301,18 +330,21 @@ where
 /// This function registers keyboard, serial, and virtio-blk drivers
 fn register_builtin_drivers() {
     crate::serial_println!("[DRIVER] Registering built-in drivers");
-    
+
     // Register keyboard driver
     driver_register(crate::drivers::input::keyboard::KEYBOARD_DRIVER);
-    
+
     // Register serial driver
     driver_register(crate::drivers::serial::SERIAL_DRIVER);
-    
+
     // Register virtio-blk driver
     driver_register(crate::drivers::block::virtio_blk::VIRTIO_BLK_DRIVER);
-    
+
     let count = driver_count();
-    crate::serial_println!("[DRIVER] Built-in driver registration complete ({} drivers registered)", count);
+    crate::serial_println!(
+        "[DRIVER] Built-in driver registration complete ({} drivers registered)",
+        count
+    );
 }
 
 /// Initialize the driver subsystem
@@ -321,35 +353,39 @@ pub fn init_drivers() {
     crate::serial_println!("[DRIVER] ========================================");
     crate::serial_println!("[DRIVER] Initializing Driver Subsystem (Phase 7)");
     crate::serial_println!("[DRIVER] ========================================");
-    
+
     // 1. Initialize IOAPIC routing
     crate::serial_println!("[DRIVER] Step 1: Initializing IOAPIC routing");
     crate::io::irq::init_ioapic_routing();
-    
+
     // 2. Register all built-in drivers
     crate::serial_println!("[DRIVER] Step 2: Registering built-in drivers");
     register_builtin_drivers();
-    
+
     // 3. Scan buses in deterministic order
     crate::serial_println!("[DRIVER] Step 3: Scanning buses for devices");
     crate::io::devtree::scan_platform_bus();
     crate::io::devtree::scan_ps2_bus();
     crate::io::devtree::scan_pci_bus();
     crate::io::devtree::scan_virtio_bus();
-    
+
     let device_count = device_count();
     let driver_count = driver_count();
-    crate::serial_println!("[DRIVER] Found {} devices, {} drivers registered", device_count, driver_count);
-    
+    crate::serial_println!(
+        "[DRIVER] Found {} devices, {} drivers registered",
+        device_count,
+        driver_count
+    );
+
     // 4. Probe and initialize drivers
     crate::serial_println!("[DRIVER] Step 4: Probing and initializing drivers");
     driver_probe_all();
-    
+
     // 5. Report initialization status
     crate::serial_println!("[DRIVER] ========================================");
     crate::serial_println!("[DRIVER] Driver Subsystem Initialization Complete");
     crate::serial_println!("[DRIVER] ========================================");
-    
+
     // Log device status
     crate::serial_println!("[DRIVER] Device Status Summary:");
     for_each_device(|device| {
@@ -370,5 +406,3 @@ pub fn init_drivers() {
         );
     });
 }
-
-

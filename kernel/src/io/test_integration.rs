@@ -7,7 +7,7 @@
 pub fn test_io_infrastructure() {
     // This function demonstrates that all I/O functions are accessible
     // In a real scenario, these would be called with actual hardware addresses
-    
+
     // Port I/O functions are available
     let _port_ops = (
         crate::io::inb,
@@ -17,7 +17,7 @@ pub fn test_io_infrastructure() {
         crate::io::inl,
         crate::io::outl,
     );
-    
+
     // MMIO functions are available
     let _mmio_ops = (
         crate::io::mmio_read::<u32>,
@@ -25,7 +25,7 @@ pub fn test_io_infrastructure() {
         crate::io::mmio_read32,
         crate::io::mmio_write32,
     );
-    
+
     // IRQ management functions are available
     let _irq_ops = (
         crate::io::init_ioapic_routing,
@@ -36,7 +36,7 @@ pub fn test_io_infrastructure() {
         crate::io::is_irq_registered,
         crate::io::registered_irq_count,
     );
-    
+
     crate::serial_println!("[IO] I/O infrastructure integration test passed");
 }
 

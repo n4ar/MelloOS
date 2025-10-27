@@ -29,6 +29,7 @@ const SYS_BLOCK_READ: usize = 28;
 const SYS_BLOCK_WRITE: usize = 29;
 const SYS_GET_DEVICE_LIST: usize = 30;
 const SYS_GET_BLOCK_DEVICE_INFO: usize = 31;
+const SYS_GET_MOUNT_INFO: usize = 49;
 
 /// Raw system call with 0 arguments
 #[inline]
@@ -125,7 +126,14 @@ pub fn exit(code: i32) -> ! {
 
 /// Open file
 pub fn open(path: &[u8], flags: i32, mode: i32) -> isize {
-    unsafe { syscall3(SYS_OPEN, path.as_ptr() as usize, flags as usize, mode as usize) }
+    unsafe {
+        syscall3(
+            SYS_OPEN,
+            path.as_ptr() as usize,
+            flags as usize,
+            mode as usize,
+        )
+    }
 }
 
 /// Close file descriptor
@@ -148,7 +156,14 @@ pub fn openat(dirfd: i32, path: &[u8], flags: i32, mode: i32) -> isize {
 
 /// Get directory entries
 pub fn getdents(fd: i32, buf: &mut [u8]) -> isize {
-    unsafe { syscall3(SYS_GETDENTS, fd as usize, buf.as_mut_ptr() as usize, buf.len()) }
+    unsafe {
+        syscall3(
+            SYS_GETDENTS,
+            fd as usize,
+            buf.as_mut_ptr() as usize,
+            buf.len(),
+        )
+    }
 }
 
 /// Get file status
@@ -168,7 +183,13 @@ pub fn unlink(path: &[u8]) -> isize {
 
 /// Rename file
 pub fn rename(oldpath: &[u8], newpath: &[u8]) -> isize {
-    unsafe { syscall2(SYS_RENAME, oldpath.as_ptr() as usize, newpath.as_ptr() as usize) }
+    unsafe {
+        syscall2(
+            SYS_RENAME,
+            oldpath.as_ptr() as usize,
+            newpath.as_ptr() as usize,
+        )
+    }
 }
 
 /// Create directory
@@ -238,31 +259,80 @@ pub fn block_write(lba: usize, buf: &[u8], count: usize) -> isize {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct DeviceInfo {
-    pub name: [u8; 32],      // Device name (null-terminated)
-    pub bus_type: u32,       // Bus type (0=Platform, 1=PS2, 2=PCI, 3=Virtio)
-    pub io_base: u64,        // I/O base address
-    pub irq: u32,            // IRQ number (0xFFFFFFFF if none)
-    pub state: u32,          // Device state
-    pub has_driver: u32,     // 1 if driver is loaded, 0 otherwise
+    pub name: [u8; 32],  // Device name (null-terminated)
+    pub bus_type: u32,   // Bus type (0=Platform, 1=PS2, 2=PCI, 3=Virtio)
+    pub io_base: u64,    // I/O base address
+    pub irq: u32,        // IRQ number (0xFFFFFFFF if none)
+    pub state: u32,      // Device state
+    pub has_driver: u32, // 1 if driver is loaded, 0 otherwise
 }
 
 /// Get list of devices
 pub fn get_device_list(devices: &mut [DeviceInfo]) -> isize {
-    unsafe { syscall2(SYS_GET_DEVICE_LIST, devices.as_mut_ptr() as usize, devices.len()) }
+    unsafe {
+        syscall2(
+            SYS_GET_DEVICE_LIST,
+            devices.as_mut_ptr() as usize,
+            devices.len(),
+        )
+    }
 }
 
 /// Block device information structure (must match kernel definition)
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BlockDeviceInfo {
-    pub block_count: u64,    // Total number of blocks
-    pub block_size: u32,     // Size of each block in bytes
-    pub capacity_mb: u32,    // Total capacity in megabytes
+    pub block_count: u64, // Total number of blocks
+    pub block_size: u32,  // Size of each block in bytes
+    pub capacity_mb: u32, // Total capacity in megabytes
 }
 
 /// Get block device information
 pub fn get_block_device_info(info: &mut BlockDeviceInfo) -> isize {
     unsafe { syscall1(SYS_GET_BLOCK_DEVICE_INFO, info as *mut _ as usize) }
+}
+
+/// Mount information exposed by sys_get_mount_info
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MountInfo {
+    pub mount_point: [u8; 64],
+    pub fs_type: [u8; 16],
+    pub block_size: u64,
+    pub total_blocks: u64,
+    pub free_blocks: u64,
+    pub available_blocks: u64,
+    pub total_files: u64,
+    pub free_files: u64,
+}
+
+impl Default for MountInfo {
+    fn default() -> Self {
+        Self {
+            mount_point: [0; 64],
+            fs_type: [0; 16],
+            block_size: 0,
+            total_blocks: 0,
+            free_blocks: 0,
+            available_blocks: 0,
+            total_files: 0,
+            free_files: 0,
+        }
+    }
+}
+
+/// Enumerate mounted filesystems
+pub fn get_mount_info(entries: &mut [MountInfo]) -> isize {
+    if entries.is_empty() {
+        return 0;
+    }
+    unsafe {
+        syscall2(
+            SYS_GET_MOUNT_INFO,
+            entries.as_mut_ptr() as usize,
+            entries.len(),
+        )
+    }
 }
 
 /// Get file status (follow symlinks)
@@ -271,7 +341,13 @@ pub fn stat(path: &[u8], statbuf: *mut u8) -> isize {
 }
 
 /// Mount a filesystem
-pub fn mount(source: *const u8, target: *const u8, fstype: *const u8, flags: usize, data: *const u8) -> isize {
+pub fn mount(
+    source: *const u8,
+    target: *const u8,
+    fstype: *const u8,
+    flags: usize,
+    data: *const u8,
+) -> isize {
     // Note: This is a simplified version that packs arguments
     // The kernel expects: (source_ptr, target_ptr, fstype_ptr)
     unsafe { syscall3(SYS_MOUNT, source as usize, target as usize, fstype as usize) }

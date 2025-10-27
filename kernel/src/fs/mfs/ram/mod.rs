@@ -8,10 +8,10 @@
 //! - Extended attributes
 //! - SMP-safe with fine-grained locking
 
-pub mod super_impl;
-pub mod inode;
 pub mod dir;
 pub mod file;
+pub mod inode;
+pub mod super_impl;
 pub mod xattr;
 
 pub use super_impl::MfsRamType;

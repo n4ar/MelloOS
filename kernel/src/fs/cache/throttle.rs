@@ -5,7 +5,7 @@
 //! - Global dirty page limit (e.g., 20% of RAM)
 //! - Writer slowdown when limits exceeded
 
-use core::sync::atomic::{AtomicUsize, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::RwLock;
 
 /// Default per-filesystem dirty page limit (10% of cache)
@@ -33,7 +33,7 @@ impl ThrottleConfig {
         Self {
             per_fs_dirty_percent: DEFAULT_PER_FS_DIRTY_PERCENT,
             global_dirty_percent: DEFAULT_GLOBAL_DIRTY_PERCENT,
-            max_pages_per_fs: 1024, // Default: 4 MiB per filesystem
+            max_pages_per_fs: 1024,     // Default: 4 MiB per filesystem
             total_memory_pages: 262144, // Default: 1 GiB
         }
     }
@@ -97,7 +97,9 @@ impl FilesystemThrottle {
 
     /// Decrement dirty page count
     pub fn dec_dirty(&self) -> usize {
-        self.dirty_pages.fetch_sub(1, Ordering::Relaxed).saturating_sub(1)
+        self.dirty_pages
+            .fetch_sub(1, Ordering::Relaxed)
+            .saturating_sub(1)
     }
 
     /// Get dirty page count
@@ -274,7 +276,7 @@ impl ThrottleManager {
     pub fn is_fs_limit_exceeded(&self, fs_id: u64) -> bool {
         let config = self.config.read();
         let per_fs_limit = config.per_fs_limit();
-        
+
         for throttle in &self.fs_throttles {
             if throttle.is_for_fs(fs_id) {
                 return throttle.dirty_count() > per_fs_limit;
@@ -294,8 +296,8 @@ impl ThrottleManager {
     }
 }
 
-use spin::Once;
 use core::sync::atomic::AtomicBool;
+use spin::Once;
 
 /// Global throttle manager
 static THROTTLE_MANAGER: Once<ThrottleManager> = Once::new();

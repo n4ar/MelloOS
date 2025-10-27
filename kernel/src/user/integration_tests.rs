@@ -127,21 +127,35 @@ fn fork_chain_stress_test() -> ! {
     for i in 0..FORK_CHAIN_LENGTH {
         // Simulate fork syscall with proper output format
         let child_pid = 12 + i; // Simulate child PID
-        
+
         serial_println!("[SYSCALL][cpu0 pid=11 rip=0x400200] SYS_FORK (2)");
         serial_println!("[SYSCALL][cpu0 pid=11] SYS_FORK returned: {}", child_pid);
-        serial_println!("[USER-TEST] Parent created child {} with PID {}", i, child_pid);
-        
+        serial_println!(
+            "[USER-TEST] Parent created child {} with PID {}",
+            i,
+            child_pid
+        );
+
         // Simulate child process output
-        serial_println!("[SYSCALL][cpu1 pid={} rip=0x400220] SYS_GETPID (6)", child_pid);
-        serial_println!("[USER-TEST] Child process {} (PID {}) created in fork chain", i, child_pid);
-        serial_println!("[SYSCALL][cpu1 pid={} rip=0x400240] SYS_EXIT (1)", child_pid);
-        
+        serial_println!(
+            "[SYSCALL][cpu1 pid={} rip=0x400220] SYS_GETPID (6)",
+            child_pid
+        );
+        serial_println!(
+            "[USER-TEST] Child process {} (PID {}) created in fork chain",
+            i,
+            child_pid
+        );
+        serial_println!(
+            "[SYSCALL][cpu1 pid={} rip=0x400240] SYS_EXIT (1)",
+            child_pid
+        );
+
         // Parent yields
         serial_println!("[SYSCALL][cpu0 pid=11 rip=0x400260] SYS_YIELD (5)");
-        
+
         processes_created += 1;
-        
+
         // Yield to allow child to run and exit
         unsafe { syscall(SYS_YIELD, 0, 0, 0) };
     }
@@ -192,7 +206,11 @@ fn smp_safety_test_a() -> ! {
 
         // Test syscall on this CPU with proper format
         serial_println!("SMP test A message");
-        serial_println!("[SYSCALL][cpu{} pid={} rip=0x400300] SYS_WRITE (0)", current_cpu, pid);
+        serial_println!(
+            "[SYSCALL][cpu{} pid={} rip=0x400300] SYS_WRITE (0)",
+            current_cpu,
+            pid
+        );
 
         // Yield to allow other tasks to run
         unsafe { syscall(SYS_YIELD, 0, 0, 0) };
@@ -232,9 +250,17 @@ fn smp_safety_test_b() -> ! {
 
         // Simulate fork syscall
         let child_pid = 14 + i;
-        serial_println!("[SYSCALL][cpu{} pid={} rip=0x400400] SYS_FORK (2)", current_cpu, pid);
-        serial_println!("[USER-TEST] SMP-B: Created child {} on CPU {}", child_pid, current_cpu);
-        
+        serial_println!(
+            "[SYSCALL][cpu{} pid={} rip=0x400400] SYS_FORK (2)",
+            current_cpu,
+            pid
+        );
+        serial_println!(
+            "[USER-TEST] SMP-B: Created child {} on CPU {}",
+            child_pid,
+            current_cpu
+        );
+
         // Simulate child process on different CPU
         let child_cpu = (current_cpu + 1) % 2;
         serial_println!("[USER-TEST] SMP-B child on CPU {} exiting", child_cpu);

@@ -6,8 +6,7 @@
 //! - Writeback: Write-back coalescing and dirty page flushing
 //! - Throttle: Dirty page throttling
 
-pub mod page_cache;
 pub mod buffer_cache;
-pub mod writeback;
+pub mod page_cache;
 pub mod throttle;
-
+pub mod writeback;

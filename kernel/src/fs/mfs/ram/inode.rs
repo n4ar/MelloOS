@@ -1,13 +1,13 @@
 //! MelloFS RAM Inode Implementation
 
-use alloc::sync::Arc;
-use alloc::string::String;
-use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use crate::fs::vfs::inode::{Inode, FileMode, Stat, SetAttr, DirEnt, DirCookie};
+use crate::fs::vfs::inode::{DirCookie, DirEnt, FileMode, Inode, SetAttr, Stat};
 use crate::fs::vfs::superblock::FsError;
 use crate::sync::SpinLock;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 /// RAM inode data protected by RwLock
 pub struct InodeData {
@@ -81,11 +81,11 @@ impl RamInode {
 impl RamInode {
     /// Default chunk size (32 KiB)
     const DEFAULT_CHUNK_SIZE: usize = 32 * 1024;
-    
+
     /// Create a new directory inode
     pub fn new_dir(ino: u64, mode: FileMode, uid: u32, gid: u32) -> Result<Arc<Self>, FsError> {
         let now = Self::current_time();
-        
+
         let data = InodeData {
             mode,
             uid,
@@ -97,7 +97,7 @@ impl RamInode {
                 entries: BTreeMap::new(),
             }),
         };
-        
+
         Ok(Arc::new(Self {
             ino,
             nlink: AtomicU32::new(2), // . and parent
@@ -106,11 +106,11 @@ impl RamInode {
             xattrs: SpinLock::new(BTreeMap::new()),
         }))
     }
-    
+
     /// Create a new file inode
     pub fn new_file(ino: u64, mode: FileMode, uid: u32, gid: u32) -> Result<Arc<Self>, FsError> {
         let now = Self::current_time();
-        
+
         let data = InodeData {
             mode,
             uid,
@@ -123,7 +123,7 @@ impl RamInode {
                 chunk_size: Self::DEFAULT_CHUNK_SIZE,
             }),
         };
-        
+
         Ok(Arc::new(Self {
             ino,
             nlink: AtomicU32::new(1),
@@ -132,12 +132,12 @@ impl RamInode {
             xattrs: SpinLock::new(BTreeMap::new()),
         }))
     }
-    
+
     /// Create a new symlink inode
     pub fn new_symlink(ino: u64, target: String, uid: u32, gid: u32) -> Result<Arc<Self>, FsError> {
         let now = Self::current_time();
         let mode = FileMode::new(FileMode::S_IFLNK | 0o777);
-        
+
         let data = InodeData {
             mode,
             uid,
@@ -147,7 +147,7 @@ impl RamInode {
             ctime: now,
             data: InodeKind::Symlink(SymlinkData { target }),
         };
-        
+
         Ok(Arc::new(Self {
             ino,
             nlink: AtomicU32::new(1),
@@ -156,7 +156,7 @@ impl RamInode {
             xattrs: SpinLock::new(BTreeMap::new()),
         }))
     }
-    
+
     /// Get current time (stub - returns 0 for now)
     pub(crate) fn current_time() -> u64 {
         // TODO: Implement proper time tracking
@@ -168,33 +168,33 @@ impl Inode for RamInode {
     fn ino(&self) -> u64 {
         self.ino
     }
-    
+
     fn as_any(&self) -> &dyn core::any::Any {
         self
     }
-    
+
     fn mode(&self) -> FileMode {
         self.data.lock().mode
     }
-    
+
     fn nlink(&self) -> u32 {
         self.nlink.load(Ordering::Relaxed)
     }
-    
+
     fn uid_gid(&self) -> (u32, u32) {
         let data = self.data.lock();
         (data.uid, data.gid)
     }
-    
+
     fn size(&self) -> u64 {
         self.size.load(Ordering::Relaxed)
     }
-    
+
     fn stat(&self) -> Result<Stat, FsError> {
         let data = self.data.lock();
         let size = self.size.load(Ordering::Relaxed);
         let nlink = self.nlink.load(Ordering::Relaxed);
-        
+
         Ok(Stat {
             st_dev: 0, // TODO: Device ID
             st_ino: self.ino,
@@ -214,33 +214,38 @@ impl Inode for RamInode {
             st_ctime_nsec: (data.ctime % 1_000_000_000) as i64,
         })
     }
-    
+
     fn set_attr(&self, _attr: SetAttr) -> Result<(), FsError> {
         // TODO: Implement attribute setting
         Err(FsError::NotSupported)
     }
-    
+
     fn lookup(&self, name: &str) -> Result<Arc<dyn Inode>, FsError> {
         self.dir_lookup(name)
     }
-    
-    fn create(&self, name: &str, mode: FileMode, uid: u32, gid: u32) 
-        -> Result<Arc<dyn Inode>, FsError> {
+
+    fn create(
+        &self,
+        name: &str,
+        mode: FileMode,
+        uid: u32,
+        gid: u32,
+    ) -> Result<Arc<dyn Inode>, FsError> {
         // Check if this is a directory
         let data = self.data.lock();
         if !data.mode.is_dir() {
             return Err(FsError::NotADirectory);
         }
         drop(data);
-        
+
         // Check if entry already exists
         if self.lookup(name).is_ok() {
             return Err(FsError::AlreadyExists);
         }
-        
+
         // Allocate new inode number
         let ino = Self::alloc_ino();
-        
+
         // Create new inode based on mode
         let new_inode: Arc<RamInode> = if mode.is_dir() {
             Self::new_dir(ino, mode, uid, gid)?
@@ -251,22 +256,22 @@ impl Inode for RamInode {
             // Regular file
             Self::new_file(ino, mode, uid, gid)?
         };
-        
+
         // Link the new inode into this directory using internal method
         // (avoids the downcast issue with dir_link)
         self.dir_link_internal(name, new_inode.clone())?;
-        
+
         Ok(new_inode)
     }
-    
+
     fn unlink(&self, name: &str) -> Result<(), FsError> {
         self.dir_unlink(name)
     }
-    
+
     fn link(&self, name: &str, target: Arc<dyn Inode>) -> Result<(), FsError> {
         self.dir_link(name, target)
     }
-    
+
     fn symlink(&self, name: &str, target: &str) -> Result<Arc<dyn Inode>, FsError> {
         // Validate this is a directory
         let data = self.data.lock();
@@ -274,7 +279,7 @@ impl Inode for RamInode {
             return Err(FsError::NotADirectory);
         }
         drop(data);
-        
+
         // Validate name
         if name.is_empty() || name == "." || name == ".." {
             return Err(FsError::InvalidArgument);
@@ -285,41 +290,40 @@ impl Inode for RamInode {
         if name.len() > 255 {
             return Err(FsError::NameTooLong);
         }
-        
+
         // Check if entry already exists
         if self.lookup(name).is_ok() {
             return Err(FsError::AlreadyExists);
         }
-        
+
         // Allocate new inode number
         let ino = Self::alloc_ino();
-        
+
         // Create symlink inode
         let symlink_inode = Self::new_symlink(ino, String::from(target), 0, 0)?;
-        
+
         // Link into directory using internal method
         self.dir_link_internal(name, symlink_inode.clone())?;
-        
+
         Ok(symlink_inode)
     }
-    
-    fn readdir(&self, cookie: &mut DirCookie, entries: &mut Vec<DirEnt>) 
-        -> Result<(), FsError> {
+
+    fn readdir(&self, cookie: &mut DirCookie, entries: &mut Vec<DirEnt>) -> Result<(), FsError> {
         self.dir_readdir(cookie, entries)
     }
-    
+
     fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, FsError> {
         self.file_read_at(off, dst)
     }
-    
+
     fn write_at(&self, off: u64, src: &[u8]) -> Result<usize, FsError> {
         self.file_write_at(off, src)
     }
-    
+
     fn truncate(&self, new_size: u64) -> Result<(), FsError> {
         self.file_truncate(new_size)
     }
-    
+
     fn readlink(&self) -> Result<String, FsError> {
         let data = self.data.lock();
         match &data.data {
@@ -327,15 +331,15 @@ impl Inode for RamInode {
             _ => Err(FsError::InvalidArgument),
         }
     }
-    
+
     fn set_xattr(&self, name: &str, value: &[u8]) -> Result<(), FsError> {
         self.xattr_set(name, value)
     }
-    
+
     fn get_xattr(&self, name: &str) -> Result<Vec<u8>, FsError> {
         self.xattr_get(name)
     }
-    
+
     fn list_xattr(&self) -> Result<Vec<String>, FsError> {
         self.xattr_list()
     }

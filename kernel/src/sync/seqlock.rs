@@ -69,7 +69,7 @@ impl<T> SeqLock<T> {
         loop {
             // Read sequence number (must be even for stable data)
             let seq1 = self.seq.load(Ordering::Acquire);
-            
+
             // If odd, a write is in progress - spin until even
             if seq1 & 1 != 0 {
                 core::hint::spin_loop();
@@ -81,7 +81,7 @@ impl<T> SeqLock<T> {
 
             // Check if sequence number changed
             let seq2 = self.seq.load(Ordering::Acquire);
-            
+
             // If sequence unchanged, read was consistent
             if seq1 == seq2 {
                 return result;
@@ -108,7 +108,7 @@ impl<T> SeqLock<T> {
     {
         // Read sequence number (must be even for stable data)
         let seq1 = self.seq.load(Ordering::Acquire);
-        
+
         // If odd, a write is in progress
         if seq1 & 1 != 0 {
             return None;
@@ -119,7 +119,7 @@ impl<T> SeqLock<T> {
 
         // Check if sequence number changed
         let seq2 = self.seq.load(Ordering::Acquire);
-        
+
         // If sequence unchanged, read was consistent
         if seq1 == seq2 {
             Some(result)
@@ -139,7 +139,7 @@ impl<T> SeqLock<T> {
         // Spin until we can acquire the lock
         loop {
             let seq = self.seq.load(Ordering::Acquire);
-            
+
             // If odd, another writer is active - spin
             if seq & 1 != 0 {
                 core::hint::spin_loop();
@@ -170,7 +170,7 @@ impl<T> SeqLock<T> {
     /// Some(guard) if write lock was acquired, None if another writer is active
     pub fn try_write(&self) -> Option<SeqLockWriteGuard<'_, T>> {
         let seq = self.seq.load(Ordering::Acquire);
-        
+
         // If odd, another writer is active
         if seq & 1 != 0 {
             return None;

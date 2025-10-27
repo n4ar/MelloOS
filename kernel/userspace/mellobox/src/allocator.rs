@@ -3,8 +3,8 @@
 #![allow(static_mut_refs)]
 
 use core::alloc::{GlobalAlloc, Layout};
-use core::ptr::null_mut;
 use core::cell::UnsafeCell;
+use core::ptr::null_mut;
 
 /// Simple bump allocator
 struct BumpAllocator {
@@ -33,7 +33,7 @@ impl BumpAllocator {
     unsafe fn alloc_inner(&self, layout: Layout) -> *mut u8 {
         let next = *self.next.get();
         let heap_end = *self.heap_end.get();
-        
+
         let alloc_start = align_up(next, layout.align());
         let alloc_end = alloc_start.saturating_add(layout.size());
 
@@ -59,7 +59,7 @@ pub fn init() {
         // Allocate 2MB heap for utilities
         const HEAP_SIZE: usize = 2 * 1024 * 1024; // 2MB
         static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
-        
+
         let heap_ptr = HEAP.as_mut_ptr() as usize;
         ALLOCATOR.init(heap_ptr, HEAP_SIZE);
     }
