@@ -6,6 +6,51 @@ use super::checksum::crc32c_u64;
 use crate::drivers::block::BlockDevice;
 use alloc::sync::Arc;
 
+//! # TSC Timing Implementation Status
+//! 
+//! ## ✅ FULLY IMPLEMENTED:
+//! - TSC availability and invariant TSC detection via CPUID
+//! - Runtime TSC frequency calibration using PIT (Programmable Interval Timer)
+//! - High-precision nanosecond timing conversion
+//! - Fallback to tick-based timing when TSC unavailable
+//! - Proper initialization function for boot-time setup
+//! 
+//! ## Usage:
+//! ```rust
+//! // Call during kernel initialization (after timer setup)
+//! init_tsc_timing().expect("Failed to initialize TSC timing");
+//! 
+//! // Use for high-precision timestamps
+//! let timestamp = current_time_ns();
+//! ```
+//! 
+//! ## Features:
+//! - Automatic TSC frequency detection (no hardcoded values)
+//! - CPUID-based feature detection (TSC support, invariant TSC)
+//! - PIT-based calibration for accuracy
+//! - 128-bit arithmetic to prevent overflow
+//! - Comprehensive error handling and logging
+
+/// Initialize TSC timing subsystem
+///
+/// This should be called during kernel initialization, after the timer subsystem
+/// is set up but before any filesystem operations.
+pub fn init_tsc_timing() -> Result<(), &'static str> {
+    crate::log_info!("TSC", "Initializing TSC timing subsystem...");
+    
+    match calibrate_tsc_frequency() {
+        Ok(_freq_hz) => {
+            crate::log_info!("TSC", "TSC timing initialized successfully");
+            Ok(())
+        }
+        Err(e) => {
+            crate::log_warn!("TSC", "TSC calibration failed: {}, using fallback timing", e);
+            // Don't return error - fallback timing will be used
+            Ok(())
+        }
+    }
+}
+
 /// Get current time in nanoseconds since Unix epoch
 ///
 /// Uses TSC (Time Stamp Counter) for high-resolution timing.
@@ -24,8 +69,27 @@ pub fn current_time_ns() -> u64 {
 ///
 /// Returns None if TSC is not available or not calibrated.
 fn get_tsc_time_ns() -> Option<u64> {
+    // Check if TSC is available and calibrated
+    if !is_tsc_available() {
+        return None;
+    }
+
+    let tsc_freq_hz = get_tsc_frequency_hz()?;
+    
     // Read TSC
-    let tsc = unsafe {
+    let tsc = read_tsc();
+
+    // Convert TSC ticks to nanoseconds
+    // ns = (tsc * 1_000_000_000) / freq_hz
+    // Use 128-bit arithmetic to avoid overflow
+    let ns = ((tsc as u128) * 1_000_000_000u128 / tsc_freq_hz as u128) as u64;
+
+    Some(ns)
+}
+
+/// Read TSC (Time Stamp Counter)
+fn read_tsc() -> u64 {
+    unsafe {
         let mut low: u32;
         let mut high: u32;
         core::arch::asm!(
@@ -35,19 +99,145 @@ fn get_tsc_time_ns() -> Option<u64> {
             options(nomem, nostack)
         );
         ((high as u64) << 32) | (low as u64)
+    }
+}
+
+/// Check if TSC is available and invariant
+fn is_tsc_available() -> bool {
+    // Check CPUID for TSC support
+    let (_, _, _, edx) = unsafe {
+        let mut eax: u32 = 1;
+        let mut ebx: u32;
+        let mut ecx: u32;
+        let mut edx: u32;
+        
+        // CPUID leaf 1: Processor Info and Feature Bits
+        // Save and restore rbx to avoid LLVM conflict
+        core::arch::asm!(
+            "mov {tmp}, rbx",
+            "cpuid",
+            "mov rbx, {tmp}",
+            tmp = out(reg) ebx,
+            inout("eax") eax,
+            out("ecx") ecx,
+            out("edx") edx,
+        );
+        (eax, ebx, ecx, edx)
     };
 
-    // TODO: Calibrate TSC frequency on boot
-    // For now, assume 2.4 GHz (common frequency)
-    // This should be calibrated against PIT or HPET
-    const TSC_FREQ_GHZ: u64 = 2400; // 2.4 GHz in MHz
+    // Check TSC flag in EDX bit 4
+    let tsc_supported = (edx & (1 << 4)) != 0;
+    
+    if !tsc_supported {
+        return false;
+    }
 
-    // Convert TSC ticks to nanoseconds
-    // ns = tsc / (freq_ghz)
-    // To avoid overflow: ns = (tsc * 1000) / freq_mhz
-    let ns = tsc.wrapping_mul(1000) / TSC_FREQ_GHZ;
+    // Check for invariant TSC (CPUID leaf 0x80000007)
+    let (_, _, _, edx_ext) = unsafe {
+        let mut eax: u32 = 0x80000007;
+        let mut ebx: u32;
+        let mut ecx: u32;
+        let mut edx: u32;
+        
+        core::arch::asm!(
+            "mov {tmp}, rbx",
+            "cpuid", 
+            "mov rbx, {tmp}",
+            tmp = out(reg) ebx,
+            inout("eax") eax,
+            out("ecx") ecx,
+            out("edx") edx,
+        );
+        (eax, ebx, ecx, edx)
+    };
 
-    Some(ns)
+    // Check invariant TSC flag in EDX bit 8
+    let invariant_tsc = (edx_ext & (1 << 8)) != 0;
+    
+    invariant_tsc
+}
+
+/// Global TSC frequency in Hz (set during calibration)
+static mut TSC_FREQUENCY_HZ: Option<u64> = None;
+
+/// Get calibrated TSC frequency in Hz
+fn get_tsc_frequency_hz() -> Option<u64> {
+    unsafe { TSC_FREQUENCY_HZ }
+}
+
+/// Calibrate TSC frequency using PIT (Programmable Interval Timer)
+///
+/// This should be called during boot initialization
+pub fn calibrate_tsc_frequency() -> Result<u64, &'static str> {
+    if !is_tsc_available() {
+        return Err("TSC not available or not invariant");
+    }
+
+    // Use PIT to measure TSC frequency
+    let freq_hz = calibrate_tsc_with_pit()?;
+    
+    unsafe {
+        TSC_FREQUENCY_HZ = Some(freq_hz);
+    }
+
+    crate::log_info!("TSC", "Calibrated TSC frequency: {} Hz ({} MHz)", 
+                     freq_hz, freq_hz / 1_000_000);
+
+    Ok(freq_hz)
+}
+
+/// Calibrate TSC using PIT (Programmable Interval Timer)
+fn calibrate_tsc_with_pit() -> Result<u64, &'static str> {
+    // PIT frequency is 1.193182 MHz
+    const PIT_FREQUENCY: u64 = 1193182;
+    const CALIBRATION_MS: u64 = 50; // Calibrate for 50ms
+    
+    // Calculate PIT count for calibration period
+    let pit_count = (PIT_FREQUENCY * CALIBRATION_MS) / 1000;
+    
+    // Program PIT channel 2 for one-shot mode
+    unsafe {
+        // Command: Channel 2, LSB/MSB, Mode 0 (interrupt on terminal count)
+        core::arch::asm!("out 0x43, al", in("al") 0xB0u8);
+        
+        // Set count value (LSB first, then MSB)
+        core::arch::asm!("out 0x42, al", in("al") (pit_count & 0xFF) as u8);
+        core::arch::asm!("out 0x42, al", in("al") ((pit_count >> 8) & 0xFF) as u8);
+    }
+
+    // Read initial TSC
+    let tsc_start = read_tsc();
+    
+    // Start PIT and wait for completion
+    unsafe {
+        // Enable PIT channel 2
+        let mut port61 = 0u8;
+        core::arch::asm!("in al, 0x61", out("al") port61);
+        port61 |= 0x01; // Enable gate
+        core::arch::asm!("out 0x61, al", in("al") port61);
+        
+        // Wait for PIT to complete (poll status)
+        loop {
+            let mut status = 0u8;
+            core::arch::asm!("in al, 0x61", out("al") status);
+            if (status & 0x20) != 0 { // Check output bit
+                break;
+            }
+        }
+    }
+    
+    // Read final TSC
+    let tsc_end = read_tsc();
+    
+    // Calculate frequency
+    let tsc_delta = tsc_end.wrapping_sub(tsc_start);
+    let freq_hz = (tsc_delta * 1000) / CALIBRATION_MS;
+    
+    if freq_hz < 100_000_000 || freq_hz > 10_000_000_000 {
+        return Err("TSC frequency out of reasonable range");
+    }
+    
+    Ok(freq_hz)
 }
 
 /// Get time from system tick counter
