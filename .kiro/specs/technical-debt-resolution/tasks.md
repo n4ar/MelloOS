@@ -43,14 +43,14 @@
   - Handle zombie process cleanup after parent retrieves status
   - _Requirements: 4.4_
 
-- [ ] 7. Syscall Child Process Tracking
+- [x] 7. Syscall Child Process Tracking
   - Add `children: Vec<Pid>` field to Task structure
   - Update fork to add child PID to parent's children list
   - Update exit to remove PID from parent's children list
   - Implement proper child tracking in syscall/mod.rs lines 1134, 1142
   - _Requirements: 4.4_
 
-- [ ] 8. Driver virtio-blk Virtqueue Submission
+- [x] 8. Driver virtio-blk Virtqueue Submission
   - Implement actual virtqueue submission in virtio_blk.rs lines 132, 152
   - Create descriptor chain for block requests
   - Fill request header, data buffers, and status buffer

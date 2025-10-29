@@ -595,9 +595,10 @@ fn sys_exit_enhanced(code: usize) -> ! {
             pid
         );
 
-        // If no parent, remove from children list of any task that might have it
-        // This handles the case where the parent exited before the child
+        // If no parent, this is an orphaned process
         // In a full implementation, orphaned processes would be reparented to init
+        // For now, we just ensure the process is not in any children list
+        // Since there's no parent, there's no children list to remove from
     }
 
     // Step 4: Remove current task from scheduler
@@ -1219,6 +1220,15 @@ fn sys_wait_stub(child_pid: usize) -> isize {
                     e
                 );
             }
+        }
+
+        // Remove child from parent's children list
+        if let Some(parent_task) = sched::get_task_mut(parent_task_id) {
+            parent_task.children.retain(|&pid| pid != dead_child_pid);
+            serial_println!(
+                "[SYSCALL] SYS_WAIT: Removed child {} from parent's children list",
+                dead_child_pid
+            );
         }
 
         // Return child PID and exit code
